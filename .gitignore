@@ -1,0 +1,12 @@
+.env*
+!.env.example
+*.pem
+*.key
+*token*.json
+*.db
+*.db-*
+data/backups/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
