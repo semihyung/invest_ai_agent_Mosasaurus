@@ -1,0 +1,84 @@
+project_name: "mosasaurus"
+version: "3.4.0"
+is_calibrated_by_backtest: false  # Phase 1 백테스트 완료 후 true로 변경 필수
+smoke_test_mode: false            # 실계좌 1주 주문 검증 시에만 일시적으로 true 허용
+
+features:
+  enable_llm_risk_engine: false   # Phase 2 배포 시 true로 전환
+  enable_dart_collector: false    # Phase 2 배포 시 true로 전환
+
+market:
+  timezone: "Asia/Seoul"
+  primary_venue: "KRX"
+  weekly_preview_day: "SAT"
+  weekly_preview_time: "10:00:00"
+  weekly_rotation: "first_open_day"
+  open_checkpoint_time: "09:10:00"
+  daily_pipeline_time: "15:00:00"
+  order_expire_time: "15:14:30"
+  order_cancel_deadline: "15:15:10"
+
+account:
+  broker: "KIS"
+  account_type: "ISA"
+
+portfolio:
+  primary_parking_ticker: "459580"  # 대표 파킹 ETF 단 1개 지정 (예: KODEX CD금리액티브)
+  cash_buffer_ratio: 0.05
+  slot_weights:
+    S1: 0.45
+    S2: 0.30
+    S3: 0.20
+  min_trade_amount_krw: 150000
+  min_external_deposit_detect_krw: 10000
+  rebalance_drift_ratio: 0.05
+  max_order_participation_rate: 0.01
+  concentration:
+    allow_duplicate_underlying_index: false
+    max_slots_per_region: 2       # KR 또는 US 단일 지역 최대 2슬롯 제한 (3으로 변경 시 완전 무제한)
+    max_single_stock_lookthrough_weight: 0.25  # Phase 2 활성화 시 적용
+
+momentum:
+  lookbacks: [20, 60, 120]
+  weights: [0.4, 0.4, 0.2]
+  min_volatility_floor: 0.000001
+  absolute_filter:
+    require_positive_score: true
+    moving_average_days: 120
+
+trailing_stop:
+  normal: -0.10                   # KR/US 통합 평시 트레일링 스탑 (-10.0%)
+  training: -0.07                 # KR/US 통합 훈련 모드 스탑 (-7.0%)
+
+execution:
+  order_type: "LIMIT"
+  allow_market_order: false
+  max_spread_ratio: 0.003
+  nav_deviation_limit_kr: 0.005
+  nav_deviation_limit_us: 0.012   # 미국 본장 휴장 시간대 환율/선물 괴리 반영
+  emergency_sell_nav_deviation_limit: 0.020
+  cancel_unfilled_at_deadline: true
+  retry_unknown_order: false
+
+risk:
+  portfolio_drawdown:
+    caution: -0.07
+    warning: -0.10
+    critical: -0.15
+  block_buys_on_stale_data: true
+  block_buys_on_account_mismatch: true
+
+ttl_seconds:
+  intraday_quote: 15
+  intraday_nav: 60
+  account_balance: 30
+  open_orders: 15
+  etf_holdings_days: 7
+
+universe:
+  min_history_sessions: 200
+  min_avg_turnover_20d_krw: 5000000000
+  reject_derivatives: true
+  reject_inverse: true
+  reject_leverage: true
+  reject_etn: true
