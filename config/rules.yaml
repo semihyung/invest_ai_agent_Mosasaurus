@@ -1,5 +1,5 @@
 project_name: "mosasaurus"
-version: "3.5.0"
+version: "3.6.0"
 is_calibrated_by_backtest: false  # Phase 1 백테스트 완료 후 true로 변경 필수
 smoke_test_mode: false            # 실계좌 1주 주문 검증 시에만 일시적으로 true 허용
 
@@ -28,7 +28,7 @@ account:
     min_refresh_cooldown_seconds: 65      # 1분당 1회 제한(EGW00133) 방어 쿨다운
 
 portfolio:
-  primary_parking_ticker: "459580"  # 대표 파킹 ETF 단 1개 지정 (예: KODEX CD금리액티브)
+  primary_parking_ticker: "423160"  # 초기 소액 운용 기본값; 총자산 1,000만 원 이상 확장 시 459580 전환 권장
   cash_buffer_ratio: 0.05
   slot_weights:
     S1: 0.45

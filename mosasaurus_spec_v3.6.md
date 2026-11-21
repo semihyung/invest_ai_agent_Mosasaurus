@@ -1,7 +1,7 @@
-# 라즈베리파이 5 기반 군 복무 특화 자동 투자 에이전트 '모사사우르스(Mosasaurus)' 통합 개발 명세서 (v3.5 — 구현 최종 확정판)
+# 라즈베리파이 5 기반 군 복무 특화 자동 투자 에이전트 '모사사우르스(Mosasaurus)' 통합 개발 명세서 (v3.6 — 구현 최종 확정판)
 
 * **프로젝트명:** 모사사우르스 (`mosasaurus`)
-* **문서 버전:** v3.5 (KIS 토큰 이중 갱신 정책 확정 · AI 에이전트 개발 보안 격리 규약 · 토요일 주간 보고 · 첫 개장일 주문 집행 · 2단계 모듈화)
+* **문서 버전:** v3.6 (초기 파킹 ETF `423160` 지정 및 자금 규모별 전환 기준 · KIS 토큰 이중 갱신 정책 · AI 에이전트 개발 보안 격리 규약 · 토요일 주간 보고 · 첫 개장일 주문 집행 · 2단계 모듈화)
 * **작성 기준일:** 2026-11-21
 * **운용 시장:** 한국거래소(KRX) 상장 현물 ETF
 * **기본 브로커:** 한국투자증권(KIS) Open API (중개형 ISA 계좌)
@@ -207,7 +207,9 @@
 
 ### 5.1 대표 파킹 자산 지정 및 위험 조정 모멘텀 수식
 
-* **대표 파킹 자산(`primary_parking_ticker`):** `config/rules.yaml` 에 단 1개의 초단기 금리형 현물 ETF(예: KOFR 또는 CD금리 ETF)를 지정한다. 모든 초과수익률 계산($r_{f,t}$)과 미배정 슬롯 예산의 파킹 매수는 오직 이 대표 파킹 종목으로만 수행한다.
+* **대표 파킹 자산(`primary_parking_ticker`):** `config/rules.yaml` 에 단 1개의 초단기 금리형 현물 ETF를 지정한다. 모든 초과수익률 계산($r_{f,t}$)과 미배정 슬롯 예산의 파킹 매수는 오직 이 대표 파킹 종목으로만 수행한다.
+  * **초기 및 소액 운용 기본값 (`423160` — KODEX KOFR금리액티브(합성)):** 1주당 단가가 약 11만 원대로 형성되어 있어 초기 운용 자금(500만 원 이하) 및 실계좌 1주 스모크 테스트 단계에서 자투리 현금(Cash Drag)을 최소화하며 1주 단위 비중 조절이 가능하다. (월말 소액 분배금 발생 시 `corporate_actions` 및 `Smart DCA` 로 자동 재투자 처리.)
+  * **자금 확장 시 전환 기준 (`459580` — KODEX CD금리액티브(합성)):** 계좌 총평가액이 1,000만 원 이상으로 확장되면 유동성과 CD 91일물 금리 수익률이 가장 우수한 `459580`(1주당 약 107.5만 원대)으로 `config/rules.yaml` 의 `primary_parking_ticker` 를 전환해 운용할 수 있다.
 * 직전 영업일까지 완료된 수정주가 시계열만 사용한다.
 
 1. 일간 로그수익률 ($t = 1 \dots k$):
@@ -548,7 +550,7 @@ services:
 
 ```yaml
 project_name: "mosasaurus"
-version: "3.5.0"
+version: "3.6.0"
 is_calibrated_by_backtest: false  # Phase 1 백테스트 완료 후 true로 변경 필수
 smoke_test_mode: false            # 실계좌 1주 주문 검증 시에만 일시적으로 true 허용
 
@@ -577,7 +579,7 @@ account:
     min_refresh_cooldown_seconds: 65      # 1분당 1회 제한(EGW00133) 방어 쿨다운
 
 portfolio:
-  primary_parking_ticker: "459580"  # 대표 파킹 ETF 단 1개 지정 (예: KODEX CD금리액티브)
+  primary_parking_ticker: "423160"  # 초기 소액 운용 기본값: KODEX KOFR금리액티브(합성) (~11만 원/주). 총자산 1,000만 원 이상 확장 시 459580(KODEX CD금리액티브) 전환 권장
   cash_buffer_ratio: 0.05
   slot_weights:
     S1: 0.45
