@@ -14,6 +14,7 @@
 - 트레일링 스탑, Drawdown 회로 차단, 지정가 주문 상태 머신과 잔고 대조 규칙을 구현했습니다.
 - APScheduler 시각표, Telegram 화이트리스트·확인 제어와 헬스 상태 요약을 구현했습니다.
 - Phase 1 백테스트 입력과 핵심 CAGR/MDD/turnover 계산 및 25개 장애 시나리오 검증을 구현했습니다.
+- Docker Compose, GitHub Actions 배포, 장중 배포 차단과 SQLite 백업·복구 스크립트를 구성했습니다.
 - 전략 전체 파이프라인, 포트폴리오 관리, 주문·리스크 관리자, 스케줄러, Telegram 제어, 백테스트와 배포 환경은 아직 구현되지 않았습니다.
 - Phase 2(OpenDART, 뉴스, LLM 분석)는 승인 전까지 구현하거나 활성화하지 않습니다.
 

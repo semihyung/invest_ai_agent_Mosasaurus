@@ -6,6 +6,7 @@
 *.db
 *.db-*
 data/backups/
+data/*.db
 __pycache__/
 *.py[cod]
 .venv/

@@ -1,0 +1,15 @@
+services:
+  mosasaurus-agent:
+    build: .
+    container_name: mosasaurus-agent
+    restart: unless-stopped
+    env_file:
+      - ${SECRETS_DIR:-/home/pi/.secrets/mosasaurus}/.env
+    environment:
+      TZ: Asia/Seoul
+      DB_PATH: /app/data/mosasaurus.db
+      TOKEN_CACHE_PATH: /run/secrets_dir/kis_token.json
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ${SECRETS_DIR:-/home/pi/.secrets/mosasaurus}:/run/secrets_dir:ro
