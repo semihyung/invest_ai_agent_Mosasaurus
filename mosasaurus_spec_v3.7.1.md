@@ -228,6 +228,26 @@
 5. `cash_flows` 테이블에 `UNCLASSIFIED_CASH_FLOW` 미분류 현금흐름 잔존.
 6. `exchange_calendars(XKRX)` 와 `KIS 국내휴장일조회` 의 개장 여부 불일치.
 
+### 4.4 KIS API 연동 계약 (Phase 1, 읽기 전용)
+
+* **환경 및 권한:** 개발·검증 기본값은 KIS 모의투자(`PAPER`)다. 실전 도메인은 명시적으로 설정된 환경에서만 선택하며, 이 절의 클라이언트는 조회 전용으로 한정한다. 토큰 발급 외에는 자격 증명을 사용해도 조회 API만 호출한다. 주문·정정·취소 endpoint는 `Order Manager` 구현 단계에서만 추가하며, `kis_client.py` 에 직접 노출하지 않는다.
+* **도메인:** 모의 `https://openapivts.koreainvestment.com:29443`, 실전 `https://openapi.koreainvestment.com:9443`. 기본 환경을 추정하거나 연결 실패 시 다른 환경으로 전환하지 않는다.
+* **REST 요청 공통 처리:** `Authorization: Bearer <access_token>`, `appkey`, `appsecret`, `tr_id`, `custtype` 헤더와 KIS JSON 응답의 `rt_cd`/오류 코드를 검증한다. 비정상 HTTP 상태, KIS 오류 응답, 잘못된 JSON, 필수 출력 누락은 명시적 연동 오류로 처리하고 빈 성공 결과로 바꾸지 않는다. 요청 타임아웃은 재시도하지 않고 데이터 조회 실패로 보고 해당 배치를 fail-closed 처리한다. 실제 인증값과 응답 원문은 로그에 남기지 않는다.
+
+| 용도 | 메서드 및 경로 | TR ID | 요청·응답 계약 |
+| :--- | :--- | :--- | :--- |
+| OAuth 토큰 발급 | `POST /oauth2/tokenP` | - | `client_credentials`, 외부 금고의 `KIS_APP_KEY`/`KIS_APP_SECRET`; 응답 토큰은 토큰 캐시 정책에 따라 외부 경로에만 저장 |
+| ETF 현재가 | `GET /uapi/etfetn/v1/quotations/inquire-price` | `FHPST02400000` | `FID_COND_MRKT_DIV_CODE=J`, `FID_INPUT_ISCD=<ticker>`; 현재가 출력의 필수 수치 필드가 없거나 양수가 아니면 `DATA_INVALID` |
+| 최우선 호가 | `GET /uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn` | `FHKST01010200` | `FID_COND_MRKT_DIV_CODE=J`, `FID_INPUT_ISCD=<ticker>`; `output1` 의 `bidp1`, `askp1` 및 수량 필드를 검증하고 관측·수신 시각을 기록 |
+| 일봉 | `GET /uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice` | `FHKST03010100` | `FID_PERIOD_DIV_CODE=D`; `FID_ORG_ADJ_PRC=0` 은 수정주가, `1` 은 원주가. 응답 `output2` 는 호출당 최대 100건이므로 200거래일 조회는 날짜 구간을 나누어 수집하고 `(ticker, trade_date)` 로 병합·검증 |
+| 국내 휴장일 | `GET /uapi/domestic-stock/v1/quotations/chk-holiday` | `CTCA0903R` | `BASS_DT=<YYYYMMDD>`; `opnd_yn` 으로 개장 여부 확인. KIS 공식 샘플의 주의에 따라 하루 1회만 조회하고 결과를 당일 재사용 |
+| ETF 실시간 NAV | WebSocket 구독 | `H0STNAV0` | REST `access_token` 과 분리한 `/oauth2/Approval` `approval_key` 사용. 수신 필드 `nav` 를 검증하며, 수신 세션 단절 또는 NAV 데이터 60초 초과 시 `STALE` 처리 |
+| 계좌 잔고(대조용) | `GET /uapi/domestic-stock/v1/trading/inquire-balance` | 실전 `TTTC8434R`, 모의 `VTTC8434R` | 조회 전용이며 계좌·잔고 대조 단계에서 사용. 응답 페이지를 모두 수집하고 KIS 잔고를 원본(SSOT)으로 취급 |
+
+* **일봉 정합성:** 수정·원주가 조회 결과는 거래일 집합과 종목이 일치하는지 확인한다. 한쪽 데이터 누락, 중복 거래일, 200거래일 미달, 미래 일자, 비정상 가격 또는 조정 기준을 설명할 수 없는 차이가 있으면 해당 시계열을 사용하지 않는다. API 날짜 구간 분할은 중복·누락이 없도록 경계를 검사한다.
+* **기업행위 출처 및 fail-closed:** KIS 공개 샘플에서 별도의 검증 가능한 기업행위 이벤트 API를 확인하지 못했다. 그러므로 수정/원주가 가격 차이만으로 기업행위 종류·발생일·조정계수를 추정하거나 `verified=true` 로 기록하지 않는다. 독립적으로 검증된 이벤트와 가격 기준 변환이 없으면 해당 보유 종목의 가격 기반 자동 매도 및 신규 매수를 차단하고 `DATA_INVALID`/`SAFE_HALT` 및 운영자 확인 절차를 적용한다. 이벤트 제공처와 조정계약은 공식 근거를 확인한 후 이 명세에 추가 승인한다.
+* **공식 API 참조:** [KIS Open API 포털](https://apiportal.koreainvestment.com/) 및 [한국투자증권 공식 Open API 샘플 저장소](https://github.com/koreainvestment/open-trading-api/tree/74b0a082fa67a0be5bf53f561719c853890ed2df). 구체 예제: [ETF 현재가](https://github.com/koreainvestment/open-trading-api/blob/74b0a082fa67a0be5bf53f561719c853890ed2df/examples_llm/etfetn/inquire_price/inquire_price.py), [호가](https://github.com/koreainvestment/open-trading-api/blob/74b0a082fa67a0be5bf53f561719c853890ed2df/examples_llm/domestic_stock/inquire_asking_price_exp_ccn/inquire_asking_price_exp_ccn.py), [일봉](https://github.com/koreainvestment/open-trading-api/blob/74b0a082fa67a0be5bf53f561719c853890ed2df/examples_llm/domestic_stock/inquire_daily_itemchartprice/inquire_daily_itemchartprice.py), [휴장일](https://github.com/koreainvestment/open-trading-api/blob/74b0a082fa67a0be5bf53f561719c853890ed2df/examples_llm/domestic_stock/chk_holiday/chk_holiday.py), [실시간 NAV](https://github.com/koreainvestment/open-trading-api/blob/74b0a082fa67a0be5bf53f561719c853890ed2df/examples_user/etfetn/etfetn_functions_ws.py).
+
 ---
 
 ## 5. 통일된 Quant 전략 및 주간 하이브리드 파이프라인 (`RISK_ASSET`)
