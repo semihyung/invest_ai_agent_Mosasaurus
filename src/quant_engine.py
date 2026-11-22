@@ -1,11 +1,19 @@
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 
 _LOOKBACK_WEIGHTS = ((20, 0.4), (60, 0.4), (120, 0.2))
 _MIN_VOLATILITY = 1e-6
 _MIN_HISTORY_SESSIONS = 200
 _MAX_DAILY_RETURN = 0.30
+
+
+@dataclass(frozen=True)
+class RankedCandidate:
+    ticker: str
+    score: float
+    sma_gap_ratio: float
 
 
 def _validate_prices(prices: Sequence[float]) -> None:
@@ -109,3 +117,23 @@ def passes_momentum_trend_filter(
     ):
         raise ValueError("Momentum score must be a finite number or None.")
     return score > 0 and above_sma120
+
+
+def rank_candidates(
+    candidates: Iterable[RankedCandidate],
+) -> list[RankedCandidate]:
+    """Sort positive, SMA-filtered candidates from highest to lowest score."""
+    ranked = []
+    for candidate in candidates:
+        if not isinstance(candidate, RankedCandidate):
+            raise TypeError("Candidates must be RankedCandidate values.")
+        if (
+            isinstance(candidate.score, bool)
+            or not isinstance(candidate.score, (int, float))
+            or not math.isfinite(candidate.score)
+        ):
+            raise ValueError("Candidate score must be finite.")
+        if candidate.score <= 0:
+            continue
+        ranked.append(candidate)
+    return sorted(ranked, key=lambda candidate: candidate.score, reverse=True)

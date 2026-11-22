@@ -2,9 +2,11 @@ import math
 import unittest
 
 from src.quant_engine import (
+    RankedCandidate,
     calculate_momentum_score,
     is_above_sma120,
     passes_momentum_trend_filter,
+    rank_candidates,
     validate_daily_history,
 )
 
@@ -105,6 +107,19 @@ class MomentumTrendFilterTests(unittest.TestCase):
     def test_rejects_non_finite_score(self):
         with self.assertRaises(ValueError):
             passes_momentum_trend_filter(math.inf, 101.0, [100.0] * 120)
+
+
+class RankCandidatesTests(unittest.TestCase):
+    def test_ranks_by_descending_positive_score(self):
+        candidates = [
+            RankedCandidate("A", 0.2, 0.03),
+            RankedCandidate("B", -0.1, 0.01),
+            RankedCandidate("C", 0.8, 0.05),
+        ]
+
+        ranked = rank_candidates(candidates)
+
+        self.assertEqual([candidate.ticker for candidate in ranked], ["C", "A"])
 
 
 class ValidateDailyHistoryTests(unittest.TestCase):

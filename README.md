@@ -9,6 +9,9 @@
 - SQLite WAL 데이터베이스와 Phase 1 기본 테이블 15개의 초기화 코드를 구현했습니다.
 - Quant 엔진의 모멘텀 계산, 120일 이동평균 필터, 일봉 데이터 기본 품질 검사를 구현했습니다.
 - KIS 토큰의 외부 캐시 및 갱신 정책 계산을 구현했습니다. 아직 KIS 실제 API 연결이나 주문 기능은 없습니다.
+- 시장 데이터 스냅샷의 TTL, 호가 스프레드, iNAV 괴리율과 검증된 기업행동 조정 규칙을 구현했습니다.
+- 후보 순위, 집중도 제한, 45/30/20 슬롯 배분, 차순위 승계와 Smart DCA 계산을 구현했습니다.
+- 트레일링 스탑, Drawdown 회로 차단, 지정가 주문 상태 머신과 잔고 대조 규칙을 구현했습니다.
 - 전략 전체 파이프라인, 포트폴리오 관리, 주문·리스크 관리자, 스케줄러, Telegram 제어, 백테스트와 배포 환경은 아직 구현되지 않았습니다.
 - Phase 2(OpenDART, 뉴스, LLM 분석)는 승인 전까지 구현하거나 활성화하지 않습니다.
 
@@ -20,6 +23,8 @@ config/rules.yaml              # 전략 및 안전 정책 설정
 migrations/001_init_phase1.sql # Phase 1 데이터베이스 스키마
 src/db.py                      # SQLite WAL 초기화 및 검증
 src/kis_client.py              # 토큰 캐시 및 갱신 정책
+src/market_data.py             # 호가·iNAV 신선도와 일봉 품질 검증
+src/corporate_actions.py       # 검증된 기업행동 조정 처리
 src/quant_engine.py            # 핵심 모멘텀 계산과 데이터 검사
 tests/                         # 자동화된 단위 테스트
 ```
