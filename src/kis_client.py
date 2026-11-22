@@ -83,6 +83,37 @@ def _parse_utc(value: Any, field_name: str) -> datetime:
     return _as_utc(parsed, field_name)
 
 
+def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    """외부 보안 디렉터리에 JSON을 권한 제한과 원자적 교체로 저장합니다."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "nt":
+        os.chmod(path.parent, 0o700)
+
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            if os.name != "nt":
+                os.chmod(temporary_path, 0o600)
+            json.dump(payload, temporary_file, separators=(",", ":"))
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+
+        os.replace(temporary_path, path)
+        if os.name != "nt":
+            os.chmod(path, 0o600)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
 class KisTokenCache:
     _FIELDS = {"access_token", "issued_at", "expires_at"}
 
@@ -131,38 +162,12 @@ class KisTokenCache:
         if not isinstance(token, CachedAccessToken):
             raise TypeError("token must be a CachedAccessToken.")
 
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if os.name != "nt":
-            os.chmod(self.path.parent, 0o700)
-
         payload = {
             "access_token": token.access_token,
             "issued_at": _format_utc(token.issued_at),
             "expires_at": _format_utc(token.expires_at),
         }
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=self.path.parent,
-                prefix=f".{self.path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as temporary_file:
-                temporary_path = Path(temporary_file.name)
-                if os.name != "nt":
-                    os.chmod(temporary_path, 0o600)
-                json.dump(payload, temporary_file, separators=(",", ":"))
-                temporary_file.flush()
-                os.fsync(temporary_file.fileno())
-
-            os.replace(temporary_path, self.path)
-            if os.name != "nt":
-                os.chmod(self.path, 0o600)
-        finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
+        _write_private_json(self.path, payload)
 
 
 def should_refresh_access_token(
@@ -237,6 +242,272 @@ class UrllibKisTransport:
             return KisHttpResponse(exc.code, exc.read())
         except (URLError, TimeoutError, OSError) as exc:
             raise KisApiError("KIS API transport failed.") from exc
+
+
+class KisTokenIssuer:
+    """모의투자 OAuth 엔드포인트에서 REST 접근 토큰을 발급합니다."""
+
+    _TOKEN_URL = "https://openapivts.koreainvestment.com:29443/oauth2/tokenP"
+
+    def __init__(
+        self,
+        app_key: str,
+        app_secret: str,
+        *,
+        transport: KisHttpTransport | None = None,
+        timeout_seconds: float = 10,
+    ) -> None:
+        """PAPER 환경 발급에 필요한 자격 증명과 전송기를 설정합니다."""
+        if not isinstance(app_key, str) or not app_key.strip():
+            raise ValueError("KIS app key is required.")
+        if not isinstance(app_secret, str) or not app_secret.strip():
+            raise ValueError("KIS app secret is required.")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("KIS timeout must be positive.")
+
+        self._app_key = app_key
+        self._app_secret = app_secret
+        self._transport = transport or UrllibKisTransport()
+        self._timeout_seconds = timeout_seconds
+
+    def issue(self, *, now: datetime) -> CachedAccessToken:
+        """토큰 API를 호출해 토큰과 만료 메타데이터만 반환합니다."""
+        issued_at = _as_utc(now, "now")
+        request_body = json.dumps(
+            {
+                "grant_type": "client_credentials",
+                "appkey": self._app_key,
+                "appsecret": self._app_secret,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        response = self._transport.request(
+            "POST",
+            self._TOKEN_URL,
+            {
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            request_body,
+            self._timeout_seconds,
+        )
+        if not 200 <= response.status_code < 300:
+            raise KisApiError(
+                f"KIS token endpoint returned HTTP {response.status_code}."
+            )
+        try:
+            payload = json.loads(response.body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise KisApiError("KIS token endpoint returned invalid JSON.") from exc
+        if not isinstance(payload, dict):
+            raise KisApiError("KIS token endpoint returned an unexpected response.")
+
+        access_token = payload.get("access_token")
+        expires_in = payload.get("expires_in")
+        if isinstance(expires_in, str) and expires_in.isdigit():
+            expires_in = int(expires_in)
+        if (
+            not isinstance(access_token, str)
+            or not access_token.strip()
+            or access_token != access_token.strip()
+            or isinstance(expires_in, bool)
+            or not isinstance(expires_in, int)
+            or expires_in <= 0
+        ):
+            raise KisApiError("KIS token endpoint response is missing valid token data.")
+
+        return CachedAccessToken(
+            access_token=access_token,
+            issued_at=issued_at,
+            expires_at=issued_at + timedelta(seconds=expires_in),
+        )
+
+
+class KisTokenRefreshStateStore:
+    """마지막 토큰 발급 시각만 토큰 캐시와 같은 외부 금고에 저장합니다."""
+
+    _FIELDS = {"last_request_at"}
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        project_root: str | Path | None = None,
+    ) -> None:
+        self.project_root = Path(
+            project_root or Path(__file__).resolve().parent.parent
+        ).expanduser().resolve()
+        self.path = Path(path).expanduser().resolve()
+        try:
+            self.path.relative_to(self.project_root)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("KIS refresh metadata must be outside the project workspace.")
+
+    def load_last_request_at(self) -> datetime | None:
+        """저장된 마지막 발급 시각을 읽고 잘못된 메타데이터는 거부합니다."""
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except json.JSONDecodeError as exc:
+            raise ValueError("KIS refresh metadata contains invalid JSON.") from exc
+        if not isinstance(payload, dict) or set(payload) != self._FIELDS:
+            raise ValueError("KIS refresh metadata has an unexpected structure.")
+        return _parse_utc(payload["last_request_at"], "last_request_at")
+
+    def save_last_request_at(self, requested_at: datetime) -> None:
+        """요청 시각을 토큰 없이 권한 제한·원자적 교체로 저장합니다."""
+        _write_private_json(
+            self.path,
+            {"last_request_at": _format_utc(requested_at)},
+        )
+
+
+class KisTokenRefreshLock:
+    """여러 호스트 프로세스가 동시에 토큰 발급을 요청하지 못하게 합니다."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self._handle: Any | None = None
+
+    def __enter__(self) -> "KisTokenRefreshLock":
+        """외부 보안 디렉터리에서 비차단 프로세스 잠금을 획득합니다."""
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            os.chmod(self.path.parent, 0o700)
+        handle = self.path.open("a+b")
+        try:
+            if os.name != "nt":
+                os.chmod(self.path, 0o600)
+        except OSError:
+            handle.close()
+            raise
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.close()
+            raise KisApiError("Another KIS token refresh is already in progress.") from exc
+        self._handle = handle
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
+        """프로세스 잠금을 해제하고 파일 핸들을 닫습니다."""
+        if self._handle is None:
+            return False
+        handle = self._handle
+        self._handle = None
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+        return False
+
+
+@dataclass(frozen=True)
+class TokenRefreshResult:
+    """호스트 갱신기의 처리 결과를 비밀값 없이 보관합니다."""
+
+    action: str
+    expires_at: datetime | None
+
+
+class KisTokenRefreshService:
+    """쿨다운 정책을 적용하고 발급된 토큰을 외부 캐시에 원자적으로 저장합니다."""
+
+    def __init__(
+        self,
+        token_cache: KisTokenCache,
+        issuer: KisTokenIssuer,
+        policy: TokenRefreshPolicy,
+        *,
+        state_store: KisTokenRefreshStateStore | None = None,
+    ) -> None:
+        if not isinstance(token_cache, KisTokenCache):
+            raise TypeError("token_cache must be a KisTokenCache.")
+        if not isinstance(policy, TokenRefreshPolicy):
+            raise TypeError("policy must be a TokenRefreshPolicy.")
+        if not callable(getattr(issuer, "issue", None)):
+            raise TypeError("issuer must provide an issue method.")
+        if state_store is not None and not isinstance(
+            state_store, KisTokenRefreshStateStore
+        ):
+            raise TypeError("state_store must be a KisTokenRefreshStateStore.")
+
+        self._token_cache = token_cache
+        self._issuer = issuer
+        self._policy = policy
+        self._state_store = state_store or KisTokenRefreshStateStore(
+            token_cache.path.with_name("refresh-state.json"),
+            project_root=token_cache.project_root,
+        )
+
+    def refresh_if_needed(
+        self,
+        *,
+        trigger: RefreshTrigger,
+        now: datetime,
+    ) -> TokenRefreshResult:
+        """정기·복구 정책 및 발급 쿨다운에 따라 토큰을 재사용하거나 교체합니다."""
+        current_time = _as_utc(now, "now")
+        lock_path = self._state_store.path.with_suffix(".lock")
+        with KisTokenRefreshLock(lock_path):
+            token = self._token_cache.load()
+            last_request_at = self._state_store.load_last_request_at()
+            refresh_due = should_refresh_access_token(
+                token,
+                trigger=trigger,
+                now=current_time,
+                policy=self._policy,
+                last_request_at=None,
+            )
+            if not refresh_due:
+                return TokenRefreshResult(
+                    action="reuse",
+                    expires_at=token.expires_at if token is not None else None,
+                )
+            if not should_refresh_access_token(
+                token,
+                trigger=trigger,
+                now=current_time,
+                policy=self._policy,
+                last_request_at=last_request_at,
+            ):
+                raise KisApiError("KIS token refresh is blocked by the 65-second cooldown.")
+
+            self._state_store.save_last_request_at(current_time)
+            refreshed_token = self._issuer.issue(now=current_time)
+            self._token_cache.save(refreshed_token)
+            return TokenRefreshResult(
+                action="refreshed",
+                expires_at=refreshed_token.expires_at,
+            )
 
 
 class KisReadOnlyClient:

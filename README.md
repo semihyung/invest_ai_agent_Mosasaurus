@@ -8,7 +8,7 @@
 
 - SQLite WAL 데이터베이스와 Phase 1 핵심 20개 및 확장용 3개 테이블의 초기화 코드를 구현했습니다.
 - Quant 엔진의 모멘텀 계산, 120일 이동평균 필터, 일봉 데이터 기본 품질 검사를 구현했습니다.
-- KIS 토큰의 외부 캐시와 갱신 정책, 모의투자 기본값의 조회 전용 REST 클라이언트를 구현했습니다. 실제 KIS 연결 검증과 토큰 발급 자동화는 아직 완료되지 않았고 주문 API는 구현하지 않았습니다.
+- 외부 토큰 캐시, KIS 모의투자 토큰 발급·갱신기, YAML 및 환경 변수 설정 로더, 조회 전용 REST 클라이언트를 구현했습니다. 실제 KIS 연결 검증과 주문 API는 아직 완료되지 않았습니다.
 - 시장 데이터 스냅샷의 TTL, 호가 스프레드, iNAV 괴리율과 검증된 기업행동 조정 규칙을 구현했습니다.
 - KIS ETF 현재가·호가·일봉·휴장일 응답 변환과 모의 응답 테스트를 추가했습니다. WebSocket 실시간 연결 및 실제 API 응답 검증은 남아 있습니다.
 - DataQualityGate가 예상 거래일, 시세 신선도, 계좌·주문·현금흐름·캘린더 및 기업행위 검증을 확인합니다. 아직 실제 주문 파이프라인과 연결되지는 않았습니다.
@@ -27,6 +27,7 @@ mosasaurus_spec_v3.7.1.md      # 유일한 설계 기준
 config/rules.yaml              # 전략 및 안전 정책 설정
 migrations/001_init_phase1.sql # Phase 1 데이터베이스 스키마
 src/db.py                      # SQLite WAL 초기화 및 검증
+src/config.py                  # YAML 설정과 런타임 환경 변수 로더
 src/kis_client.py              # 토큰 캐시 및 갱신 정책
 src/market_data.py             # 호가·iNAV 신선도와 일봉 품질 검증
 src/corporate_actions.py       # 검증된 기업행동 조정 처리
@@ -44,6 +45,7 @@ python -m unittest discover -s tests -v
 ```
 
 테스트는 가짜 데이터와 임시 파일을 사용하며 KIS에 연결하거나 주문하지 않습니다.
+의존성은 `python -m pip install -r requirements.txt`로 설치합니다. 호스트 토큰 갱신기는 외부 `.env`를 직접 읽지 않으므로 `systemd EnvironmentFile=` 등으로 `KIS_APP_KEY`, `KIS_APP_SECRET` 환경 변수를 주입한 뒤 `--trigger morning_prep` 또는 `--trigger recovery`로 실행해야 합니다. systemd 타이머 자체는 아직 구성되지 않았습니다.
 
 ## 비밀 정보 및 안전
 

@@ -13,6 +13,10 @@ from src.kis_client import (
     KisHttpResponse,
     KisReadOnlyClient,
     KisTokenCache,
+    KisTokenIssuer,
+    KisTokenRefreshLock,
+    KisTokenRefreshService,
+    KisTokenRefreshStateStore,
     RefreshTrigger,
     TokenRefreshPolicy,
     should_refresh_access_token,
@@ -192,6 +196,178 @@ class FakeKisTransport:
     def request(self, method, url, headers, body, timeout_seconds):
         self.requests.append((method, url, headers, body, timeout_seconds))
         return self.responses.pop(0)
+
+
+class KisTokenIssuerTests(unittest.TestCase):
+    """토큰 발급 요청과 응답 검증을 가짜 전송으로 확인합니다."""
+
+    def test_issues_paper_token_without_logging_credentials(self):
+        """모의투자 발급 요청과 토큰 만료 시각을 검증합니다."""
+        now = datetime(2026, 11, 22, 6, 0, tzinfo=UTC)
+        transport = FakeKisTransport(
+            [
+                KisHttpResponse(
+                    200,
+                    json.dumps(
+                        {
+                            "access_token": "FAKE_NEW_ACCESS_TOKEN",
+                            "expires_in": "86400",
+                        }
+                    ).encode("utf-8"),
+                )
+            ]
+        )
+        issuer = KisTokenIssuer(
+            "FAKE_APP_KEY",
+            "FAKE_APP_SECRET",
+            transport=transport,
+        )
+
+        token = issuer.issue(now=now)
+
+        self.assertEqual(token.issued_at, now)
+        self.assertEqual(token.expires_at, now + timedelta(hours=24))
+        method, url, headers, body, _ = transport.requests[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, KisTokenIssuer._TOKEN_URL)
+        self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
+        self.assertEqual(
+            json.loads(body),
+            {
+                "grant_type": "client_credentials",
+                "appkey": "FAKE_APP_KEY",
+                "appsecret": "FAKE_APP_SECRET",
+            },
+        )
+        self.assertNotIn("FAKE_NEW_ACCESS_TOKEN", repr(token))
+
+    def test_rejects_bad_token_response_without_echoing_response_body(self):
+        """응답 오류 본문이나 민감 문자열을 예외 메시지에 포함하지 않습니다."""
+        transport = FakeKisTransport(
+            [
+                KisHttpResponse(
+                    200,
+                    b'{"error":"FAKE_SECRET_RESPONSE","expires_in":"invalid"}',
+                )
+            ]
+        )
+        issuer = KisTokenIssuer(
+            "FAKE_APP_KEY",
+            "FAKE_APP_SECRET",
+            transport=transport,
+        )
+
+        with self.assertRaises(KisApiError) as error:
+            issuer.issue(now=datetime(2026, 11, 22, 6, 0, tzinfo=UTC))
+
+        self.assertNotIn("FAKE_SECRET_RESPONSE", str(error.exception))
+
+
+class KisTokenRefreshServiceTests(unittest.TestCase):
+    """토큰 원자적 갱신과 65초 쿨다운을 임시 경로에서 검증합니다."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = Path(self.temp_dir.name) / "workspace"
+        self.root.mkdir()
+        self.cache_path = Path(self.temp_dir.name) / "secrets" / "token.json"
+        self.cache = KisTokenCache(self.cache_path, project_root=self.root)
+        self.now = datetime(2026, 11, 22, 6, 0, tzinfo=UTC)
+        self.state_store = KisTokenRefreshStateStore(
+            self.cache_path.with_name("refresh-state.json"),
+            project_root=self.root,
+        )
+
+    def make_service(self, responses):
+        transport = FakeKisTransport(responses)
+        issuer = KisTokenIssuer(
+            "FAKE_APP_KEY",
+            "FAKE_APP_SECRET",
+            transport=transport,
+        )
+        return (
+            KisTokenRefreshService(
+                self.cache,
+                issuer,
+                POLICY,
+                state_store=self.state_store,
+            ),
+            transport,
+        )
+
+    def test_refreshes_empty_cache_and_persists_only_cooldown_metadata(self):
+        """캐시가 비었을 때 토큰을 발급하고 메타데이터에는 시각만 저장합니다."""
+        service, transport = self.make_service(
+            [
+                KisHttpResponse(
+                    200,
+                    b'{"access_token":"FAKE_NEW_ACCESS_TOKEN","expires_in":86400}',
+                )
+            ]
+        )
+
+        result = service.refresh_if_needed(
+            trigger=RefreshTrigger.RECOVERY,
+            now=self.now,
+        )
+
+        self.assertEqual(result.action, "refreshed")
+        self.assertEqual(self.cache.load().access_token, "FAKE_NEW_ACCESS_TOKEN")
+        self.assertEqual(self.state_store.load_last_request_at(), self.now)
+        state_payload = json.loads(self.state_store.path.read_text(encoding="utf-8"))
+        self.assertEqual(set(state_payload), {"last_request_at"})
+        self.assertNotIn("FAKE_NEW_ACCESS_TOKEN", self.state_store.path.read_text())
+        self.assertEqual(len(transport.requests), 1)
+
+    def test_failed_issue_keeps_cooldown_and_blocks_early_retry(self):
+        """요청 실패 후에도 65초가 지나기 전 재요청을 차단합니다."""
+        service, transport = self.make_service(
+            [KisHttpResponse(503, b'{"message":"FAKE_RESPONSE"}')]
+        )
+
+        with self.assertRaisesRegex(KisApiError, "HTTP 503") as error:
+            service.refresh_if_needed(
+                trigger=RefreshTrigger.RECOVERY,
+                now=self.now,
+            )
+        self.assertNotIn("FAKE_RESPONSE", str(error.exception))
+        with self.assertRaisesRegex(KisApiError, "65-second cooldown"):
+            service.refresh_if_needed(
+                trigger=RefreshTrigger.RECOVERY,
+                now=self.now + timedelta(seconds=64),
+            )
+
+        self.assertEqual(len(transport.requests), 1)
+        self.assertEqual(self.state_store.load_last_request_at(), self.now)
+
+    def test_refresh_lock_prevents_concurrent_refresh_attempts(self):
+        """잠금이 이미 잡혀 있으면 다른 발급 프로세스를 거부합니다."""
+        lock_path = self.state_store.path.with_suffix(".lock")
+
+        with KisTokenRefreshLock(lock_path):
+            with self.assertRaisesRegex(KisApiError, "already in progress"):
+                with KisTokenRefreshLock(lock_path):
+                    self.fail("A second process lock should not be acquired.")
+
+    def test_reuses_recent_token_without_requesting_another_token(self):
+        """갱신 시점 전의 토큰은 네트워크 요청 없이 재사용합니다."""
+        self.cache.save(
+            CachedAccessToken(
+                "FAKE_ACCESS_TOKEN",
+                self.now - timedelta(hours=1),
+                self.now + timedelta(hours=23),
+            )
+        )
+        service, transport = self.make_service([])
+
+        result = service.refresh_if_needed(
+            trigger=RefreshTrigger.MORNING_PREP,
+            now=self.now,
+        )
+
+        self.assertEqual(result.action, "reuse")
+        self.assertEqual(transport.requests, [])
 
 
 class KisReadOnlyClientTests(unittest.TestCase):
