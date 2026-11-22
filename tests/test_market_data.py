@@ -7,7 +7,9 @@ from src.corporate_actions import (
     apply_adjustment_once,
 )
 from src.market_data import (
+    DataQualityGate,
     daily_candles_from_kis,
+    DailyCandle,
     FreshnessStatus,
     IntradaySnapshot,
     freshness_status,
@@ -53,6 +55,19 @@ class MarketDataTests(unittest.TestCase):
         )
 
         self.assertFalse(validate_quote(expired, self.now))
+
+    def test_quote_with_stale_observation_is_rejected_when_received_recently(self):
+        stale_observation = IntradaySnapshot(
+            ticker="423160",
+            bid=10000,
+            ask=10010,
+            current_price=10005,
+            nav=10004.0,
+            observed_at=self.now - timedelta(seconds=16),
+            received_at=self.now,
+        )
+
+        self.assertFalse(validate_quote(stale_observation, self.now))
 
     def test_quote_above_spread_limit_is_rejected(self):
         expired = IntradaySnapshot(
@@ -176,6 +191,173 @@ class MarketDataTests(unittest.TestCase):
                 [{"stck_bsop_date": "20261120"}],
                 [{"stck_bsop_date": "20261121"}],
             )
+
+    def test_data_quality_gate_passes_only_complete_valid_inputs(self):
+        """모든 필수 데이터가 유효하면 게이트가 통과하는지 확인합니다."""
+        trade_dates = self.make_trading_dates()
+        result = self.evaluate_gate(expected_trading_dates=trade_dates)
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.failure_codes, ())
+
+    def test_data_quality_gate_rejects_missing_latest_trading_day(self):
+        """직전 거래일 종가가 빠진 시계열을 거부하는지 확인합니다."""
+        trade_dates = self.make_trading_dates()
+        result = self.evaluate_gate(
+            expected_trading_dates=trade_dates,
+            previous_trading_day=trade_dates[-1],
+            candles=self.make_candles(trade_dates[:-1] + [trade_dates[-2]]),
+        )
+
+        self.assertFalse(result.passed)
+        self.assertIn("INVALID_DAILY_HISTORY", result.failure_codes)
+
+    def test_data_quality_gate_rejects_incomplete_expected_trading_dates(self):
+        """예상 거래일 집합과 일봉 날짜가 다르면 거부하는지 확인합니다."""
+        trade_dates = self.make_trading_dates()
+        candles = self.make_candles(trade_dates)
+        candles[100] = DailyCandle(
+            ticker="423160",
+            trade_date=trade_dates[99],
+            adjusted_close=100.0,
+            volume=100,
+            raw_open=100.0,
+            raw_high=101.0,
+            raw_low=99.0,
+            raw_close=100.0,
+        )
+
+        result = self.evaluate_gate(
+            expected_trading_dates=trade_dates,
+            candles=candles,
+        )
+
+        self.assertIn("INVALID_DAILY_HISTORY", result.failure_codes)
+
+    def test_data_quality_gate_rejects_stale_market_and_account_data(self):
+        """오래된 시세와 계좌 데이터가 차단되는지 확인합니다."""
+        result = self.evaluate_gate(
+            received_at=self.now - timedelta(seconds=61),
+            account_data_fresh=False,
+        )
+
+        self.assertIn("STALE_OR_INVALID_QUOTE", result.failure_codes)
+        self.assertIn("STALE_OR_INVALID_NAV", result.failure_codes)
+        self.assertIn("STALE_ACCOUNT_DATA", result.failure_codes)
+
+    def test_data_quality_gate_rejects_unverified_actions_and_raw_adjusted_mismatch(self):
+        """가격 기준 불일치와 미검증 기업행위가 차단되는지 확인합니다."""
+        result = self.evaluate_gate(
+            raw_adjusted_history_matches=False,
+            corporate_actions_verified=False,
+        )
+
+        self.assertIn("RAW_ADJUSTED_HISTORY_MISMATCH", result.failure_codes)
+        self.assertIn("UNVERIFIED_CORPORATE_ACTION", result.failure_codes)
+
+    def test_data_quality_gate_rejects_account_order_flow_and_calendar_failures(self):
+        """계좌·주문·현금흐름·캘린더 실패가 차단되는지 확인합니다."""
+        result = self.evaluate_gate(
+            account_matched=False,
+            order_statuses=["PENDING_CONFIRMATION"],
+            cash_flow_classifications=["UNCLASSIFIED_CASH_FLOW"],
+            calendar_matches=False,
+        )
+
+        self.assertIn("ACCOUNT_MISMATCH", result.failure_codes)
+        self.assertIn("UNRESOLVED_ORDER", result.failure_codes)
+        self.assertIn("UNCLASSIFIED_CASH_FLOW", result.failure_codes)
+        self.assertIn("CALENDAR_MISMATCH", result.failure_codes)
+
+    def test_data_quality_gate_rejects_unknown_order_and_cash_flow_states(self):
+        """알 수 없는 상태값도 안전하게 거부하는지 확인합니다."""
+        result = self.evaluate_gate(
+            order_statuses=["UNKNOWN"],
+            cash_flow_classifications=["UNKNOWN"],
+        )
+
+        self.assertIn("UNKNOWN_ORDER_STATUS", result.failure_codes)
+        self.assertIn(
+            "UNKNOWN_CASH_FLOW_CLASSIFICATION",
+            result.failure_codes,
+        )
+
+    def make_trading_dates(self):
+        """테스트용 200개 거래일 목록을 생성합니다."""
+        trade_dates = []
+        current_date = date(2026, 1, 1)
+        while len(trade_dates) < 200:
+            if current_date.weekday() < 5:
+                trade_dates.append(current_date.isoformat())
+            current_date += timedelta(days=1)
+        return trade_dates
+
+    def make_candles(self, trade_dates):
+        """테스트용 유효 원주가·수정주가 일봉을 생성합니다."""
+        return [
+            DailyCandle(
+                ticker="423160",
+                trade_date=trade_date,
+                adjusted_close=100.0,
+                volume=100,
+                raw_open=100.0,
+                raw_high=101.0,
+                raw_low=99.0,
+                raw_close=100.0,
+            )
+            for trade_date in trade_dates
+        ]
+
+    def evaluate_gate(
+        self,
+        *,
+        expected_trading_dates=None,
+        candles=None,
+        received_at=None,
+        raw_adjusted_history_matches=True,
+        corporate_actions_verified=True,
+        account_data_fresh=True,
+        account_matched=True,
+        order_statuses=(),
+        cash_flow_classifications=("CONFIRMED",),
+        calendar_matches=True,
+        previous_trading_day=None,
+    ):
+        """정상 기본값에 필요한 실패 조건만 덮어써 게이트를 평가합니다."""
+        trade_dates = (
+            self.make_trading_dates()
+            if expected_trading_dates is None
+            else expected_trading_dates
+        )
+        if previous_trading_day is None:
+            previous_trading_day = trade_dates[-1]
+        if candles is None:
+            candles = self.make_candles(trade_dates)
+        timestamp = received_at or self.now
+        snapshot = IntradaySnapshot(
+            ticker="423160",
+            bid=10000,
+            ask=10010,
+            current_price=10005,
+            nav=10005.0,
+            observed_at=timestamp,
+            received_at=timestamp,
+        )
+        return DataQualityGate().evaluate(
+            now=self.now,
+            snapshot=snapshot,
+            region="KR",
+            candles=candles,
+            previous_trading_day=previous_trading_day,
+            expected_trading_dates=trade_dates,
+            raw_adjusted_history_matches=raw_adjusted_history_matches,
+            corporate_actions_verified=corporate_actions_verified,
+            account_data_fresh=account_data_fresh,
+            account_matched=account_matched,
+            order_statuses=order_statuses,
+            cash_flow_classifications=cash_flow_classifications,
+            calendar_matches=calendar_matches,
+        )
 
 
 class CorporateActionTests(unittest.TestCase):
