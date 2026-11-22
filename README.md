@@ -1,6 +1,6 @@
 # 모사사우르스 (Mosasaurus)
 
-라즈베리파이 5 기반 자동 투자 에이전트 프로젝트입니다. 개발의 유일한 설계 기준은 [개발 명세 v3.6](mosasaurus_spec_v3.6.md)이며, 명세에 정한 안전 장치와 단계별 진행 순서를 우선합니다.
+라즈베리파이 5 기반 자동 투자 에이전트 프로젝트입니다. 개발의 유일한 설계 기준은 [개발 명세 v3.7.1](mosasaurus_spec_v3.7.1.md)이며, 명세에 정한 안전 장치와 단계별 진행 순서를 우선합니다.
 
 > 이 프로젝트는 아직 개발 중이며, 수익이나 원금 보전을 보장하지 않습니다. 현재 버전은 실계좌 주문이나 자동 운용에 사용할 수 없습니다.
 
@@ -21,7 +21,7 @@
 ## 프로젝트 구조
 
 ```text
-mosasaurus_spec_v3.6.md        # 유일한 설계 기준
+mosasaurus_spec_v3.7.1.md      # 유일한 설계 기준
 config/rules.yaml              # 전략 및 안전 정책 설정
 migrations/001_init_phase1.sql # Phase 1 데이터베이스 스키마
 src/db.py                      # SQLite WAL 초기화 및 검증
@@ -47,6 +47,6 @@ python -m unittest discover -s tests -v
 
 - 실제 API 키, 계좌번호, Telegram 토큰 및 OAuth 토큰 캐시를 코드·테스트·Git에 넣지 마세요. 비밀값을 채팅으로 보내지 마세요.
 - 실제 비밀 정보는 프로젝트 폴더 밖의 `~/.secrets/mosasaurus/`에 보관합니다. `.env.example`에는 변수명만 있고 실제 값은 넣지 않습니다.
-- KIS 토큰 캐시는 프로젝트 밖에 저장해야 합니다. 기본 경로는 `~/.secrets/mosasaurus/kis_token.json`이며, 필요하면 외부 경로를 `TOKEN_CACHE_PATH` 환경변수로 지정합니다.
+- KIS 토큰 캐시는 프로젝트 밖의 `~/.secrets/mosasaurus/token-cache/token.json`에 보관합니다. 컨테이너에는 토큰 전용 디렉터리만 `/run/secrets:ro`로 마운트합니다.
 - 시장가 주문은 금지됩니다. 실계좌 주문은 명세의 최종 검증을 모두 통과하고 사용자가 별도로 승인하기 전에는 수행하지 않습니다.
 - Raspberry Pi 하드웨어는 배포·운영 검증 단계에서 필요합니다. 현재 단계에서는 모의 데이터 기반 개발과 테스트를 진행할 수 있습니다.

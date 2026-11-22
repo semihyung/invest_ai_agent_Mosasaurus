@@ -46,9 +46,12 @@ class Phase1ScenarioTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_01_timeout_never_requeues_to_submitted(self):
-        unknown = transition_order_status(OrderStatus.SUBMITTING, OrderStatus.UNKNOWN)
+        pending_confirmation = transition_order_status(
+            OrderStatus.SUBMITTING,
+            OrderStatus.PENDING_CONFIRMATION,
+        )
         with self.assertRaises(ValueError):
-            transition_order_status(unknown, OrderStatus.SUBMITTED)
+            transition_order_status(pending_confirmation, OrderStatus.CREATED)
 
     def test_02_partial_fill_is_preserved(self):
         partially_filled = transition_order_status(
@@ -65,19 +68,34 @@ class Phase1ScenarioTests(unittest.TestCase):
         self.assertEqual(result, OrderStatus.FILLED)
 
     def test_04_unresolved_exit_is_not_auto_resubmitted(self):
-        unknown = transition_order_status(OrderStatus.SUBMITTING, OrderStatus.UNKNOWN)
-        self.assertEqual(unknown, OrderStatus.UNKNOWN)
+        pending_confirmation = transition_order_status(
+            OrderStatus.SUBMITTING,
+            OrderStatus.PENDING_CONFIRMATION,
+        )
+        self.assertEqual(pending_confirmation, OrderStatus.PENDING_CONFIRMATION)
 
     def test_05_idempotency_key_database_guard(self):
         insert = """
-            INSERT INTO orders (
-                order_id, idempotency_key, ticker, side, requested_qty,
-                filled_qty, remaining_qty, order_type, order_price, status,
-                strategy_reason, submitted_at, updated_at
-            ) VALUES (?, ?, '423160', 'BUY', 1, 0, 1, 'LIMIT', 100,
-                      'PENDING', 'scenario', '2026-11-22T00:00:00Z',
-                      '2026-11-22T00:00:00Z')
+            INSERT INTO order_intents (
+                parent_intent_id, idempotency_key, cycle_id, intent_type,
+                slot_id, ticker, side, requested_qty, intent_payload_hash,
+                status, created_at, updated_at
+            ) VALUES (?, ?, 'cycle', 'STRATEGY_REBALANCE', NULL,
+                      '423160', 'BUY', 1, 'payload', 'CREATED',
+                      '2026-11-22T00:00:00Z', '2026-11-22T00:00:00Z')
         """
+        self.connection.execute(
+            """
+            INSERT INTO universe_assets (
+                ticker, name, category, region, underlying_index,
+                product_type, replication_method, status, data_status, added_at
+            ) VALUES (
+                '423160', 'Test Parking', 'SAFE_PARKING', 'KR', 'KOFR',
+                'SPOT_ETF', 'SYNTHETIC', 'ACTIVE', 'VALID',
+                '2026-11-22T00:00:00Z'
+            )
+            """
+        )
         self.connection.execute(insert, ("order-1", "same-key"))
         with self.assertRaises(sqlite3.IntegrityError):
             self.connection.execute(insert, ("order-2", "same-key"))

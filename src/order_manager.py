@@ -8,34 +8,38 @@ class OrderSide(str, Enum):
 
 
 class OrderStatus(str, Enum):
-    PENDING = "PENDING"
+    CREATED = "CREATED"
     SUBMITTING = "SUBMITTING"
-    SUBMITTED = "SUBMITTED"
-    UNKNOWN = "UNKNOWN"
+    PENDING_CONFIRMATION = "PENDING_CONFIRMATION"
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
     CANCEL_PENDING = "CANCEL_PENDING"
     CANCELED = "CANCELED"
+    CONFIRMED_NOT_ACCEPTED = "CONFIRMED_NOT_ACCEPTED"
+    EXPIRED = "EXPIRED"
 
 
 _ALLOWED_TRANSITIONS = {
-    OrderStatus.PENDING: {OrderStatus.SUBMITTING, OrderStatus.REJECTED},
-    OrderStatus.SUBMITTING: {OrderStatus.SUBMITTED, OrderStatus.UNKNOWN, OrderStatus.REJECTED},
-    OrderStatus.SUBMITTED: {
-        OrderStatus.UNKNOWN,
+    OrderStatus.CREATED: {OrderStatus.SUBMITTING, OrderStatus.EXPIRED, OrderStatus.REJECTED},
+    OrderStatus.SUBMITTING: {
+        OrderStatus.PENDING_CONFIRMATION,
         OrderStatus.ACCEPTED,
         OrderStatus.REJECTED,
-        OrderStatus.CANCEL_PENDING,
-        OrderStatus.PARTIALLY_FILLED,
-        OrderStatus.FILLED,
     },
-    OrderStatus.UNKNOWN: {OrderStatus.ACCEPTED, OrderStatus.REJECTED},
+    OrderStatus.PENDING_CONFIRMATION: {
+        OrderStatus.ACCEPTED,
+        OrderStatus.FILLED,
+        OrderStatus.REJECTED,
+        OrderStatus.CANCELED,
+        OrderStatus.CONFIRMED_NOT_ACCEPTED,
+        OrderStatus.PENDING_CONFIRMATION,
+    },
     OrderStatus.ACCEPTED: {
+        OrderStatus.CANCEL_PENDING,
         OrderStatus.PARTIALLY_FILLED,
         OrderStatus.FILLED,
-        OrderStatus.CANCEL_PENDING,
     },
     OrderStatus.PARTIALLY_FILLED: {
         OrderStatus.FILLED,
@@ -47,6 +51,7 @@ _ALLOWED_TRANSITIONS = {
         OrderStatus.PARTIALLY_FILLED,
         OrderStatus.FILLED,
     },
+    OrderStatus.CONFIRMED_NOT_ACCEPTED: {OrderStatus.SUBMITTING},
 }
 
 
@@ -104,11 +109,60 @@ def calculate_limit_price(
             raise ValueError("Emergency limit price is only valid for SELL.")
         if quote.nav is None:
             raise ValueError("Emergency sell requires NAV.")
-        return max(
-            quote.bid - 2 * tick,
-            int(quote.nav * 0.980 // tick * tick),
-        )
+        if abs((quote.bid - quote.nav) / quote.nav) > 0.020:
+            raise ValueError("Emergency sell NAV deviation exceeds 2%.")
+        return quote.bid // tick * tick
     return quote.ask if side is OrderSide.BUY else quote.bid
+
+
+def calculate_emergency_reprice(
+    quote: Quote,
+    *,
+    reprice_count: int,
+    tick: int = 10,
+) -> int | None:
+    if reprice_count < 0 or reprice_count > 5:
+        return None
+    if quote.nav is None or quote.bid <= 0 or quote.ask <= 0:
+        return None
+    if abs((quote.bid - quote.nav) / quote.nav) > 0.020:
+        return None
+    return max(0, quote.bid // tick * tick - reprice_count * tick)
+
+
+@dataclass(frozen=True)
+class RealOrderGateContext:
+    environment: str
+    operator_approval: bool
+    reconciliation_ok: bool
+    reconciliation_fresh: bool
+    unresolved_order_exists: bool
+    unclassified_cash_flow_exists: bool
+    token_valid: bool
+    calendar_valid: bool
+    quote_valid: bool
+    adjusted_data_valid: bool
+    backtest_calibrated: bool
+    mode_allows_order: bool
+    idempotency_conflict: bool
+
+
+def validate_real_order_gate(context: RealOrderGateContext) -> bool:
+    return (
+        context.environment == "REAL"
+        and context.operator_approval
+        and context.reconciliation_ok
+        and context.reconciliation_fresh
+        and not context.unresolved_order_exists
+        and not context.unclassified_cash_flow_exists
+        and context.token_valid
+        and context.calendar_valid
+        and context.quote_valid
+        and context.adjusted_data_valid
+        and context.backtest_calibrated
+        and context.mode_allows_order
+        and not context.idempotency_conflict
+    )
 
 
 def validate_spread_and_nav(

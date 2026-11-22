@@ -1,15 +1,26 @@
 project_name: "mosasaurus"
-version: "3.6.0"
-is_calibrated_by_backtest: false  # Phase 1 백테스트 완료 후 true로 변경 필수
-smoke_test_mode: false            # 실계좌 1주 주문 검증 시에만 일시적으로 true 허용
+version: "3.7.1"
+is_calibrated_by_backtest: false
+smoke_test_mode: false
+smoke_test:
+  allowed_tickers: ["423160"]
+  max_orders_per_session: 1
+  max_quantity: 1
+
+deployment:
+  environment: "PAPER"
+  require_backtest_calibration_for_real: true
+  require_reconciliation_before_orders: true
+  rollback_on_healthcheck_failure: true
 
 features:
-  enable_llm_risk_engine: false   # Phase 2 배포 시 true로 전환
-  enable_dart_collector: false    # Phase 2 배포 시 true로 전환
+  enable_llm_risk_engine: false
+  enable_dart_collector: false
 
 market:
   timezone: "Asia/Seoul"
   primary_venue: "KRX"
+  host_token_refresh_time: "08:25:00"
   morning_prep_time: "08:30:00"
   weekly_preview_day: "SAT"
   weekly_preview_time: "10:00:00"
@@ -23,25 +34,32 @@ account:
   broker: "KIS"
   account_type: "ISA"
   token_policy:
-    proactive_refresh_min_age_hours: 6    # 발급 후 6시간 경과 시 morning_prep에서 선제 갱신
-    hard_guard_before_expiry_hours: 1     # 부팅·주말·예외 시 만료 1시간 전 이내만 갱신
-    min_refresh_cooldown_seconds: 65      # 1분당 1회 제한(EGW00133) 방어 쿨다운
+    proactive_refresh_min_age_hours: 6
+    hard_guard_before_expiry_hours: 1
+    min_refresh_cooldown_seconds: 65
+
+strategy:
+  excess_return_method: "compounded_return_difference"
+  volatility_input: "daily_excess_returns"
+  volatility_ddof: 1
+  use_completed_daily_candles_only: true
+  price_basis: "adjusted"
+  live_execution_price_basis: "raw"
 
 portfolio:
-  primary_parking_ticker: "423160"  # 초기 소액 운용 기본값; 총자산 1,000만 원 이상 확장 시 459580 전환 권장
+  primary_parking_ticker: "423160"
   cash_buffer_ratio: 0.05
   slot_weights:
     S1: 0.45
     S2: 0.30
     S3: 0.20
   min_trade_amount_krw: 150000
-  min_external_deposit_detect_krw: 10000
   rebalance_drift_ratio: 0.05
   max_order_participation_rate: 0.01
   concentration:
     allow_duplicate_underlying_index: false
-    max_slots_per_region: 2       # KR 또는 US 단일 지역 최대 2슬롯 제한 (3으로 변경 시 완전 무제한)
-    max_single_stock_lookthrough_weight: 0.25  # Phase 2 활성화 시 적용
+    max_slots_per_region: 2
+    max_single_stock_lookthrough_weight: 0.25
 
 momentum:
   lookbacks: [20, 60, 120]
@@ -52,18 +70,27 @@ momentum:
     moving_average_days: 120
 
 trailing_stop:
-  normal: -0.10                   # KR/US 통합 평시 트레일링 스탑 (-10.0%)
-  training: -0.07                 # KR/US 통합 훈련 모드 스탑 (-7.0%)
+  normal: -0.10
+  training: -0.07
 
 execution:
   order_type: "LIMIT"
   allow_market_order: false
   max_spread_ratio: 0.003
   nav_deviation_limit_kr: 0.005
-  nav_deviation_limit_us: 0.012   # 미국 본장 휴장 시간대 환율/선물 괴리 반영
-  emergency_sell_nav_deviation_limit: 0.020
+  nav_deviation_limit_us: 0.012
   cancel_unfilled_at_deadline: true
   retry_unknown_order: false
+  unknown_order_policy: "PENDING_CONFIRMATION"
+  require_authoritative_not_accepted_before_retry: true
+  emergency:
+    enabled: false
+    reprice_interval_seconds: 20
+    max_reprices: 5
+    max_nav_deviation_ratio: 0.020
+    price_step_ticks: 1
+    require_fresh_bid_ask: true
+    unresolved_exit_policy: "NEXT_SESSION_RECHECK"
 
 risk:
   portfolio_drawdown:
@@ -72,6 +99,26 @@ risk:
     critical: -0.15
   block_buys_on_stale_data: true
   block_buys_on_account_mismatch: true
+  safe_halt:
+    block_new_buys: true
+    allow_account_queries: true
+    allow_reconciliation: true
+    allow_cancel_requests: true
+    allow_reduce_only_sell: true
+    require_operator_clearance: true
+
+accounting:
+  external_cash_flow_types: ["DEPOSIT", "WITHDRAWAL"]
+  investment_distribution_type: "DISTRIBUTION"
+  unclassified_cash_flow_action: "BLOCK_NEW_BUYS"
+  twr_method: "linked_subperiod_returns"
+  hwm_method: "flow_adjusted_index"
+
+security:
+  mount_secrets_directory: false
+  mount_token_file_read_only: true
+  allow_ai_agent_access_to_production_secrets: false
+  allow_untrusted_ci_access_to_production_secrets: false
 
 ttl_seconds:
   intraday_quote: 15
@@ -87,3 +134,4 @@ universe:
   reject_inverse: true
   reject_leverage: true
   reject_etn: true
+  allowlisted_synthetic_parking_tickers: ["423160", "459580"]

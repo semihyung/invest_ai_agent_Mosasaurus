@@ -85,3 +85,18 @@ def resolve_operating_mode(flags: RiskFlags) -> OperatingMode:
 def allows_risk_asset_buy(flags: RiskFlags) -> bool:
     mode = resolve_operating_mode(flags)
     return mode is OperatingMode.NORMAL
+
+
+def allows_reduce_only_sell(flags: RiskFlags) -> bool:
+    mode = resolve_operating_mode(flags)
+    return mode in (
+        OperatingMode.NORMAL,
+        OperatingMode.TRAINING,
+        OperatingMode.PAUSED,
+        OperatingMode.EMERGENCY,
+    )
+
+
+def allows_new_order(flags: RiskFlags) -> bool:
+    mode = resolve_operating_mode(flags)
+    return mode is OperatingMode.NORMAL

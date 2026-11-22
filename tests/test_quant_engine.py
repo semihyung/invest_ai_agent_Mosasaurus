@@ -25,7 +25,7 @@ class CalculateMomentumScoreTests(unittest.TestCase):
 
         score = calculate_momentum_score(prices, prices)
 
-        self.assertAlmostEqual(score, 0.0, places=12)
+        self.assertIsNone(score)
 
     def test_positive_excess_returns_have_positive_score(self):
         asset_returns = [
@@ -39,13 +39,11 @@ class CalculateMomentumScoreTests(unittest.TestCase):
             make_prices(asset_returns), make_prices(parking_returns)
         )
 
-        self.assertAlmostEqual(score, 1.3995520598981712, places=10)
+        self.assertAlmostEqual(score, 2.675418217588054, places=10)
 
     def test_low_volatility_excludes_candidate(self):
         asset_prices = make_prices([0.001] * 120)
-        parking_prices = make_prices(
-            [0.001 + (0.005 if day % 2 else -0.005) for day in range(120)]
-        )
+        parking_prices = make_prices([0.001] * 120)
 
         self.assertIsNone(calculate_momentum_score(asset_prices, parking_prices))
 
@@ -120,6 +118,20 @@ class RankCandidatesTests(unittest.TestCase):
         ranked = rank_candidates(candidates)
 
         self.assertEqual([candidate.ticker for candidate in ranked], ["C", "A"])
+
+    def test_ties_use_er120_turnover_and_ticker(self):
+        candidates = [
+            RankedCandidate("C", 0.5, 0.0, er120=0.1, avg_turnover_20d=100),
+            RankedCandidate("A", 0.5, 0.0, er120=0.1, avg_turnover_20d=200),
+            RankedCandidate("B", 0.5, 0.0, er120=0.2, avg_turnover_20d=50),
+        ]
+
+        ranked = rank_candidates(candidates)
+
+        self.assertEqual(
+            [candidate.ticker for candidate in ranked],
+            ["B", "A", "C"],
+        )
 
 
 class ValidateDailyHistoryTests(unittest.TestCase):

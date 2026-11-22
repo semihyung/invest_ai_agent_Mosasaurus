@@ -17,6 +17,7 @@ _PHASE1_TABLES = {
     "weekly_previews",
     "positions",
     "portfolio_slots",
+    "order_intents",
     "orders",
     "order_events",
     "trade_fills",
@@ -24,6 +25,13 @@ _PHASE1_TABLES = {
     "cash_flows",
     "corporate_actions",
     "system_events",
+    "schema_migrations",
+    "deployment_events",
+    "audit_events",
+    "exit_obligations",
+    "llm_logs",
+    "risk_events",
+    "pending_actions",
 }
 
 

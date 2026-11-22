@@ -1,0 +1,20 @@
+models:
+  fast: ${OPENAI_MODEL_FAST}
+  escalation: ${OPENAI_MODEL_ESCALATION}
+
+limits:
+  max_daily_events: 15
+  max_daily_requests: 20
+  max_daily_cost_usd: 0.20
+  timeout_seconds: 20
+  retry_limit: 2
+
+policy:
+  default_call_mode: "single"
+  escalation_min_confidence: 0.70
+  allow_llm_direct_order: false
+  allow_llm_force_sell: false
+  fallback_on_error: "ANALYSIS_UNAVAILABLE"
+  unavailable_action: "VETO_NEW_BUY"
+  low_confidence_action: "REVIEW_REQUIRED"
+  schema_version: "1.1"

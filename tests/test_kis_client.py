@@ -1,8 +1,10 @@
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from src.kis_client import (
     CachedAccessToken,
@@ -48,6 +50,16 @@ class KisTokenCacheTests(unittest.TestCase):
 
     def test_returns_none_when_cache_does_not_exist(self):
         self.assertIsNone(self.cache.load())
+
+    def test_default_cache_uses_external_token_directory(self):
+        environment = dict(os.environ)
+        environment.pop("TOKEN_CACHE_PATH", None)
+        with patch.dict(os.environ, environment, clear=True):
+            cache = KisTokenCache(project_root=self.root)
+        self.assertEqual(
+            cache.path,
+            Path.home() / ".secrets" / "mosasaurus" / "token-cache" / "token.json",
+        )
 
     def test_rejects_cache_inside_project_workspace(self):
         with self.assertRaisesRegex(ValueError, "outside the project workspace"):

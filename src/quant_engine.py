@@ -14,6 +14,8 @@ class RankedCandidate:
     ticker: str
     score: float
     sma_gap_ratio: float
+    er120: float = 0.0
+    avg_turnover_20d: float = 0.0
 
 
 def _validate_prices(prices: Sequence[float]) -> None:
@@ -54,11 +56,11 @@ def calculate_momentum_score(
     _validate_prices(parking_adjusted_closes)
 
     asset_returns = [
-        math.log(current) - math.log(previous)
+        (current - previous) / previous
         for previous, current in zip(adjusted_closes, adjusted_closes[1:])
     ]
     parking_returns = [
-        math.log(current) - math.log(previous)
+        (current - previous) / previous
         for previous, current in zip(
             parking_adjusted_closes, parking_adjusted_closes[1:]
         )
@@ -67,21 +69,23 @@ def calculate_momentum_score(
     weighted_scores = []
     for lookback, weight in _LOOKBACK_WEIGHTS:
         asset_window = asset_returns[-lookback:]
+        parking_window = parking_returns[-lookback:]
+        asset_compound = math.prod(1 + daily_return for daily_return in asset_window)
+        parking_compound = math.prod(1 + daily_return for daily_return in parking_window)
+        compounded_excess = asset_compound - parking_compound
         excess_window = [
             asset_return - parking_return
-            for asset_return, parking_return in zip(
-                asset_window, parking_returns[-lookback:]
-            )
+            for asset_return, parking_return in zip(asset_window, parking_window)
         ]
-        mean_return = math.fsum(asset_window) / lookback
+        mean_return = math.fsum(excess_window) / lookback
         variance = math.fsum(
-            (daily_return - mean_return) ** 2 for daily_return in asset_window
+            (daily_return - mean_return) ** 2 for daily_return in excess_window
         ) / (lookback - 1)
         volatility = math.sqrt(variance)
         if volatility < _MIN_VOLATILITY:
             return None
 
-        score = math.fsum(excess_window) / (volatility * math.sqrt(lookback))
+        score = compounded_excess / max(volatility * math.sqrt(lookback), _MIN_VOLATILITY)
         weighted_scores.append(weight * score)
 
     return math.fsum(weighted_scores)
@@ -136,4 +140,12 @@ def rank_candidates(
         if candidate.score <= 0:
             continue
         ranked.append(candidate)
-    return sorted(ranked, key=lambda candidate: candidate.score, reverse=True)
+    return sorted(
+        ranked,
+        key=lambda candidate: (
+            -candidate.score,
+            -candidate.er120,
+            -candidate.avg_turnover_20d,
+            candidate.ticker,
+        ),
+    )

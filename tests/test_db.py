@@ -16,6 +16,7 @@ PHASE1_TABLES = {
     "weekly_previews",
     "positions",
     "portfolio_slots",
+    "order_intents",
     "orders",
     "order_events",
     "trade_fills",
@@ -23,6 +24,13 @@ PHASE1_TABLES = {
     "cash_flows",
     "corporate_actions",
     "system_events",
+    "schema_migrations",
+    "deployment_events",
+    "audit_events",
+    "exit_obligations",
+    "llm_logs",
+    "risk_events",
+    "pending_actions",
 }
 
 
@@ -74,15 +82,42 @@ class DatabaseInitializationTests(unittest.TestCase):
         connection = initialize_database(self.db_path)
         self.addCleanup(connection.close)
 
+        connection.execute(
+            """
+            INSERT INTO universe_assets (
+                ticker, name, category, region, underlying_index,
+                product_type, replication_method, status, data_status, added_at
+            ) VALUES (
+                '000001', 'Test ETF', 'RISK_ASSET', 'KR', 'TEST',
+                'SPOT_ETF', 'PHYSICAL', 'ACTIVE', 'VALID',
+                '2026-01-01T00:00:00Z'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO order_intents (
+                parent_intent_id, idempotency_key, cycle_id, intent_type,
+                slot_id, ticker, side, requested_qty, intent_payload_hash,
+                status, created_at, updated_at
+            ) VALUES (
+                'intent-1', 'intent-key-1', 'cycle-1', 'STRATEGY_REBALANCE',
+                NULL, '000001', 'BUY', 1, 'payload',
+                'CREATED', '2026-01-01T00:00:00Z',
+                '2026-01-01T00:00:00Z'
+            )
+            """
+        )
+
         with self.assertRaises(sqlite3.IntegrityError):
             connection.execute(
                 """
                 INSERT INTO orders (
-                    order_id, idempotency_key, ticker, side, requested_qty,
+                    order_id, parent_intent_id, attempt_id, ticker, side, requested_qty,
                     filled_qty, remaining_qty, order_type, order_price, status,
                     strategy_reason, submitted_at, updated_at
                 ) VALUES (
-                    'order-1', 'key-1', '000001', 'BUY', 1,
+                    'order-1', 'intent-1', 'attempt-1', '000001', 'BUY', 1,
                     0, 1, 'MARKET', 100, 'PENDING',
                     'test', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
                 )

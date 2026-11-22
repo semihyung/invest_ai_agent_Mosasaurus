@@ -5,6 +5,8 @@ from src.risk_manager import (
     OperatingMode,
     RiskFlags,
     allows_risk_asset_buy,
+    allows_reduce_only_sell,
+    allows_new_order,
     calculate_drawdown,
     get_drawdown_mode,
     resolve_operating_mode,
@@ -61,6 +63,15 @@ class RiskManagerTests(unittest.TestCase):
             OperatingMode.TRAINING,
         )
         self.assertFalse(allows_risk_asset_buy(flags))
+
+    def test_reduce_only_sell_is_blocked_in_safe_halt(self):
+        flags = RiskFlags(is_safe_halt=True)
+        self.assertFalse(allows_reduce_only_sell(flags))
+
+    def test_emergency_allows_reduce_only_but_no_new_order(self):
+        flags = RiskFlags(emergency_mode=True)
+        self.assertTrue(allows_reduce_only_sell(flags))
+        self.assertFalse(allows_new_order(flags))
 
 
 if __name__ == "__main__":

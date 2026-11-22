@@ -93,7 +93,7 @@ class KisTokenCache:
             cache_path = (
                 Path(configured_path)
                 if configured_path
-                else Path.home() / ".secrets" / "mosasaurus" / "kis_token.json"
+                else Path.home() / ".secrets" / "mosasaurus" / "token-cache" / "token.json"
             )
 
         self.project_root = Path(
