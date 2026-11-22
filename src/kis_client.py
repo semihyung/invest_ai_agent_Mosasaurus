@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -210,8 +210,11 @@ class KisApiError(RuntimeError):
 
 @dataclass(frozen=True)
 class KisHttpResponse:
+    """HTTP 전송 결과의 상태 코드, 본문과 응답 헤더입니다."""
+
     status_code: int
     body: bytes
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 class KisHttpTransport(Protocol):
@@ -237,9 +240,14 @@ class UrllibKisTransport:
         request = Request(url, data=body, headers=headers, method=method)
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
-                return KisHttpResponse(response.status, response.read())
+                return KisHttpResponse(
+                    response.status,
+                    response.read(),
+                    dict(response.headers.items()),
+                )
         except HTTPError as exc:
-            return KisHttpResponse(exc.code, exc.read())
+            error_headers = dict(exc.headers.items()) if exc.headers is not None else {}
+            return KisHttpResponse(exc.code, exc.read(), error_headers)
         except (URLError, TimeoutError, OSError) as exc:
             raise KisApiError("KIS API transport failed.") from exc
 
@@ -326,6 +334,322 @@ class KisTokenIssuer:
             issued_at=issued_at,
             expires_at=issued_at + timedelta(seconds=expires_in),
         )
+
+
+@dataclass(frozen=True)
+class KisWebSocketApprovalKey:
+    """WebSocket 연결에만 사용하는 메모리 전용 접속키입니다."""
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        """빈 키와 공백이 포함된 키를 거부합니다."""
+        if not isinstance(self.value, str) or not self.value.strip():
+            raise ValueError("KIS WebSocket approval key is required.")
+        if self.value != self.value.strip():
+            raise ValueError("KIS WebSocket approval key has invalid whitespace.")
+
+
+class KisWebSocketTokenIssuer:
+    """REST 토큰 캐시와 분리된 PAPER WebSocket 접속키를 발급합니다."""
+
+    _APPROVAL_URL = "https://openapivts.koreainvestment.com:29443/oauth2/Approval"
+
+    def __init__(
+        self,
+        app_key: str,
+        app_secret: str,
+        *,
+        transport: KisHttpTransport | None = None,
+        timeout_seconds: float = 10,
+    ) -> None:
+        """모의투자 WebSocket 접속키 발급용 설정을 저장합니다."""
+        if not isinstance(app_key, str) or not app_key.strip():
+            raise ValueError("KIS app key is required.")
+        if not isinstance(app_secret, str) or not app_secret.strip():
+            raise ValueError("KIS app secret is required.")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("KIS timeout must be positive.")
+        self._app_key = app_key
+        self._app_secret = app_secret
+        self._transport = transport or UrllibKisTransport()
+        self._timeout_seconds = timeout_seconds
+
+    def issue(self) -> KisWebSocketApprovalKey:
+        """접속키를 발급하고 응답 원문은 반환하거나 기록하지 않습니다."""
+        body = json.dumps(
+            {
+                "grant_type": "client_credentials",
+                "appkey": self._app_key,
+                "secretkey": self._app_secret,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        response = self._transport.request(
+            "POST",
+            self._APPROVAL_URL,
+            {
+                "Accept": "text/plain",
+                "Content-Type": "application/json",
+            },
+            body,
+            self._timeout_seconds,
+        )
+        if not 200 <= response.status_code < 300:
+            raise KisApiError(
+                f"KIS WebSocket approval endpoint returned HTTP {response.status_code}."
+            )
+        try:
+            payload = json.loads(response.body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise KisApiError(
+                "KIS WebSocket approval endpoint returned invalid JSON."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise KisApiError(
+                "KIS WebSocket approval endpoint returned an unexpected response."
+            )
+        approval_key = payload.get("approval_key")
+        if not isinstance(approval_key, str) or not approval_key.strip():
+            raise KisApiError(
+                "KIS WebSocket approval response is missing a valid key."
+            )
+        return KisWebSocketApprovalKey(approval_key)
+
+
+@dataclass(frozen=True)
+class KisNavTick:
+    """ETF NAV 값과 로컬 수신 시각을 함께 보관합니다."""
+
+    ticker: str
+    nav: float
+    observed_at: datetime
+    received_at: datetime
+
+    def __post_init__(self) -> None:
+        """티커, NAV 값과 수신 시각의 기본 무결성을 확인합니다."""
+        if (
+            not isinstance(self.ticker, str)
+            or len(self.ticker) != 6
+            or not self.ticker.isascii()
+            or not self.ticker.isdigit()
+        ):
+            raise ValueError("KIS ticker must contain exactly six digits.")
+        if (
+            isinstance(self.nav, bool)
+            or not isinstance(self.nav, (int, float))
+            or not math.isfinite(self.nav)
+            or self.nav <= 0
+        ):
+            raise ValueError("NAV must be a positive finite number.")
+        observed_at = _as_utc(self.observed_at, "observed_at")
+        received_at = _as_utc(self.received_at, "received_at")
+        if received_at < observed_at:
+            raise ValueError("received_at must not precede observed_at.")
+        object.__setattr__(self, "observed_at", observed_at)
+        object.__setattr__(self, "received_at", received_at)
+
+
+class KisWebSocketConnection(Protocol):
+    """ETF 실시간 데이터 세션에 필요한 WebSocket 동작입니다."""
+
+    def send(self, payload: str) -> Any: ...
+
+    def recv(self) -> str | bytes: ...
+
+    def pong(self, payload: bytes = b"") -> Any: ...
+
+    def close(self) -> Any: ...
+
+
+def _connect_kis_websocket(url: str, timeout_seconds: float) -> KisWebSocketConnection:
+    """기본 WebSocket 연결을 만들며 패키지는 실제 연결 시점에만 불러옵니다."""
+    import websocket
+
+    return websocket.create_connection(
+        url,
+        timeout=timeout_seconds,
+        enable_multithread=False,
+    )
+
+
+class KisEtfNavWebSocket:
+    """PAPER 환경의 ETF NAV 채널을 구독하고 검증된 시세 틱을 반환합니다."""
+
+    _URL = "ws://ops.koreainvestment.com:31000"
+    _TR_ID = "H0STNAV0"
+
+    def __init__(
+        self,
+        approval_key: KisWebSocketApprovalKey,
+        *,
+        connection_factory: Callable[
+            [str, float], KisWebSocketConnection
+        ] | None = None,
+        timeout_seconds: float = 10,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        """메모리 전용 접속키와 모의 가능한 WebSocket 연결기를 설정합니다."""
+        if not isinstance(approval_key, KisWebSocketApprovalKey):
+            raise TypeError("approval_key must be a KisWebSocketApprovalKey.")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("KIS WebSocket timeout must be positive.")
+        self._approval_key = approval_key
+        self._connection_factory = connection_factory or _connect_kis_websocket
+        self._timeout_seconds = timeout_seconds
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._connection: KisWebSocketConnection | None = None
+        self._ticker: str | None = None
+
+    def connect(self) -> None:
+        """PAPER WebSocket 서버에 한 번만 연결합니다."""
+        if self._connection is not None:
+            raise KisApiError("KIS WebSocket is already connected.")
+        self._connection = self._connection_factory(self._URL, self._timeout_seconds)
+
+    def subscribe(self, ticker: str) -> None:
+        """지정한 ETF의 실시간 NAV 채널을 등록합니다."""
+        self._validate_ticker(ticker)
+        connection = self._require_connection()
+        if self._ticker is not None:
+            raise KisApiError("KIS WebSocket already has an active NAV subscription.")
+        connection.send(self._subscription_message(ticker, "1"))
+        self._ticker = ticker
+
+    def unsubscribe(self) -> None:
+        """현재 NAV 구독을 해제하고 활성 티커를 비웁니다."""
+        if self._ticker is None:
+            return
+        self._require_connection().send(
+            self._subscription_message(self._ticker, "2")
+        )
+        self._ticker = None
+
+    def receive_nav(self, *, received_at: datetime | None = None) -> KisNavTick:
+        """구독 확인·ping을 처리하고 다음 정상 NAV 메시지를 반환합니다."""
+        connection = self._require_connection()
+        if self._ticker is None:
+            raise KisApiError("KIS ETF NAV subscription is not active.")
+
+        while True:
+            message = connection.recv()
+            if isinstance(message, bytes):
+                try:
+                    message = message.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise KisApiError("KIS WebSocket returned invalid text data.") from exc
+            if not isinstance(message, str) or not message:
+                raise KisApiError("KIS WebSocket returned an empty or invalid message.")
+
+            if message.startswith("{"):
+                self._handle_system_message(message, connection)
+                continue
+
+            frame = message.split("|", 3)
+            if len(frame) != 4 or frame[0] not in {"0", "1"} or frame[1] != self._TR_ID:
+                raise KisApiError("KIS WebSocket returned an unexpected NAV frame.")
+            try:
+                record_count = int(frame[2])
+            except ValueError as exc:
+                raise KisApiError("KIS WebSocket returned an invalid NAV batch.") from exc
+            if record_count != 1:
+                raise KisApiError("KIS WebSocket returned an unsupported NAV batch.")
+            values = frame[3].split("^")
+            if len(values) < 2 or values[0] != self._ticker:
+                raise KisApiError("KIS WebSocket NAV ticker does not match subscription.")
+            try:
+                nav = float(values[1])
+            except ValueError as exc:
+                raise KisApiError("KIS WebSocket returned an invalid NAV value.") from exc
+            timestamp = _as_utc(
+                received_at if received_at is not None else self._now(),
+                "received_at",
+            )
+            return KisNavTick(
+                ticker=self._ticker,
+                nav=nav,
+                observed_at=timestamp,
+                received_at=timestamp,
+            )
+
+    def close(self) -> None:
+        """WebSocket 연결을 종료하고 메모리의 구독 상태를 지웁니다."""
+        connection = self._connection
+        self._connection = None
+        self._ticker = None
+        if connection is not None:
+            connection.close()
+
+    def __enter__(self) -> "KisEtfNavWebSocket":
+        """연결된 NAV 세션 컨텍스트를 시작합니다."""
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
+        """컨텍스트 종료 시 WebSocket 연결을 닫습니다."""
+        self.close()
+        return False
+
+    @staticmethod
+    def _validate_ticker(ticker: str) -> None:
+        """NAV 구독 티커가 6자리 숫자인지 확인합니다."""
+        if (
+            not isinstance(ticker, str)
+            or len(ticker) != 6
+            or not ticker.isascii()
+            or not ticker.isdigit()
+        ):
+            raise ValueError("KIS ticker must contain exactly six digits.")
+
+    def _require_connection(self) -> KisWebSocketConnection:
+        """연결 상태가 아니면 명시적 오류를 발생시킵니다."""
+        if self._connection is None:
+            raise KisApiError("KIS WebSocket is not connected.")
+        return self._connection
+
+    def _subscription_message(self, ticker: str, request_type: str) -> str:
+        """구독 프레임을 직렬화합니다."""
+        return json.dumps(
+            {
+                "header": {
+                    "approval_key": self._approval_key.value,
+                    "custtype": "P",
+                    "tr_type": request_type,
+                    "content-type": "utf-8",
+                },
+                "body": {"input": {"tr_id": self._TR_ID, "tr_key": ticker}},
+            },
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _handle_system_message(
+        message: str,
+        connection: KisWebSocketConnection,
+    ) -> None:
+        """구독 응답과 서버 ping을 민감한 메시지 내용 없이 처리합니다."""
+        try:
+            payload = json.loads(message)
+        except json.JSONDecodeError as exc:
+            raise KisApiError("KIS WebSocket returned invalid JSON.") from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("header"), dict):
+            raise KisApiError("KIS WebSocket returned an unexpected system message.")
+        if payload["header"].get("tr_id") == "PINGPONG":
+            connection.pong(message.encode("utf-8"))
+            return
+        body = payload.get("body")
+        if not isinstance(body, dict) or str(body.get("rt_cd")) != "0":
+            raise KisApiError("KIS WebSocket subscription was rejected.")
 
 
 class KisTokenRefreshStateStore:
@@ -511,6 +835,9 @@ class KisTokenRefreshService:
 
 
 class KisReadOnlyClient:
+    """PAPER 환경의 시세·계좌·체결 조회 전용 KIS REST 클라이언트입니다."""
+
+    _MAX_PAGINATION_PAGES = 20
     _BASE_URLS = {
         KisEnvironment.PAPER: "https://openapivts.koreainvestment.com:29443",
         KisEnvironment.REAL: "https://openapi.koreainvestment.com:9443",
@@ -555,6 +882,66 @@ class KisReadOnlyClient:
         self._timeout_seconds = timeout_seconds
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._holiday_cache: dict[date, bool] = {}
+
+    def fetch_account_balance(
+        self,
+        account_number: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """PAPER 계좌의 보유 종목과 잔고 요약을 모든 페이지에서 조회합니다."""
+        cano, acnt_prdt_cd = self._split_account_number(account_number)
+        return self._get_paginated(
+            "/uapi/domestic-stock/v1/trading/inquire-balance",
+            "VTTC8434R",
+            {
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "AFHR_FLPR_YN": "N",
+                "OFL_YN": "",
+                "INQR_DVSN": "02",
+                "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "N",
+                "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "00",
+                "CTX_AREA_FK100": "",
+                "CTX_AREA_NK100": "",
+            },
+            list_key="output1",
+            summary_key="output2",
+        )
+
+    def fetch_daily_order_executions(
+        self,
+        account_number: str,
+        trade_date: date,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """PAPER 계좌의 지정 거래일 주문·체결·미체결 내역을 모두 조회합니다."""
+        cano, acnt_prdt_cd = self._split_account_number(account_number)
+        if not isinstance(trade_date, date) or isinstance(trade_date, datetime):
+            raise ValueError("trade_date must be a date value.")
+        date_string = trade_date.strftime("%Y%m%d")
+        return self._get_paginated(
+            "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            "VTTC0081R",
+            {
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "INQR_STRT_DT": date_string,
+                "INQR_END_DT": date_string,
+                "SLL_BUY_DVSN_CD": "00",
+                "PDNO": "",
+                "CCLD_DVSN": "00",
+                "INQR_DVSN": "00",
+                "INQR_DVSN_3": "00",
+                "ORD_GNO_BRNO": "",
+                "ODNO": "",
+                "INQR_DVSN_1": "",
+                "EXCG_ID_DVSN_CD": "KRX",
+                "CTX_AREA_FK100": "",
+                "CTX_AREA_NK100": "",
+            },
+            list_key="output1",
+            summary_key="output2",
+        )
 
     def fetch_etf_quote(self, ticker: str) -> dict[str, Any]:
         self._validate_ticker(ticker)
@@ -651,8 +1038,22 @@ class KisReadOnlyClient:
 
     @staticmethod
     def _validate_ticker(ticker: str) -> None:
-        if not isinstance(ticker, str) or len(ticker) != 6 or not ticker.isdigit():
+        if (
+            not isinstance(ticker, str)
+            or len(ticker) != 6
+            or not ticker.isascii()
+            or not ticker.isdigit()
+        ):
             raise ValueError("KIS ticker must contain exactly six digits.")
+
+    @staticmethod
+    def _split_account_number(account_number: str) -> tuple[str, str]:
+        """KIS 계좌번호 10자리를 CANO 8자리와 상품코드 2자리로 분리합니다."""
+        if not isinstance(account_number, str) or len(account_number) != 10:
+            raise ValueError("KIS account number must contain exactly ten digits.")
+        if not account_number.isascii() or not account_number.isdigit():
+            raise ValueError("KIS account number must contain exactly ten digits.")
+        return account_number[:8], account_number[8:]
 
     @staticmethod
     def _mapping_output(payload: dict[str, Any], key: str) -> dict[str, Any]:
@@ -668,12 +1069,99 @@ class KisReadOnlyClient:
             raise KisApiError(f"KIS response is missing list output '{key}'.")
         return value
 
+    def _get_paginated(
+        self,
+        path: str,
+        transaction_id: str,
+        params: dict[str, str],
+        *,
+        list_key: str,
+        summary_key: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """KIS 연속조회 표식을 확인하며 페이지 누락 없이 결과를 모읍니다."""
+        query = dict(params)
+        rows: list[dict[str, Any]] = []
+        summary: dict[str, Any] = {}
+        seen_cursors: set[tuple[str, str]] = set()
+        continuation = ""
+
+        for _ in range(self._MAX_PAGINATION_PAGES):
+            payload, response_headers = self._get_page(
+                path,
+                transaction_id,
+                query,
+                tr_cont=continuation,
+            )
+            rows.extend(self._list_output(payload, list_key))
+            summary = self._mapping_output(payload, summary_key)
+            response_continuation = self._header_value(
+                response_headers,
+                "tr_cont",
+            )
+            if response_continuation not in {"M", "F"}:
+                return rows, summary
+
+            next_fk = payload.get(
+                "ctx_area_fk100",
+                payload.get("CTX_AREA_FK100"),
+            )
+            next_nk = payload.get(
+                "ctx_area_nk100",
+                payload.get("CTX_AREA_NK100"),
+            )
+            if (
+                not isinstance(next_fk, str)
+                or not isinstance(next_nk, str)
+                or not next_fk
+                or not next_nk
+            ):
+                raise KisApiError("KIS pagination response is missing its cursor.")
+            cursor = (next_fk, next_nk)
+            if cursor in seen_cursors:
+                raise KisApiError("KIS pagination returned a repeated cursor.")
+            seen_cursors.add(cursor)
+            query["CTX_AREA_FK100"] = next_fk
+            query["CTX_AREA_NK100"] = next_nk
+            continuation = "N"
+
+        raise KisApiError("KIS pagination exceeded the configured page limit.")
+
+    @staticmethod
+    def _header_value(headers: Mapping[str, str], name: str) -> str:
+        """대소문자를 구분하지 않고 응답 헤더 값을 안전하게 찾습니다."""
+        for header_name, value in headers.items():
+            if (
+                isinstance(header_name, str)
+                and header_name.lower().replace("-", "_")
+                == name.lower().replace("-", "_")
+            ):
+                return value.upper() if isinstance(value, str) else ""
+        return ""
+
     def _get(
         self,
         path: str,
         transaction_id: str,
         params: dict[str, str],
     ) -> dict[str, Any]:
+        """KIS GET 응답의 JSON 본문을 검증해 반환합니다."""
+        payload, _ = self._get_page(
+            path,
+            transaction_id,
+            params,
+            tr_cont="",
+        )
+        return payload
+
+    def _get_page(
+        self,
+        path: str,
+        transaction_id: str,
+        params: dict[str, str],
+        *,
+        tr_cont: str,
+    ) -> tuple[dict[str, Any], Mapping[str, str]]:
+        """KIS GET 한 페이지를 호출하고 검증된 본문과 응답 헤더를 반환합니다."""
         token = self._token_cache.load()
         if token is None or _as_utc(self._now(), "now") >= token.expires_at:
             raise KisApiError("KIS access token is unavailable or expired.")
@@ -689,6 +1177,7 @@ class KisReadOnlyClient:
                 "appsecret": self._app_secret,
                 "custtype": "P",
                 "tr_id": transaction_id,
+                "tr_cont": tr_cont,
             },
             None,
             self._timeout_seconds,
@@ -705,4 +1194,6 @@ class KisReadOnlyClient:
             error_code = payload.get("msg_cd")
             safe_code = error_code if isinstance(error_code, str) else "unknown"
             raise KisApiError(f"KIS API rejected the request (code={safe_code}).")
-        return payload
+        if not isinstance(response.headers, Mapping):
+            raise KisApiError("KIS API returned invalid response headers.")
+        return payload, response.headers

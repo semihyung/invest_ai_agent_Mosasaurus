@@ -26,6 +26,8 @@ class IntradaySnapshot:
     nav: float | None
     observed_at: datetime
     received_at: datetime
+    nav_observed_at: datetime | None = None
+    nav_received_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.ticker, str) or not self.ticker.strip():
@@ -42,10 +44,34 @@ class IntradaySnapshot:
             or self.nav <= 0
         ):
             raise ValueError("NAV must be positive.")
-        object.__setattr__(self, "observed_at", _utc(self.observed_at, "observed_at"))
-        object.__setattr__(self, "received_at", _utc(self.received_at, "received_at"))
-        if self.received_at < self.observed_at:
+        observed_at = _utc(self.observed_at, "observed_at")
+        received_at = _utc(self.received_at, "received_at")
+        if (self.nav_observed_at is None) != (self.nav_received_at is None):
+            raise ValueError("Both NAV timestamps must be provided together.")
+        if self.nav is not None and self.nav_observed_at is None:
+            raise ValueError("NAV timestamps are required when NAV is present.")
+        nav_observed_at = (
+            _utc(self.nav_observed_at, "nav_observed_at")
+            if self.nav_observed_at is not None
+            else None
+        )
+        nav_received_at = (
+            _utc(self.nav_received_at, "nav_received_at")
+            if self.nav_received_at is not None
+            else None
+        )
+        if received_at < observed_at:
             raise ValueError("received_at must not precede observed_at.")
+        if (
+            nav_observed_at is not None
+            and nav_received_at is not None
+            and nav_received_at < nav_observed_at
+        ):
+            raise ValueError("nav_received_at must not precede nav_observed_at.")
+        object.__setattr__(self, "observed_at", observed_at)
+        object.__setattr__(self, "received_at", received_at)
+        object.__setattr__(self, "nav_observed_at", nav_observed_at)
+        object.__setattr__(self, "nav_received_at", nav_received_at)
 
 
 def freshness_status(
@@ -78,7 +104,8 @@ def validate_quote(
 ) -> bool:
     """관측·수신 시각, 양방향 호가 및 스프레드 한도를 검증합니다."""
     if (
-        freshness_status(snapshot.observed_at, now, ttl_seconds) is FreshnessStatus.STALE
+        freshness_status(snapshot.observed_at, now, ttl_seconds)
+        is FreshnessStatus.STALE
         or freshness_status(snapshot.received_at, now, ttl_seconds)
         is FreshnessStatus.STALE
     ):
@@ -101,12 +128,17 @@ def validate_nav_deviation(
 ) -> bool:
     """NAV 신선도와 지역별 시세 괴리 한도를 검증합니다."""
     if (
-        freshness_status(snapshot.observed_at, now, ttl_seconds) is FreshnessStatus.STALE
-        or freshness_status(snapshot.received_at, now, ttl_seconds)
-        is FreshnessStatus.STALE
+        snapshot.nav is None
+        or snapshot.nav_observed_at is None
+        or snapshot.nav_received_at is None
     ):
         return False
-    if snapshot.nav is None:
+    if (
+        freshness_status(snapshot.nav_observed_at, now, ttl_seconds)
+        is FreshnessStatus.STALE
+        or freshness_status(snapshot.nav_received_at, now, ttl_seconds)
+        is FreshnessStatus.STALE
+    ):
         return False
     limit = 0.005 if region == "KR" else 0.012 if region == "US" else None
     if limit is None:
@@ -185,6 +217,8 @@ def snapshot_from_kis_records(
     nav: float | None,
     observed_at: datetime,
     received_at: datetime,
+    nav_observed_at: datetime | None = None,
+    nav_received_at: datetime | None = None,
 ) -> IntradaySnapshot:
     if not isinstance(quote_output, Mapping) or not isinstance(orderbook_output, Mapping):
         raise TypeError("KIS quote and orderbook outputs must be mappings.")
@@ -196,6 +230,8 @@ def snapshot_from_kis_records(
         nav=nav,
         observed_at=observed_at,
         received_at=received_at,
+        nav_observed_at=nav_observed_at,
+        nav_received_at=nav_received_at,
     )
 
 

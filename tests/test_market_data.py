@@ -34,6 +34,8 @@ class MarketDataTests(unittest.TestCase):
             nav=10004.0,
             observed_at=self.now,
             received_at=self.now,
+            nav_observed_at=self.now,
+            nav_received_at=self.now,
         )
 
     def test_quote_is_fresh_and_within_spread_limit(self):
@@ -52,6 +54,8 @@ class MarketDataTests(unittest.TestCase):
             nav=10004.0,
             observed_at=self.now - timedelta(seconds=16),
             received_at=self.now - timedelta(seconds=16),
+            nav_observed_at=self.now - timedelta(seconds=16),
+            nav_received_at=self.now - timedelta(seconds=16),
         )
 
         self.assertFalse(validate_quote(expired, self.now))
@@ -65,6 +69,8 @@ class MarketDataTests(unittest.TestCase):
             nav=10004.0,
             observed_at=self.now - timedelta(seconds=16),
             received_at=self.now,
+            nav_observed_at=self.now,
+            nav_received_at=self.now,
         )
 
         self.assertFalse(validate_quote(stale_observation, self.now))
@@ -78,6 +84,8 @@ class MarketDataTests(unittest.TestCase):
             nav=10500.0,
             observed_at=self.now,
             received_at=self.now,
+            nav_observed_at=self.now,
+            nav_received_at=self.now,
         )
 
         self.assertFalse(validate_quote(expired, self.now))
@@ -99,6 +107,8 @@ class MarketDataTests(unittest.TestCase):
             nav=10000.0,
             observed_at=self.now,
             received_at=self.now,
+            nav_observed_at=self.now,
+            nav_received_at=self.now,
         )
         self.assertTrue(
             validate_nav_deviation(us_snapshot, self.now, region="US")
@@ -113,11 +123,43 @@ class MarketDataTests(unittest.TestCase):
                     nav=10000.0,
                     observed_at=self.now,
                     received_at=self.now,
+                    nav_observed_at=self.now,
+                    nav_received_at=self.now,
                 ),
                 self.now,
                 region="US",
             )
         )
+
+    def test_nav_uses_its_own_freshness_timestamps(self):
+        snapshot = IntradaySnapshot(
+            ticker="423160",
+            bid=10000,
+            ask=10010,
+            current_price=10005,
+            nav=10004.0,
+            observed_at=self.now,
+            received_at=self.now,
+            nav_observed_at=self.now - timedelta(seconds=61),
+            nav_received_at=self.now - timedelta(seconds=61),
+        )
+
+        self.assertTrue(validate_quote(snapshot, self.now))
+        self.assertFalse(
+            validate_nav_deviation(snapshot, self.now, region="KR")
+        )
+
+    def test_nav_requires_independent_source_timestamps(self):
+        with self.assertRaisesRegex(ValueError, "NAV timestamps are required"):
+            IntradaySnapshot(
+                ticker="423160",
+                bid=10000,
+                ask=10010,
+                current_price=10005,
+                nav=10004.0,
+                observed_at=self.now,
+                received_at=self.now,
+            )
 
     def test_snapshot_maps_kis_quote_and_best_orderbook_fields(self):
         snapshot = snapshot_from_kis_records(
@@ -127,12 +169,16 @@ class MarketDataTests(unittest.TestCase):
             nav=10004.0,
             observed_at=self.now,
             received_at=self.now,
+            nav_observed_at=self.now - timedelta(seconds=10),
+            nav_received_at=self.now - timedelta(seconds=8),
         )
 
         self.assertEqual(
             (snapshot.bid, snapshot.ask, snapshot.current_price, snapshot.nav),
             (10000, 10010, 10005, 10004.0),
         )
+        self.assertEqual(snapshot.nav_observed_at, self.now - timedelta(seconds=10))
+        self.assertEqual(snapshot.nav_received_at, self.now - timedelta(seconds=8))
 
     def test_snapshot_rejects_non_integer_or_missing_quote_fields(self):
         with self.assertRaisesRegex(ValueError, "positive integer"):
@@ -342,6 +388,8 @@ class MarketDataTests(unittest.TestCase):
             nav=10005.0,
             observed_at=timestamp,
             received_at=timestamp,
+            nav_observed_at=timestamp,
+            nav_received_at=timestamp,
         )
         return DataQualityGate().evaluate(
             now=self.now,

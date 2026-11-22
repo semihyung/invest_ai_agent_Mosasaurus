@@ -4,19 +4,24 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 from src.kis_client import (
     CachedAccessToken,
     KisApiError,
+    KisEtfNavWebSocket,
     KisEnvironment,
     KisHttpResponse,
+    KisNavTick,
     KisReadOnlyClient,
     KisTokenCache,
     KisTokenIssuer,
     KisTokenRefreshLock,
     KisTokenRefreshService,
     KisTokenRefreshStateStore,
+    KisWebSocketApprovalKey,
+    KisWebSocketTokenIssuer,
     RefreshTrigger,
     TokenRefreshPolicy,
     should_refresh_access_token,
@@ -263,6 +268,158 @@ class KisTokenIssuerTests(unittest.TestCase):
         self.assertNotIn("FAKE_SECRET_RESPONSE", str(error.exception))
 
 
+class KisWebSocketTokenIssuerTests(unittest.TestCase):
+    """WebSocket 접속키를 REST 토큰과 분리해 발급하는지 검증합니다."""
+
+    def test_issues_paper_approval_key_without_persisting_it(self):
+        """PAPER 승인키 발급 요청과 비밀이 숨겨진 객체 표현을 확인합니다."""
+        transport = FakeKisTransport(
+            [
+                KisHttpResponse(
+                    200,
+                    b'{"approval_key":"FAKE_WS_APPROVAL_KEY"}',
+                )
+            ]
+        )
+        issuer = KisWebSocketTokenIssuer(
+            "FAKE_APP_KEY",
+            "FAKE_APP_SECRET",
+            transport=transport,
+        )
+
+        approval_key = issuer.issue()
+
+        self.assertNotIn("FAKE_WS_APPROVAL_KEY", repr(approval_key))
+        method, url, headers, body, _ = transport.requests[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, KisWebSocketTokenIssuer._APPROVAL_URL)
+        self.assertEqual(
+            json.loads(body),
+            {
+                "grant_type": "client_credentials",
+                "appkey": "FAKE_APP_KEY",
+                "secretkey": "FAKE_APP_SECRET",
+            },
+        )
+        self.assertEqual(headers["Content-Type"], "application/json")
+
+    def test_rejects_bad_approval_response_without_echoing_body(self):
+        """잘못된 응답의 원문을 오류 메시지에 포함하지 않습니다."""
+        transport = FakeKisTransport(
+            [KisHttpResponse(200, b'{"error":"FAKE_WS_RESPONSE"}')]
+        )
+        issuer = KisWebSocketTokenIssuer(
+            "FAKE_APP_KEY",
+            "FAKE_APP_SECRET",
+            transport=transport,
+        )
+
+        with self.assertRaises(KisApiError) as error:
+            issuer.issue()
+
+        self.assertNotIn("FAKE_WS_RESPONSE", str(error.exception))
+
+
+class FakeKisWebSocketConnection:
+    """테스트 중 수신 프레임과 전송 프레임을 메모리에서 기록합니다."""
+
+    def __init__(self, messages):
+        self.messages = list(messages)
+        self.sent = []
+        self.pongs = []
+        self.closed = False
+
+    def send(self, payload):
+        self.sent.append(payload)
+
+    def recv(self):
+        return self.messages.pop(0)
+
+    def pong(self, payload=b""):
+        self.pongs.append(payload)
+
+    def close(self):
+        self.closed = True
+
+
+class KisEtfNavWebSocketTests(unittest.TestCase):
+    """PAPER NAV 구독, ping 응답과 데이터 검증을 가짜 소켓으로 테스트합니다."""
+
+    def test_subscribes_and_parses_timestamped_nav_tick(self):
+        """NAV 프레임의 티커·값·수신 시각을 검증해 변환합니다."""
+        received_at = datetime(2026, 11, 22, 6, 0, tzinfo=UTC)
+        connection = FakeKisWebSocketConnection(
+            [
+                '{"header":{"tr_id":"PINGPONG"}}',
+                '{"header":{"tr_id":"H0STNAV0"},"body":{"rt_cd":"0"}}',
+                "0|H0STNAV0|001|423160^10005.25^0^0^0^0^0^0^0^0^0",
+            ]
+        )
+        connection_calls = []
+
+        def make_connection(url, timeout_seconds):
+            connection_calls.append((url, timeout_seconds))
+            return connection
+
+        stream = KisEtfNavWebSocket(
+            KisWebSocketApprovalKey("FAKE_WS_APPROVAL_KEY"),
+            connection_factory=make_connection,
+            now=lambda: received_at,
+        )
+        stream.connect()
+        stream.subscribe("423160")
+
+        tick = stream.receive_nav()
+
+        self.assertEqual(
+            connection_calls,
+            [(KisEtfNavWebSocket._URL, 10)],
+        )
+        self.assertEqual(
+            json.loads(connection.sent[0]),
+            {
+                "header": {
+                    "approval_key": "FAKE_WS_APPROVAL_KEY",
+                    "custtype": "P",
+                    "tr_type": "1",
+                    "content-type": "utf-8",
+                },
+                "body": {"input": {"tr_id": "H0STNAV0", "tr_key": "423160"}},
+            },
+        )
+        self.assertEqual(connection.pongs, [b'{"header":{"tr_id":"PINGPONG"}}'])
+        self.assertEqual(
+            tick,
+            KisNavTick(
+                ticker="423160",
+                nav=10005.25,
+                observed_at=received_at,
+                received_at=received_at,
+            ),
+        )
+
+        stream.unsubscribe()
+        self.assertEqual(json.loads(connection.sent[1])["header"]["tr_type"], "2")
+        stream.close()
+        self.assertTrue(connection.closed)
+
+    def test_rejects_unexpected_ticker_and_unsubscribed_receive(self):
+        """구독하지 않은 종목이나 비활성 세션을 fail-closed로 거부합니다."""
+        connection = FakeKisWebSocketConnection(
+            ["0|H0STNAV0|1|459580^10005.25^0^0^0^0^0^0^0^0^0"]
+        )
+        stream = KisEtfNavWebSocket(
+            KisWebSocketApprovalKey("FAKE_WS_APPROVAL_KEY"),
+            connection_factory=lambda _url, _timeout: connection,
+        )
+        stream.connect()
+        with self.assertRaisesRegex(KisApiError, "not active"):
+            stream.receive_nav()
+        stream.subscribe("423160")
+        with self.assertRaisesRegex(KisApiError, "does not match"):
+            stream.receive_nav()
+
+
 class KisTokenRefreshServiceTests(unittest.TestCase):
     """토큰 원자적 갱신과 65초 쿨다운을 임시 경로에서 검증합니다."""
 
@@ -401,8 +558,12 @@ class KisReadOnlyClientTests(unittest.TestCase):
         return client, transport
 
     @staticmethod
-    def response(payload, status_code=200):
-        return KisHttpResponse(status_code, json.dumps(payload).encode("utf-8"))
+    def response(payload, status_code=200, headers=None):
+        return KisHttpResponse(
+            status_code,
+            json.dumps(payload).encode("utf-8"),
+            headers or {},
+        )
 
     def test_etf_quote_uses_paper_read_only_endpoint(self):
         client, transport = self.make_client(
@@ -438,6 +599,102 @@ class KisReadOnlyClientTests(unittest.TestCase):
         self.assertEqual(len(transport.requests), 2)
         self.assertIn("FID_ORG_ADJ_PRC=0", transport.requests[0][1])
         self.assertIn("FID_ORG_ADJ_PRC=0", transport.requests[1][1])
+
+    def test_account_balance_follows_all_pages_and_splits_account_number(self):
+        """잔고 조회가 8-2 계좌 분리와 KIS 연속조회 커서를 적용합니다."""
+        client, transport = self.make_client(
+            [
+                self.response(
+                    {
+                        "rt_cd": "0",
+                        "output1": [{"pdno": "423160"}],
+                        "output2": {"dnca_tot_amt": "1000000"},
+                        "ctx_area_fk100": "FAKE_FK",
+                        "ctx_area_nk100": "FAKE_NK",
+                    },
+                    headers={"tr_cont": "M"},
+                ),
+                self.response(
+                    {
+                        "rt_cd": "0",
+                        "output1": [{"pdno": "459580"}],
+                        "output2": {"dnca_tot_amt": "1000000"},
+                    },
+                    headers={"tr_cont": "D"},
+                ),
+            ]
+        )
+
+        positions, summary = client.fetch_account_balance("1234567801")
+
+        self.assertEqual([row["pdno"] for row in positions], ["423160", "459580"])
+        self.assertEqual(summary["dnca_tot_amt"], "1000000")
+        self.assertEqual(transport.requests[0][2]["tr_id"], "VTTC8434R")
+        self.assertEqual(transport.requests[0][2]["tr_cont"], "")
+        self.assertEqual(transport.requests[1][2]["tr_cont"], "N")
+        first_query = parse_qs(urlsplit(transport.requests[0][1]).query)
+        next_query = parse_qs(urlsplit(transport.requests[1][1]).query)
+        self.assertEqual(first_query["CANO"], ["12345678"])
+        self.assertEqual(first_query["ACNT_PRDT_CD"], ["01"])
+        self.assertEqual(next_query["CTX_AREA_FK100"], ["FAKE_FK"])
+        self.assertEqual(next_query["CTX_AREA_NK100"], ["FAKE_NK"])
+
+    def test_daily_order_executions_uses_paper_read_only_endpoint(self):
+        """주문·체결 조회는 PAPER 전용 TR과 단일 거래일을 사용합니다."""
+        client, transport = self.make_client(
+            [
+                self.response(
+                    {
+                        "rt_cd": "0",
+                        "output1": [{"odno": "FAKE_ORDER", "rmn_qty": "0"}],
+                        "output2": {"tot_ord_qty": "1"},
+                    }
+                )
+            ]
+        )
+
+        orders, summary = client.fetch_daily_order_executions(
+            "1234567801",
+            date(2026, 11, 20),
+        )
+
+        self.assertEqual(orders[0]["odno"], "FAKE_ORDER")
+        self.assertEqual(summary["tot_ord_qty"], "1")
+        self.assertEqual(transport.requests[0][2]["tr_id"], "VTTC0081R")
+        query = parse_qs(urlsplit(transport.requests[0][1]).query)
+        self.assertEqual(query["CANO"], ["12345678"])
+        self.assertEqual(query["ACNT_PRDT_CD"], ["01"])
+        self.assertEqual(query["INQR_STRT_DT"], ["20261120"])
+        self.assertEqual(query["INQR_END_DT"], ["20261120"])
+        self.assertEqual(query["CCLD_DVSN"], ["00"])
+        self.assertIsNone(transport.requests[0][3])
+
+    def test_account_queries_reject_invalid_account_number_before_network(self):
+        """잘못된 계좌번호는 어떤 네트워크 요청보다 먼저 거부합니다."""
+        client, transport = self.make_client([])
+
+        with self.assertRaisesRegex(ValueError, "exactly ten digits"):
+            client.fetch_account_balance("1234")
+
+        self.assertEqual(transport.requests, [])
+
+    def test_pagination_missing_cursor_fails_closed(self):
+        """추가 페이지 표시는 있지만 커서가 없으면 부분 결과를 거부합니다."""
+        client, _ = self.make_client(
+            [
+                self.response(
+                    {
+                        "rt_cd": "0",
+                        "output1": [],
+                        "output2": {},
+                    },
+                    headers={"tr_cont": "M"},
+                )
+            ]
+        )
+
+        with self.assertRaisesRegex(KisApiError, "missing its cursor"):
+            client.fetch_account_balance("1234567801")
 
     def test_kis_error_is_explicit_and_does_not_expose_message_text(self):
         client, _ = self.make_client(
