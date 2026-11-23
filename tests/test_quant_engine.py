@@ -2,7 +2,9 @@ import math
 import unittest
 
 from src.quant_engine import (
+    CandidateProfile,
     RankedCandidate,
+    assess_risk_candidate,
     calculate_momentum_score,
     is_above_sma120,
     passes_momentum_trend_filter,
@@ -25,7 +27,7 @@ class CalculateMomentumScoreTests(unittest.TestCase):
 
         score = calculate_momentum_score(prices, prices)
 
-        self.assertIsNone(score)
+        self.assertAlmostEqual(score, 0.0, places=12)
 
     def test_positive_excess_returns_have_positive_score(self):
         asset_returns = [
@@ -41,11 +43,28 @@ class CalculateMomentumScoreTests(unittest.TestCase):
 
         self.assertAlmostEqual(score, 2.675418217588054, places=10)
 
-    def test_low_volatility_excludes_candidate(self):
+    def test_volatility_floor_is_used_instead_of_excluding_low_volatility(self):
         asset_prices = make_prices([0.001] * 120)
         parking_prices = make_prices([0.001] * 120)
 
-        self.assertIsNone(calculate_momentum_score(asset_prices, parking_prices))
+        self.assertAlmostEqual(
+            calculate_momentum_score(asset_prices, parking_prices),
+            0.0,
+            places=12,
+        )
+
+    def test_zero_excess_volatility_uses_configured_denominator_floor(self):
+        asset_prices = make_prices([0.003] * 120)
+        parking_prices = make_prices([0.001] * 120)
+
+        score = calculate_momentum_score(
+            asset_prices,
+            parking_prices,
+            min_volatility_floor=0.01,
+        )
+
+        self.assertGreater(score, 0)
+        self.assertTrue(math.isfinite(score))
 
     def test_rejects_mismatched_history_lengths(self):
         prices = make_prices([0.01 if day % 2 else -0.01 for day in range(120)])
@@ -132,6 +151,113 @@ class RankCandidatesTests(unittest.TestCase):
             [candidate.ticker for candidate in ranked],
             ["B", "A", "C"],
         )
+
+    def test_rejects_non_finite_tie_breaker_values(self):
+        with self.assertRaisesRegex(ValueError, "ER120"):
+            rank_candidates([RankedCandidate("A", 0.1, 0, er120=math.nan)])
+
+        with self.assertRaisesRegex(ValueError, "turnover"):
+            rank_candidates(
+                [RankedCandidate("A", 0.1, 0, avg_turnover_20d=math.inf)]
+            )
+
+
+class CandidateEligibilityTests(unittest.TestCase):
+    """명세서의 6단계 후보 필터 결과를 검증합니다."""
+
+    def make_profile(self, **overrides):
+        """테스트 기본 조건을 만족하는 가짜 후보 정보를 만듭니다."""
+        values = {
+            "ticker": "423161",
+            "category": "RISK_ASSET",
+            "status": "ACTIVE",
+            "data_status": "VALID",
+            "product_type": "SPOT_ETF",
+            "is_leveraged": False,
+            "is_inverse": False,
+            "is_futures": False,
+            "is_etn": False,
+            "adjusted_closes": make_prices([0.003] * 199),
+            "parking_adjusted_closes": make_prices([0.001] * 199),
+            "avg_turnover_20d": 6_000_000_000,
+            "estimated_order_amount": 10_000_000,
+            "currently_held": False,
+            "blocked_until_next_rotation": False,
+        }
+        values.update(overrides)
+        return CandidateProfile(**values)
+
+    def test_eligible_candidate_passes_all_six_filters(self):
+        result = assess_risk_candidate(self.make_profile())
+
+        self.assertIsNotNone(result.candidate)
+        self.assertTrue(result.eligible_for_new_entry)
+        self.assertIsNone(result.failed_filter)
+
+    def test_rejects_inactive_or_derivative_products_at_first_filter(self):
+        inactive = assess_risk_candidate(self.make_profile(status="REMOVED"))
+        leveraged = assess_risk_candidate(self.make_profile(is_leveraged=True))
+
+        self.assertEqual(inactive.failed_filter, 1)
+        self.assertEqual(inactive.rejection_code, "INACTIVE")
+        self.assertEqual(leveraged.rejection_code, "INELIGIBLE_PRODUCT")
+
+    def test_rejects_insufficient_history_and_invalid_daily_returns(self):
+        insufficient = assess_risk_candidate(
+            self.make_profile(
+                adjusted_closes=[100.0] * 199,
+                parking_adjusted_closes=[100.0] * 199,
+            )
+        )
+        self.assertEqual(insufficient.rejection_code, "INSUFFICIENT_HISTORY")
+        with self.assertRaisesRegex(ValueError, "30% data-quality limit"):
+            assess_risk_candidate(
+                self.make_profile(
+                    adjusted_closes=[100.0] * 199 + [131.0],
+                    parking_adjusted_closes=[100.0] * 200,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "30% data-quality limit"):
+            assess_risk_candidate(
+                self.make_profile(
+                    parking_adjusted_closes=[100.0] * 199 + [131.0]
+                )
+            )
+
+    def test_low_liquidity_blocks_entry_without_forcing_held_candidate_out(self):
+        new_entry = assess_risk_candidate(
+            self.make_profile(avg_turnover_20d=4_000_000_000)
+        )
+        held_position = assess_risk_candidate(
+            self.make_profile(
+                avg_turnover_20d=4_000_000_000,
+                currently_held=True,
+            )
+        )
+
+        self.assertIsNone(new_entry.candidate)
+        self.assertEqual(new_entry.rejection_code, "LOW_LIQUIDITY")
+        self.assertIsNotNone(held_position.candidate)
+        self.assertFalse(held_position.eligible_for_new_entry)
+
+    def test_order_participation_limit_is_inclusive_at_one_percent(self):
+        at_limit = assess_risk_candidate(
+            self.make_profile(estimated_order_amount=60_000_000)
+        )
+        over_limit = assess_risk_candidate(
+            self.make_profile(estimated_order_amount=60_000_001)
+        )
+
+        self.assertTrue(at_limit.eligible_for_new_entry)
+        self.assertEqual(over_limit.rejection_code, "LOW_LIQUIDITY")
+
+    def test_blocked_position_fails_final_filter(self):
+        result = assess_risk_candidate(
+            self.make_profile(blocked_until_next_rotation=True)
+        )
+
+        self.assertEqual(result.failed_filter, 6)
+        self.assertEqual(result.rejection_code, "BLOCKED_UNTIL_NEXT_ROTATION")
 
 
 class ValidateDailyHistoryTests(unittest.TestCase):
