@@ -1,13 +1,36 @@
+import sqlite3
+import tempfile
 import unittest
+from datetime import datetime, timezone
+from pathlib import Path
 
 from src.reconciliation import (
+    OrderSnapshot,
     Position,
+    persist_reconciliation_result,
+    reconcile_account_state,
+    reconcile_orders,
     reconcile_positions,
     reconciliation_safe_halt,
 )
+from src.db import initialize_database
+
+
+UTC = timezone.utc
 
 
 class ReconciliationTests(unittest.TestCase):
+    """잔고·주문 차이와 SAFE_HALT 영속화를 확인합니다."""
+
+    def setUp(self):
+        """안전정지 플래그를 검증할 격리 테스트 DB를 준비합니다."""
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.connection = initialize_database(
+            Path(self.temp_dir.name) / "mosasaurus.db"
+        )
+        self.addCleanup(self.connection.close)
+
     def test_matching_positions_are_safe(self):
         result = reconcile_positions(
             [Position("423160", 10)],
@@ -56,6 +79,120 @@ class ReconciliationTests(unittest.TestCase):
                 unknown_order_exists=False,
                 stale_account_data=True,
             )
+        )
+
+    def test_duplicate_position_tickers_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Duplicate position"):
+            reconcile_positions(
+                [Position("423160", 1), Position("423160", 2)],
+                [],
+            )
+
+    def test_reconciles_order_status_quantities_and_missing_orders(self):
+        broker = [
+            OrderSnapshot(
+                "KIS-1",
+                "423160",
+                "BUY",
+                requested_qty=3,
+                filled_qty=1,
+                remaining_qty=2,
+                status="PARTIALLY_FILLED",
+            )
+        ]
+        local = [
+            OrderSnapshot(
+                "KIS-1",
+                "423160",
+                "BUY",
+                requested_qty=3,
+                filled_qty=0,
+                remaining_qty=3,
+                status="ACCEPTED",
+            ),
+            OrderSnapshot(
+                "LOCAL-UNKNOWN",
+                "423160",
+                "SELL",
+                requested_qty=1,
+                filled_qty=0,
+                remaining_qty=1,
+                status="PENDING_CONFIRMATION",
+            ),
+        ]
+
+        self.assertEqual(
+            reconcile_orders(broker, local),
+            ("KIS-1", "LOCAL-UNKNOWN"),
+        )
+        result = reconcile_account_state(
+            broker_positions=[Position("423160", 5)],
+            sqlite_positions=[Position("423160", 5)],
+            broker_orders=broker,
+            sqlite_orders=local,
+            account_data_fresh=True,
+        )
+        self.assertFalse(result.reconciliation_ok)
+        self.assertIn("ORDER_MISMATCH", result.failure_codes)
+
+    def test_unclassified_cash_flow_and_stale_account_fail_closed(self):
+        stale = reconcile_account_state(
+            broker_positions=[],
+            sqlite_positions=[],
+            broker_orders=[],
+            sqlite_orders=[],
+            account_data_fresh=False,
+        )
+        unknown_flow = reconcile_account_state(
+            broker_positions=[],
+            sqlite_positions=[],
+            broker_orders=[],
+            sqlite_orders=[],
+            account_data_fresh=True,
+            unclassified_cash_flow_exists=True,
+        )
+
+        self.assertIn("STALE_ACCOUNT_DATA", stale.failure_codes)
+        self.assertIn("UNCLASSIFIED_CASH_FLOW", unknown_flow.failure_codes)
+
+    def test_mismatch_persists_safe_halt_and_matching_result_does_not_clear_it(self):
+        mismatch = reconcile_account_state(
+            broker_positions=[Position("423160", 2)],
+            sqlite_positions=[Position("423160", 1)],
+            broker_orders=[],
+            sqlite_orders=[],
+            account_data_fresh=True,
+        )
+        now = datetime(2026, 11, 23, 6, 0, tzinfo=UTC)
+        persist_reconciliation_result(
+            self.connection,
+            mismatch,
+            checked_at=now,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT value FROM system_state WHERE key = 'is_safe_halt'"
+            ).fetchone()[0],
+            "true",
+        )
+
+        matching = reconcile_account_state(
+            broker_positions=[],
+            sqlite_positions=[],
+            broker_orders=[],
+            sqlite_orders=[],
+            account_data_fresh=True,
+        )
+        persist_reconciliation_result(
+            self.connection,
+            matching,
+            checked_at=now,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT value FROM system_state WHERE key = 'is_safe_halt'"
+            ).fetchone()[0],
+            "true",
         )
 
 
