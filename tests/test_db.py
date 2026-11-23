@@ -54,8 +54,14 @@ class DatabaseInitializationTests(unittest.TestCase):
 
         self.assertSetEqual(tables, PHASE1_TABLES)
         self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
         self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertEqual(
+            connection.execute(
+                "SELECT COUNT(*) FROM schema_migrations WHERE length(checksum) = 64"
+            ).fetchone()[0],
+            2,
+        )
 
     def test_reinitializing_a_valid_database_preserves_schema(self):
         first_connection = initialize_database(self.db_path)
@@ -136,11 +142,78 @@ class DatabaseInitializationTests(unittest.TestCase):
     def test_refuses_unsupported_schema_version(self):
         self.db_path.parent.mkdir(parents=True)
         with closing(sqlite3.connect(self.db_path)) as connection:
-            connection.execute("PRAGMA user_version = 2")
+            connection.execute("PRAGMA user_version = 3")
             connection.commit()
 
         with self.assertRaisesRegex(RuntimeError, "Unsupported database schema version"):
             initialize_database(self.db_path)
+
+    def test_upgrades_existing_v1_database_and_keeps_old_assets_unverified(self):
+        self.db_path.parent.mkdir(parents=True)
+        migration = Path(__file__).resolve().parent.parent / "migrations" / "001_init_phase1.sql"
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.executescript(migration.read_text(encoding="utf-8"))
+            connection.execute(
+                """
+                INSERT INTO universe_assets (
+                    ticker, name, category, region, underlying_index,
+                    product_type, replication_method, status, data_status, added_at
+                ) VALUES (
+                    '000001', 'Legacy ETF', 'RISK_ASSET', 'KR', 'TEST',
+                    'SPOT_ETF', 'PHYSICAL', 'ACTIVE', 'VALID',
+                    '2026-01-01T00:00:00Z'
+                )
+                """
+            )
+            connection.commit()
+
+        connection = initialize_database(self.db_path)
+        self.addCleanup(connection.close)
+
+        row = connection.execute(
+            """
+            SELECT classification_verified, leverage_multiplier, is_inverse,
+                   is_futures_based, classification_source
+            FROM universe_assets WHERE ticker = '000001'
+            """
+        ).fetchone()
+        self.assertEqual(tuple(row), (0, 1.0, 0, 0, "UNVERIFIED"))
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+
+    def test_database_rejects_non_one_leverage_and_derivative_flags(self):
+        connection = initialize_database(self.db_path)
+        self.addCleanup(connection.close)
+        connection.execute(
+            """
+            INSERT INTO universe_assets (
+                ticker, name, category, region, underlying_index, product_type,
+                replication_method, status, data_status, added_at
+            ) VALUES (
+                '000001', 'Test ETF', 'RISK_ASSET', 'KR', 'TEST', 'SPOT_ETF',
+                'PHYSICAL', 'ACTIVE', 'VALID', '2026-01-01T00:00:00Z'
+            )
+            """
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE universe_assets SET leverage_multiplier = 2.0 "
+                "WHERE ticker = '000001'"
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE universe_assets SET is_inverse = 1 WHERE ticker = '000001'"
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE universe_assets SET is_futures_based = 1 "
+                "WHERE ticker = '000001'"
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE universe_assets SET product_type = 'ETN' "
+                "WHERE ticker = '000001'"
+            )
 
     def test_connect_requires_an_initialized_database(self):
         with self.assertRaises(FileNotFoundError):

@@ -12,6 +12,11 @@ from src.telegram_bot import (
     mask_secret,
     sanitize_telegram_reply,
 )
+from src.universe import (
+    ProductMetadata,
+    has_approved_classification,
+    product_metadata_fingerprint,
+)
 
 
 UTC = timezone.utc
@@ -48,7 +53,7 @@ class TelegramBotTests(unittest.TestCase):
         self.assertEqual(confirmed_action, action)
 
     def test_confirmation_expires_after_five_minutes(self):
-        _, action = self.handler.handle("123456", "/add 123450", self.now)
+        _, action = self.handler.handle("123456", "/emergency", self.now)
 
         result, confirmed = self.handler.handle(
             "123456",
@@ -58,6 +63,41 @@ class TelegramBotTests(unittest.TestCase):
 
         self.assertEqual(result, "CONFIRMATION_EXPIRED")
         self.assertIsNone(confirmed)
+
+    def test_add_is_blocked_without_official_metadata_and_persistent_store(self):
+        result, action = self.handler.handle("123456", "/add 123450", self.now)
+
+        self.assertEqual(result, "CLASSIFICATION_UNAVAILABLE")
+        self.assertIsNone(action)
+
+    def test_add_rejects_leveraged_official_metadata(self):
+        metadata = ProductMetadata(
+            ticker="123450",
+            name="Sample ETF",
+            region="KR",
+            underlying_index="Sample Index",
+            product_type="SPOT_ETF",
+            replication_method="PHYSICAL",
+            leverage_multiplier=2.0,
+            is_inverse=False,
+            is_futures_based=False,
+            classification_source="KIS_PRODUCT_MASTER",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "mosasaurus.db"
+            connection = initialize_database(db_path)
+            connection.close()
+            handler = TelegramCommandHandler(
+                {"123456"},
+                pending_store=PendingActionStore(
+                    lambda: connect_database(db_path)
+                ),
+                product_metadata_lookup=lambda _ticker: metadata,
+            )
+            result, action = handler.handle("123456", "/add 123450", self.now)
+
+        self.assertEqual(result, "INELIGIBLE_PRODUCT")
+        self.assertIsNone(action)
 
     def test_unknown_command_is_rejected(self):
         result, action = self.handler.handle("123456", "/unknown", self.now)
@@ -81,9 +121,22 @@ class TelegramBotTests(unittest.TestCase):
             connection.close()
             connection_factory = lambda: connect_database(db_path)
             store = PendingActionStore(connection_factory)
+            metadata = ProductMetadata(
+                ticker="654321",
+                name="Sample ETF",
+                region="KR",
+                underlying_index="Sample Index",
+                product_type="SPOT_ETF",
+                replication_method="PHYSICAL",
+                leverage_multiplier=1.0,
+                is_inverse=False,
+                is_futures_based=False,
+                classification_source="KIS_PRODUCT_MASTER",
+            )
             handler = TelegramCommandHandler(
                 {"123456"},
                 pending_store=store,
+                product_metadata_lookup=lambda _ticker: metadata,
             )
 
             status, action = handler.handle("123456", "/add 654321", self.now)
@@ -103,18 +156,53 @@ class TelegramBotTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM audit_events WHERE target = ?",
                     (action.action_id,),
                 ).fetchone()[0]
+                asset = connection.execute(
+                    "SELECT * FROM universe_assets WHERE ticker = '654321'"
+                ).fetchone()
             finally:
                 connection.close()
 
+            approval_connection = connection_factory()
+            try:
+                approval_is_valid = has_approved_classification(
+                    approval_connection,
+                    asset,
+                    allowlist_by_ticker={},
+                )
+            finally:
+                approval_connection.close()
+            approval_connection = connection_factory()
+            try:
+                approval_connection.execute(
+                    "UPDATE universe_assets SET name = 'Changed ETF' "
+                    "WHERE ticker = '654321'"
+                )
+                approval_connection.commit()
+                changed_asset = approval_connection.execute(
+                    "SELECT * FROM universe_assets WHERE ticker = '654321'"
+                ).fetchone()
+                changed_approval_is_valid = has_approved_classification(
+                    approval_connection,
+                    changed_asset,
+                    allowlist_by_ticker={},
+                )
+            finally:
+                approval_connection.close()
+
             self.assertEqual(status, "CONFIRMATION_REQUIRED")
+            self.assertIn("Sample ETF", action.confirmation_summary)
+            self.assertIn("KIS_PRODUCT_MASTER", action.confirmation_summary)
             self.assertEqual(confirmed, "CONFIRMED")
             self.assertEqual(tuple(row), (
                 "UNIVERSE_ADD",
-                None,
-                "TWO_STEP_CONFIRMATION;TICKER=654321",
+                "654321",
+                "TWO_STEP_CONFIRMATION;TICKER=654321;METADATA_SHA256="
+                + product_metadata_fingerprint(metadata, category="RISK_ASSET"),
                 "APPROVED",
             ))
             self.assertEqual(audit_count, 2)
+            self.assertTrue(approval_is_valid)
+            self.assertFalse(changed_approval_is_valid)
 
     def test_polling_lock_rejects_second_process(self):
         """두 번째 Telegram polling 프로세스가 잠금을 얻지 못하는지 확인합니다."""

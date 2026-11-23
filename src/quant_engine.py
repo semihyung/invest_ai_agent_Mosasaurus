@@ -41,6 +41,9 @@ class CandidateProfile:
     estimated_order_amount: int
     currently_held: bool = False
     blocked_until_next_rotation: bool = False
+    classification_verified: bool = False
+    leverage_multiplier: float = 1.0
+    replication_method: str = "PHYSICAL"
 
 
 @dataclass(frozen=True)
@@ -279,8 +282,15 @@ def assess_risk_candidate(
         or not profile.ticker
         or not isinstance(profile.currently_held, bool)
         or not isinstance(profile.blocked_until_next_rotation, bool)
+        or not isinstance(profile.classification_verified, bool)
     ):
         raise ValueError("Candidate identity and state flags are invalid.")
+    if (
+        isinstance(profile.leverage_multiplier, bool)
+        or not isinstance(profile.leverage_multiplier, (int, float))
+        or not math.isfinite(profile.leverage_multiplier)
+    ):
+        raise ValueError("Candidate leverage multiplier must be finite.")
     if (
         isinstance(profile.avg_turnover_20d, bool)
         or not isinstance(profile.avg_turnover_20d, (int, float))
@@ -298,9 +308,13 @@ def assess_risk_candidate(
         return rejected(1, "INACTIVE")
     if profile.data_status != "VALID":
         return rejected(1, "DATA_INVALID")
+    if not profile.classification_verified:
+        return rejected(1, "UNVERIFIED_CLASSIFICATION")
     if (
         profile.category != "RISK_ASSET"
         or profile.product_type != "SPOT_ETF"
+        or profile.leverage_multiplier != 1.0
+        or profile.replication_method != "PHYSICAL"
         or any(
             not isinstance(flag, bool) or flag
             for flag in (

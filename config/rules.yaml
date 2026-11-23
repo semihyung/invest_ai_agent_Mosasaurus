@@ -1,5 +1,5 @@
 project_name: "mosasaurus"
-version: "3.7.1"
+version: "3.7.2"
 is_calibrated_by_backtest: false
 smoke_test_mode: false
 smoke_test:
@@ -128,6 +128,9 @@ ttl_seconds:
   etf_holdings_days: 7
 
 universe:
+  allowlist_file: "config/universe_allowlist.yaml"
+  require_verified_classification: true
+  forbid_name_keyword_heuristic: true
   min_history_sessions: 200
   min_avg_turnover_20d_krw: 5000000000
   reject_derivatives: true

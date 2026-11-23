@@ -1,12 +1,13 @@
 # 모사사우르스 (Mosasaurus)
 
-라즈베리파이 5 기반 자동 투자 에이전트 프로젝트입니다. 개발의 유일한 설계 기준은 [개발 명세 v3.7.1](mosasaurus_spec_v3.7.1.md)이며, 명세에 정한 안전 장치와 단계별 진행 순서를 우선합니다.
+라즈베리파이 5 기반 자동 투자 에이전트 프로젝트입니다. 개발의 유일한 설계 기준은 [개발 명세 v3.7.2](mosasaurus_spec_v3.7.2.md)이며, 명세에 정한 안전 장치와 단계별 진행 순서를 우선합니다.
 
 > 이 프로젝트는 아직 개발 중이며, 수익이나 원금 보전을 보장하지 않습니다. 현재 버전은 실계좌 주문이나 자동 운용에 사용할 수 없습니다.
 
 ## 현재 개발 상태
 
 - SQLite WAL 데이터베이스와 Phase 1 핵심 20개 및 확장용 3개 테이블의 초기화 코드를 구현했습니다.
+- v3.7.2 상품 분류 마이그레이션을 추가했습니다. 기존 종목은 모두 미검증으로 남고, 승인된 공식 메타데이터가 없으면 프리뷰와 신규 후보에서 제외됩니다.
 - Quant 엔진의 복리 초과수익률 점수·동률 처리·6단계 후보 필터와 수정주가 기준 120일 이동평균 검사를 구현했습니다.
 - 외부 토큰 캐시, KIS 모의투자 토큰 발급·갱신기, YAML 및 환경 변수 설정 로더, 조회 전용 REST 잔고·주문/체결 조회와 ETF NAV WebSocket 클라이언트를 구현했습니다. KIS 실계좌 연결 검증과 주문 API는 아직 완료되지 않았습니다.
 - 시장 데이터 스냅샷의 TTL, 호가 스프레드, iNAV 괴리율과 검증된 기업행동 조정 규칙을 구현했습니다.
@@ -16,6 +17,7 @@
 - 수정주가 기준 단조 증가 PeakPrice·트레일링 스탑, 단위화 TWR/HWM, 낙폭별 매수 제한과 중앙 운영 모드별 주문 권한 판정을 구현했습니다.
 - 멱등성·확인 대기 복구·지정가 전용 주문 상태 머신, 매도 의무 기록, 잔고·주문 대조 및 불일치 시 SAFE_HALT 처리를 구현했습니다.
 - APScheduler의 KST 예약 작업·미스파이어 잠금, 부팅 복구 게이트, Telegram 허용 채팅·단일 polling 잠금·DB 기반 2단계 확인을 구현했습니다. 주간 프리뷰 콜백은 테스트됐지만 `main`에 연결되지 않았으며, 다른 운영 작업 콜백·실제 헬스 워치독과 기기 검증은 남아 있습니다.
+- 운영자 승인 종목은 `config/universe_allowlist.yaml`로 반영됩니다. 현재 목록은 비어 있어 시작 시 승인된 종목을 자동으로 추가하지 않습니다. Telegram `/add`는 공식 상품 메타데이터 조회 콜백이 연결되지 않으면 안전하게 차단됩니다.
 - Phase 1 백테스트 입력과 핵심 CAGR/MDD/turnover 계산 및 25개 장애 시나리오 검증을 구현했습니다.
 - Docker Compose, GitHub Actions 배포, 장중 배포 차단과 SQLite 백업·복구 스크립트를 구성했습니다.
 - 전략 전체 실행 파이프라인, KIS 주문·체결 연동, 실시간 NAV 구독, 실제 Walk-Forward/Out-of-Sample 백테스트 및 운영 배포 검증은 아직 완료되지 않았습니다.
@@ -24,15 +26,18 @@
 ## 프로젝트 구조
 
 ```text
-mosasaurus_spec_v3.7.1.md      # 유일한 설계 기준
+mosasaurus_spec_v3.7.2.md      # 유일한 설계 기준
 config/rules.yaml              # 전략 및 안전 정책 설정
-migrations/001_init_phase1.sql # Phase 1 데이터베이스 스키마
+migrations/001_init_phase1.sql # Phase 1 기본 데이터베이스 스키마
+migrations/002_verified_universe_classification.sql # 검증된 상품 분류 필드
+config/universe_allowlist.yaml # 운영자 사전 승인 ETF 목록
 src/db.py                      # SQLite WAL 초기화 및 검증
 src/config.py                  # YAML 설정과 런타임 환경 변수 로더
 src/kis_client.py              # 토큰 캐시 및 갱신 정책
 src/market_data.py             # 호가·iNAV 신선도와 일봉 품질 검증
 src/corporate_actions.py       # 검증된 기업행동 조정 처리
 src/quant_engine.py            # 핵심 모멘텀 계산과 데이터 검사
+src/universe.py                # 공식 상품 메타데이터와 승인 목록 검증
 src/boot_recovery.py           # 부팅 DB·토큰·계좌 복구 게이트
 src/main.py                    # 콜백 의존성 주입·Fail-Closed 런타임 조립
 src/scheduler.py               # KST 예약 작업·미스파이어 잠금

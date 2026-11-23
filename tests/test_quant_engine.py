@@ -183,6 +183,9 @@ class CandidateEligibilityTests(unittest.TestCase):
             "estimated_order_amount": 10_000_000,
             "currently_held": False,
             "blocked_until_next_rotation": False,
+            "classification_verified": True,
+            "leverage_multiplier": 1.0,
+            "replication_method": "PHYSICAL",
         }
         values.update(overrides)
         return CandidateProfile(**values)
@@ -200,6 +203,18 @@ class CandidateEligibilityTests(unittest.TestCase):
 
         self.assertEqual(inactive.failed_filter, 1)
         self.assertEqual(inactive.rejection_code, "INACTIVE")
+        self.assertEqual(leveraged.rejection_code, "INELIGIBLE_PRODUCT")
+
+    def test_rejects_unverified_classification_and_non_one_multiplier(self):
+        unverified = assess_risk_candidate(
+            self.make_profile(classification_verified=False)
+        )
+        leveraged = assess_risk_candidate(
+            self.make_profile(leverage_multiplier=2.0)
+        )
+
+        self.assertEqual(unverified.rejection_code, "UNVERIFIED_CLASSIFICATION")
+        self.assertEqual(unverified.failed_filter, 1)
         self.assertEqual(leveraged.rejection_code, "INELIGIBLE_PRODUCT")
 
     def test_rejects_insufficient_history_and_invalid_daily_returns(self):

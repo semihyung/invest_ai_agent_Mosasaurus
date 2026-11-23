@@ -8,6 +8,12 @@ from uuid import uuid4
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
+from src.universe import (
+    ProductMetadata,
+    product_metadata_fingerprint,
+    validate_product_metadata,
+)
+
 
 CONFIRMATION_REQUIRED = {
     "/emergency",
@@ -88,6 +94,8 @@ class PendingAction:
     chat_id: str
     created_at: datetime
     expires_at: datetime
+    product_metadata: ProductMetadata | None = None
+    confirmation_summary: str | None = None
 
 
 class PendingActionStore:
@@ -99,15 +107,36 @@ class PendingActionStore:
             raise TypeError("connection_factory must be callable.")
         self._connection_factory = connection_factory
 
+    def contains_asset(self, ticker: str) -> bool:
+        """티커가 이미 DB 유니버스에 있는지 확인합니다."""
+        connection = self._connection_factory()
+        try:
+            return connection.execute(
+                "SELECT 1 FROM universe_assets WHERE ticker = ?",
+                (ticker,),
+            ).fetchone() is not None
+        finally:
+            connection.close()
+
     def create(self, action: PendingAction) -> None:
         """확인 요청을 PENDING 상태로 기록하고 Telegram 작업자를 감사 로그에 남깁니다."""
         connection = self._connection_factory()
         try:
             action_type, ticker = self._action_fields(action.command)
+            if action_type == "UNIVERSE_ADD":
+                if action.product_metadata is None or ticker is None:
+                    raise ValueError("/add 승인에는 검증된 공식 메타데이터가 필요합니다.")
+                validate_product_metadata(
+                    action.product_metadata,
+                    expected_ticker=ticker,
+                )
             stored_ticker = ticker if action_type == "UNIVERSE_REMOVE" else None
             reason = "TWO_STEP_CONFIRMATION"
             if action_type == "UNIVERSE_ADD" and ticker is not None:
-                reason += f";TICKER={ticker}"
+                reason += (
+                    f";TICKER={ticker};METADATA_SHA256="
+                    f"{product_metadata_fingerprint(action.product_metadata, category='RISK_ASSET')}"
+                )
             with connection:
                 connection.execute(
                     """
@@ -139,6 +168,14 @@ class PendingActionStore:
         """만료 전 PENDING 요청만 승인하고 조건부 변경 결과를 반환합니다."""
         connection = self._connection_factory()
         try:
+            action_type, ticker = self._action_fields(action.command)
+            if action_type == "UNIVERSE_ADD":
+                if action.product_metadata is None or ticker is None:
+                    return False
+                validate_product_metadata(
+                    action.product_metadata,
+                    expected_ticker=ticker,
+                )
             with connection:
                 cursor = connection.execute(
                     """
@@ -149,6 +186,44 @@ class PendingActionStore:
                     (now.isoformat(), action.action_id, now.isoformat()),
                 )
                 if cursor.rowcount == 1:
+                    if action_type == "UNIVERSE_ADD":
+                        metadata = action.product_metadata
+                        if metadata is None:
+                            raise RuntimeError("확인된 공식 상품 메타데이터가 없습니다.")
+                        connection.execute(
+                            """
+                            INSERT INTO universe_assets (
+                                ticker, name, category, region, underlying_index,
+                                product_type, replication_method, leverage_multiplier,
+                                is_inverse, is_futures_based, classification_verified,
+                                classification_source, verified_by, verified_at,
+                                status, data_status, blocked_until_next_rotation, added_at
+                            ) VALUES (?, ?, 'RISK_ASSET', ?, ?, ?, ?, ?, ?, ?, 1,
+                                      ?, ?, ?, 'ACTIVE', 'VALID', 0, ?)
+                            """,
+                            (
+                                metadata.ticker,
+                                metadata.name,
+                                metadata.region,
+                                metadata.underlying_index,
+                                metadata.product_type,
+                                metadata.replication_method,
+                                metadata.leverage_multiplier,
+                                int(metadata.is_inverse),
+                                int(metadata.is_futures_based),
+                                metadata.classification_source,
+                                f"telegram:{mask_secret(action.chat_id)}",
+                                now.isoformat(),
+                                now.isoformat(),
+                            ),
+                        )
+                        connection.execute(
+                            """
+                            UPDATE pending_actions SET ticker = ?
+                            WHERE id = ? AND action_type = 'UNIVERSE_ADD'
+                            """,
+                            (ticker, action.action_id),
+                        )
                     self._audit(
                         connection,
                         chat_id=action.chat_id,
@@ -235,6 +310,7 @@ class TelegramCommandHandler:
         allowed_chat_ids: set[str],
         *,
         pending_store: PendingActionStore | None = None,
+        product_metadata_lookup: Callable[[str], ProductMetadata] | None = None,
     ) -> None:
         """허용 채팅과 선택적 DB 확인 저장소를 구성합니다."""
         if not allowed_chat_ids:
@@ -243,6 +319,9 @@ class TelegramCommandHandler:
             raise ValueError("Allowed chat IDs must be numeric strings.")
         self.allowed_chat_ids = set(allowed_chat_ids)
         self.pending_store = pending_store
+        if product_metadata_lookup is not None and not callable(product_metadata_lookup):
+            raise TypeError("product_metadata_lookup must be callable.")
+        self.product_metadata_lookup = product_metadata_lookup
         self.pending: dict[str, PendingAction] = {}
 
     def handle(self, chat_id: str, text: str, now: datetime) -> tuple[str, PendingAction | None]:
@@ -287,6 +366,31 @@ class TelegramCommandHandler:
             or normalized.startswith("/remove ")
         )
         if requires_confirmation:
+            metadata = None
+            summary = None
+            if command == "/add":
+                ticker = normalized.split()[1]
+                if self.pending_store is None or self.product_metadata_lookup is None:
+                    return "CLASSIFICATION_UNAVAILABLE", None
+                if self.pending_store.contains_asset(ticker):
+                    return "TICKER_ALREADY_EXISTS", None
+                metadata = self.product_metadata_lookup(ticker)
+                try:
+                    validate_product_metadata(
+                        metadata,
+                        expected_ticker=ticker,
+                    )
+                except ValueError:
+                    return "INELIGIBLE_PRODUCT", None
+                summary = (
+                    f"공식 상품: {metadata.name} ({metadata.ticker}), "
+                    f"유형 {metadata.product_type}, 배수 {metadata.leverage_multiplier}, "
+                    f"인버스 {int(metadata.is_inverse)}, "
+                    f"선물형 {int(metadata.is_futures_based)}, "
+                    f"기초지수 {metadata.underlying_index}, "
+                    f"복제 {metadata.replication_method}, "
+                    f"출처 {metadata.classification_source}"
+                )
             action_id = uuid4().hex[:12]
             utc_now = now.astimezone(timezone.utc)
             action = PendingAction(
@@ -295,6 +399,8 @@ class TelegramCommandHandler:
                 chat_id=chat_id,
                 created_at=utc_now,
                 expires_at=utc_now + timedelta(minutes=5),
+                product_metadata=metadata,
+                confirmation_summary=summary,
             )
             if self.pending_store is not None:
                 self.pending_store.create(action)
@@ -408,6 +514,7 @@ def run_telegram_polling(
     pending_store: PendingActionStore,
     command_actions: Mapping[str, Callable[[str, str], str]],
     connection_factory: Callable[[], sqlite3.Connection],
+    product_metadata_lookup: Callable[[str], ProductMetadata] | None = None,
 ) -> None:
     """Phase 1 Telegram polling을 시작하고 채팅·단일 프로세스 잠금을 강제합니다."""
     if not isinstance(token, str) or not token.strip():
@@ -422,6 +529,7 @@ def run_telegram_polling(
     handler = TelegramCommandHandler(
         allowed_chat_ids,
         pending_store=pending_store,
+        product_metadata_lookup=product_metadata_lookup,
     )
     owner_id = uuid4().hex
     _acquire_polling_lock(connection_factory, owner_id=owner_id)
@@ -443,13 +551,29 @@ def run_telegram_polling(
         if status == "UNAUTHORIZED":
             return
         if status == "CONFIRMATION_REQUIRED" and action is not None:
+            details = (
+                f"\n{action.confirmation_summary}"
+                if action.confirmation_summary is not None
+                else ""
+            )
             await message.reply_text(
-                f"확인이 필요합니다. 5분 안에 /confirm {action.action_id} 를 입력하세요."
+                sanitize_telegram_reply(
+                    f"확인이 필요합니다. 5분 안에 /confirm {action.action_id} 를 입력하세요."
+                    f"{details}"
+                )
             )
             return
         if status == "CONFIRMED" and action is not None:
             command = action.command.split(" ", 1)[0]
-            reply = command_actions[command](chat_id, action.command)
+            if command == "/add":
+                if action.product_metadata is None:
+                    raise RuntimeError("확인된 공식 상품 메타데이터가 없습니다.")
+                reply = (
+                    f"{action.product_metadata.ticker} 종목을 공식 분류와 "
+                    "운영자 승인 이력에 따라 유니버스에 추가했습니다."
+                )
+            else:
+                reply = command_actions[command](chat_id, action.command)
         elif status == "EXECUTE":
             command = message.text.strip().split(" ", 1)[0].lower()
             if command == "/stop":
@@ -458,6 +582,13 @@ def run_telegram_polling(
         else:
             reply = {
                 "CONFIRMATION_EXPIRED": "확인 시간이 만료되었습니다. 명령을 다시 요청하세요.",
+                "CLASSIFICATION_UNAVAILABLE": (
+                    "공식 상품정보 조회 경로가 구성되지 않아 종목 추가를 차단했습니다."
+                ),
+                "INELIGIBLE_PRODUCT": (
+                    "공식 메타데이터가 현물·비레버리지·비인버스·비선물 기준을 통과하지 못했습니다."
+                ),
+                "TICKER_ALREADY_EXISTS": "이미 유니버스에 등록된 티커입니다.",
                 "CONFIRMATION_NOT_FOUND": "확인 요청을 찾을 수 없거나 다른 채팅에서 생성되었습니다.",
                 "INVALID_ARGUMENTS": "명령 인자를 확인하세요.",
                 "UNKNOWN_COMMAND": "지원하지 않는 명령입니다.",

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from src.boot_recovery import BootRecoveryResult, boot_recovery
+from src.config import load_config
 from src.db import connect_database, initialize_database
 from src.health_monitor import (
     HealthSnapshot,
@@ -25,6 +26,29 @@ from src.scheduler import (
     build_scheduler,
     set_order_scheduler_lock,
 )
+from src.universe import load_universe_allowlist, sync_universe_allowlist
+
+
+def _sync_configured_allowlist(connection: sqlite3.Connection) -> None:
+    """설정된 운영자 승인 종목을 부팅 시 DB와 대조합니다."""
+    config = load_config()
+    universe = config.get("universe")
+    if not isinstance(universe, Mapping):
+        raise ValueError("universe 설정이 필요합니다.")
+    allowlist_value = universe.get("allowlist_file")
+    synthetic_tickers = universe.get("allowlisted_synthetic_parking_tickers")
+    if not isinstance(allowlist_value, str) or not allowlist_value:
+        raise ValueError("universe.allowlist_file 설정이 필요합니다.")
+    if not isinstance(synthetic_tickers, list):
+        raise ValueError("합성복제 파킹 티커 설정은 목록이어야 합니다.")
+    allowlist_path = Path(allowlist_value).expanduser()
+    if not allowlist_path.is_absolute():
+        allowlist_path = Path(__file__).resolve().parent.parent / allowlist_path
+    assets = load_universe_allowlist(
+        allowlist_path,
+        allowed_synthetic_parking_tickers=synthetic_tickers,
+    )
+    sync_universe_allowlist(connection, assets)
 
 
 @dataclass(frozen=True)
@@ -59,13 +83,14 @@ def run_agent(
         raise ValueError("heartbeat_interval_seconds must be positive.")
     path = Path(db_path).expanduser()
     connection = initialize_database(path)
-    connection_factory = lambda: connect_database(path)
-    scheduler = build_scheduler(
-        dependencies.job_handlers,
-        connection_factory=connection_factory,
-        market_is_open=dependencies.market_is_open,
-    )
     try:
+        _sync_configured_allowlist(connection)
+        connection_factory = lambda: connect_database(path)
+        scheduler = build_scheduler(
+            dependencies.job_handlers,
+            connection_factory=connection_factory,
+            market_is_open=dependencies.market_is_open,
+        )
         recovery = boot_recovery(
             connection,
             token_cache,
@@ -124,6 +149,7 @@ def main(
     if dependencies is None:
         connection = initialize_database(database_path)
         try:
+            _sync_configured_allowlist(connection)
             boot_recovery(
                 connection,
                 cache,

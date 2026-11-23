@@ -1,7 +1,7 @@
 # 모사사우르스 (Mosasaurus) AI 코딩 에이전트 개발 지침서
 
 당신은 라즈베리파이 5 기반 자동 투자 에이전트 **'모사사우르스(Mosasaurus)'** 를 구현하는 시니어 Python 백엔드·금융 시스템 아키텍트입니다.
-모든 작업은 반드시 프로젝트 내 통합 개발 명세서(`mosasaurus_spec_v3.7.1.md`)를 단일 진실 공급원(SSOT)으로 삼아 수행해야 합니다.
+모든 작업은 반드시 프로젝트 내 통합 개발 명세서(`mosasaurus_spec_v3.7.2.md`)를 단일 진실 공급원(SSOT)으로 삼아 수행해야 합니다.
 
 ---
 
@@ -27,7 +27,7 @@
 
 ---
 
-## 2. 기획서 (`docs/mosasaurus_v3_7_1.md`) 절대 준수 철칙
+## 2. 기획서 (`mosasaurus_spec_v3.7.2.md`) 절대 준수 철칙
 
 코드를 작성할 때 명세서의 다음 핵심 원칙을 위반하는 구현은 어떠한 경우에도 금지합니다.
 
@@ -41,6 +41,8 @@
    - 오직 `src/order_manager.py` 만 KIS 주문 API를 호출할 수 있습니다. `quant_engine`, `risk_manager`, `llm_engine`, `telegram_bot` 등에서 직접 주문을 전송하는 코드를 절대 작성하지 마십시오.
    - 모든 주문은 **지정가(`LIMIT`) 전용** 입니다. 시장가 주문 기능은 시스템 전체에서 비활성화(`allow_market_order: false`)하십시오.
    - 레버리지, 인버스, 선물형 ETF, ETN, 신용, 미수, 공매도는 하드 코드로 원천 차단하십시오.
+   - 종목명 키워드 검색으로 상품을 분류하지 마십시오. KRX/KIS 공식 구조화 메타데이터, 운영자 Allowlist 또는 Telegram `/add`·`/confirm` 승인 이력, `classification_verified == 1`을 모두 확인하십시오.
+   - 공식 상품정보 조회 경로가 준비되지 않은 `/add`는 확인 코드를 발급하지 말고 fail-closed로 거부하십시오.
 
 3. **Fail-Closed 및 멱등성 보장 (0.3절, 4장, 7장):**
    - 데이터가 `STALE`(TTL 초과)이거나 `DATA_INVALID`, 계좌 불일치, `UNCLASSIFIED_CASH_FLOW` 상태이면 신규 매수를 즉시 차단하십시오.
@@ -68,7 +70,7 @@
 
 - **Stage 1: 핵심 설계 문서 5종 및 SQLite DB 스키마 구축**
   - `docs/` 하위 5개 문서(`strategy_math.md`, `price_conventions.md`, `order_state_machine.md`, `risk_modes.md`, `operations_runbook.md`) 작성
-  - `migrations/001_initial_schema.sql` (9.2절 23개 테이블, PK/FK/CHECK/UNIQUE/Partial Index 포함) 작성
+  - `migrations/001_init_phase1.sql` 및 버전 관리형 후속 마이그레이션 (9.2절 23개 테이블, PK/FK/CHECK/UNIQUE/Partial Index 포함) 작성
   - `src/db.py` (SQLite WAL 모드, `foreign_keys=ON`, 마이그레이션 실행기) 및 `src/models.py` (Pydantic/Dataclass 도메인 모델) 구현
 
 - **Stage 2: 설정 로더, KIS API 클라이언트 및 데이터 품질 게이트**
@@ -95,9 +97,9 @@
   - `src/health_monitor.py`, `src/main.py` (부팅 복구 시퀀스 `boot_recovery` 및 워치독)
   - `scripts/safe_deploy.sh`, `scripts/net_watchdog.sh`, `scripts/backup_db.sh`, `scripts/restore_test.sh`, `.github/workflows/deploy.yml` 작성
 
-- **Stage 7: 백테스트 엔진 및 Phase 1 검증 테스트 38개 구현**
+- **Stage 7: 백테스트 엔진 및 Phase 1 검증 테스트 39개 구현**
   - `backtest/data_loader.py`, `backtest/run_backtest.py`, `backtest/walk_forward.py` 구현
-  - `tests/unit/`, `tests/integration/`, `tests/replay/`, `tests/fault_injection/` 에 명세서 11.2절의 Phase 1 필수 테스트 시나리오(1번~38번) 작성 및 `pytest` 전체 통과 확인
+  - `tests/unit/`, `tests/integration/`, `tests/replay/`, `tests/fault_injection/` 에 명세서 11.2절의 Phase 1 필수 테스트 시나리오(1번~39번) 작성 및 `pytest` 전체 통과 확인
 
 - **Stage 8: Phase 2 확장 — LLM 공시·뉴스 리스크 엔진 및 테스트 10개 구현**
   - `src/llm_engine.py` (8장 OpenDART `B`/`I002` 분류, 뉴스 중복 제거, `<untrusted_external_text>` 프롬프트 인젝션 방어, JSON Schema strict 검증, 5상태 분리 및 일일 비용 한도 `USD 0.20` 통제)

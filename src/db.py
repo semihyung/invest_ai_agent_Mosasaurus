@@ -1,13 +1,24 @@
+import hashlib
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
-_SCHEMA_VERSION = 1
-_MIGRATION_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "migrations"
-    / "001_init_phase1.sql"
-)
+_SCHEMA_VERSION = 2
+_MIGRATIONS = {
+    1: (
+        "001_init_phase1",
+        Path(__file__).resolve().parent.parent
+        / "migrations"
+        / "001_init_phase1.sql",
+    ),
+    2: (
+        "002_verified_universe_classification",
+        Path(__file__).resolve().parent.parent
+        / "migrations"
+        / "002_verified_universe_classification.sql",
+    ),
+}
 _PHASE1_TABLES = {
     "system_state",
     "credentials_state",
@@ -32,6 +43,15 @@ _PHASE1_TABLES = {
     "llm_logs",
     "risk_events",
     "pending_actions",
+}
+_CLASSIFICATION_COLUMNS = {
+    "leverage_multiplier",
+    "is_inverse",
+    "is_futures_based",
+    "classification_verified",
+    "classification_source",
+    "verified_by",
+    "verified_at",
 }
 
 
@@ -60,6 +80,93 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         raise RuntimeError(
             f"Database schema mismatch; missing={missing}, unexpected={unexpected}."
         )
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(universe_assets)")
+    }
+    if not _CLASSIFICATION_COLUMNS.issubset(columns):
+        missing = sorted(_CLASSIFICATION_COLUMNS - columns)
+        raise RuntimeError(f"Universe classification schema is incomplete: {missing}.")
+    for name, path in _MIGRATIONS.values():
+        row = connection.execute(
+            "SELECT checksum FROM schema_migrations WHERE version = ?",
+            (name,),
+        ).fetchone()
+        if row is None or row["checksum"] != _migration_checksum(path):
+            raise RuntimeError(f"Migration record is missing or invalid: {name}.")
+
+
+def _migration_checksum(path: Path) -> str:
+    """마이그레이션 파일 내용의 SHA-256 지문을 계산합니다."""
+    contents = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(contents.encode("utf-8")).hexdigest()
+
+
+def _record_initial_migration(connection: sqlite3.Connection) -> None:
+    """기존 v1 DB의 임시 체크섬을 현재 초기 마이그레이션 지문으로 교체합니다."""
+    name, path = _MIGRATIONS[1]
+    checksum = _migration_checksum(path)
+    row = connection.execute(
+        "SELECT checksum FROM schema_migrations WHERE version = ?",
+        (name,),
+    ).fetchone()
+    if row is None:
+        with connection:
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at, checksum) "
+                "VALUES (?, ?, ?)",
+                (name, datetime.now(timezone.utc).isoformat(), checksum),
+            )
+    elif row["checksum"] == "pending":
+        with connection:
+            connection.execute(
+                "UPDATE schema_migrations SET checksum = ?, applied_at = ? "
+                "WHERE version = ?",
+                (checksum, datetime.now(timezone.utc).isoformat(), name),
+            )
+    elif row["checksum"] != checksum:
+        raise RuntimeError(f"Initial migration checksum mismatch: {name}.")
+
+
+def _migration_statements(script: str) -> list[str]:
+    """SQL 파일을 SQLite가 완성된 구문으로 인식하는 단위로 나눕니다."""
+    statements = []
+    current = ""
+    for line in script.splitlines():
+        current += line + "\n"
+        if sqlite3.complete_statement(current):
+            statement = current.strip()
+            if statement:
+                statements.append(statement)
+            current = ""
+    if current.strip():
+        raise RuntimeError("Migration contains an incomplete SQL statement.")
+    return statements
+
+
+def _apply_migration(
+    connection: sqlite3.Connection,
+    *,
+    version: int,
+) -> None:
+    """DDL, 버전 번호와 체크섬 기록을 하나의 트랜잭션으로 적용합니다."""
+    name, path = _MIGRATIONS[version]
+    statements = _migration_statements(path.read_text(encoding="utf-8"))
+    checksum = _migration_checksum(path)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in statements:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at, checksum) "
+            "VALUES (?, ?, ?)",
+            (name, datetime.now(timezone.utc).isoformat(), checksum),
+        )
+        connection.execute(f"PRAGMA user_version = {version}")
+        connection.commit()
+    except sqlite3.Error:
+        connection.rollback()
+        raise
 
 
 def initialize_database(db_path: str | Path) -> sqlite3.Connection:
@@ -87,10 +194,16 @@ def initialize_database(db_path: str | Path) -> sqlite3.Connection:
                     "Refusing to migrate an unversioned database with existing tables."
                 )
             connection.executescript(
-                _MIGRATION_PATH.read_text(encoding="utf-8")
+                _MIGRATIONS[1][1].read_text(encoding="utf-8")
             )
-        elif version != _SCHEMA_VERSION:
+            _record_initial_migration(connection)
+            version = 1
+        elif version > _SCHEMA_VERSION:
             raise RuntimeError(f"Unsupported database schema version: {version}.")
+
+        if version == 1:
+            _record_initial_migration(connection)
+            _apply_migration(connection, version=2)
 
         _validate_schema(connection)
         return connection

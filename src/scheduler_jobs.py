@@ -5,11 +5,13 @@ import json
 import sqlite3
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from src.portfolio_manager import SlotCandidate, build_weekly_preview
 from src.quant_engine import CandidateProfile, assess_risk_candidate, rank_candidates
 from src.scheduler import KST, ScheduleJob
+from src.universe import has_approved_classification, load_universe_allowlist
 
 
 _REQUIRED_RULE_SECTIONS = ("portfolio", "momentum", "universe")
@@ -51,6 +53,31 @@ def create_weekly_preview_handler(
     portfolio = rules["portfolio"]
     momentum = rules["momentum"]
     universe = rules["universe"]
+    if universe.get("require_verified_classification") is not True:
+        raise ValueError("Verified product classification must be required.")
+    if universe.get("forbid_name_keyword_heuristic") is not True:
+        raise ValueError("Product-name keyword heuristics must be disabled.")
+    synthetic_parking_tickers = universe.get(
+        "allowlisted_synthetic_parking_tickers", ()
+    )
+    if not isinstance(synthetic_parking_tickers, (list, tuple)) or any(
+        not isinstance(ticker, str) or not ticker
+        for ticker in synthetic_parking_tickers
+    ):
+        raise ValueError("Synthetic parking tickers must be a string list.")
+    allowlist_value = universe.get("allowlist_file")
+    if not isinstance(allowlist_value, str) or not allowlist_value:
+        raise ValueError("A universe allowlist path is required.")
+    allowlist_path = Path(allowlist_value).expanduser()
+    if not allowlist_path.is_absolute():
+        allowlist_path = Path(__file__).resolve().parent.parent / allowlist_path
+    allowlist_assets = load_universe_allowlist(
+        allowlist_path,
+        allowed_synthetic_parking_tickers=synthetic_parking_tickers,
+    )
+    allowlist_by_ticker = {
+        asset["ticker"]: asset for asset in allowlist_assets
+    }
     parking_ticker = portfolio.get("primary_parking_ticker")
     if not isinstance(parking_ticker, str) or not parking_ticker:
         raise ValueError("A primary parking ticker is required.")
@@ -70,9 +97,12 @@ def create_weekly_preview_handler(
         try:
             asset_rows = connection.execute(
                 """
-                SELECT ticker, category, region, underlying_index,
+                SELECT ticker, name, category, region, underlying_index,
                        product_type, status, data_status,
-                       blocked_until_next_rotation
+                       blocked_until_next_rotation, replication_method,
+                       leverage_multiplier, is_inverse, is_futures_based,
+                       classification_verified, classification_source,
+                       verified_by, verified_at
                 FROM universe_assets
                 WHERE status = 'ACTIVE'
                 ORDER BY ticker
@@ -87,6 +117,20 @@ def create_weekly_preview_handler(
                 or parking_asset["category"] != "SAFE_PARKING"
                 or parking_asset["product_type"] != "SPOT_ETF"
                 or parking_asset["data_status"] != "VALID"
+                or parking_asset["classification_verified"] != 1
+                or parking_asset["leverage_multiplier"] != 1.0
+                or parking_asset["is_inverse"] != 0
+                or parking_asset["is_futures_based"] != 0
+                or (
+                    parking_asset["replication_method"] == "SYNTHETIC"
+                    and parking_ticker not in synthetic_parking_tickers
+                )
+                or not has_approved_classification(
+                    connection,
+                    parking_asset,
+                    allowlist_by_ticker=allowlist_by_ticker,
+                    allowed_synthetic_parking_tickers=synthetic_parking_tickers,
+                )
             ):
                 raise RuntimeError("Parking asset is missing or invalid.")
             parking_rows = _read_candles(
@@ -117,9 +161,31 @@ def create_weekly_preview_handler(
             }
             candidates = []
             by_ticker = {}
+            rejected_assets = []
             for asset in asset_rows:
                 ticker = asset["ticker"]
                 if ticker == parking_ticker or asset["category"] != "RISK_ASSET":
+                    continue
+                if not has_approved_classification(
+                    connection,
+                    asset,
+                    allowlist_by_ticker=allowlist_by_ticker,
+                    allowed_synthetic_parking_tickers=synthetic_parking_tickers,
+                ):
+                    rejection_code = (
+                        "UNVERIFIED_CLASSIFICATION"
+                        if asset["classification_verified"] != 1
+                        else "MISSING_CLASSIFICATION_APPROVAL"
+                    )
+                    rejected_assets.append((ticker, rejection_code))
+                    continue
+                if (
+                    asset["leverage_multiplier"] != 1.0
+                    or asset["is_inverse"] != 0
+                    or asset["is_futures_based"] != 0
+                    or asset["replication_method"] != "PHYSICAL"
+                ):
+                    rejected_assets.append((ticker, "INELIGIBLE_PRODUCT"))
                     continue
                 rows = _read_candles(
                     connection,
@@ -157,10 +223,10 @@ def create_weekly_preview_handler(
                         else "VALID"
                     ),
                     product_type=asset["product_type"],
-                    is_leveraged=False,
-                    is_inverse=False,
-                    is_futures=False,
-                    is_etn=False,
+                    is_leveraged=float(asset["leverage_multiplier"]) != 1.0,
+                    is_inverse=bool(asset["is_inverse"]),
+                    is_futures=bool(asset["is_futures_based"]),
+                    is_etn=asset["product_type"] != "SPOT_ETF",
                     adjusted_closes=[float(row["adjusted_close"]) for row in rows],
                     parking_adjusted_closes=parking_closes,
                     avg_turnover_20d=avg_turnover,
@@ -169,6 +235,9 @@ def create_weekly_preview_handler(
                     blocked_until_next_rotation=bool(
                         asset["blocked_until_next_rotation"]
                     ),
+                    classification_verified=asset["classification_verified"] == 1,
+                    leverage_multiplier=float(asset["leverage_multiplier"]),
+                    replication_method=asset["replication_method"],
                 )
                 assessment = assess_risk_candidate(
                     profile,
@@ -247,6 +316,18 @@ def create_weekly_preview_handler(
                     """,
                     (preview_id, base_date, *payloads, timestamp.isoformat()),
                 )
+                for ticker, rejection_code in rejected_assets:
+                    connection.execute(
+                        """
+                        INSERT INTO system_events (
+                            component, event_type, severity, message, created_at
+                        ) VALUES ('scheduler', 'CANDIDATE_REJECTED', 'WARN', ?, ?)
+                        """,
+                        (
+                            f"티커 {ticker}: {rejection_code} 사유로 프리뷰에서 제외했습니다.",
+                            timestamp.isoformat(),
+                        ),
+                    )
                 connection.execute(
                     """
                     INSERT INTO system_events (
