@@ -17,7 +17,9 @@ jobs:
         run: python -m unittest discover -s tests -v
 
   deploy:
+    if: github.repository == 'semihyung/invest_ai_agent_Mosasaurus' && github.ref == 'refs/heads/main'
     needs: test
+    environment: production
     runs-on: [self-hosted, linux, ARM64]
     steps:
       - name: Safe deployment

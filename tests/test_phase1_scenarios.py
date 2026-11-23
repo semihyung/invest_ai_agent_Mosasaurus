@@ -248,7 +248,7 @@ class Phase1ScenarioTests(unittest.TestCase):
         )
 
     def test_23_unauthorized_chat_is_blocked(self):
-        handler = TelegramCommandHandler({"allowed"})
+        handler = TelegramCommandHandler({"123456"})
         status, action = handler.handle("other", "/status", datetime(2026, 11, 22, tzinfo=UTC))
         self.assertEqual(status, "UNAUTHORIZED")
         self.assertIsNone(action)

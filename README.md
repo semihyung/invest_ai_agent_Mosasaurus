@@ -15,7 +15,7 @@
 - 토요일 주간 프리뷰 산출, 집중도 제한, 45/30/20 슬롯 배분, 첫 개장일 차순위 승계·보유 종목 생존 처리와 Smart DCA 계산을 구현했습니다.
 - 수정주가 기준 단조 증가 PeakPrice·트레일링 스탑, 단위화 TWR/HWM, 낙폭별 매수 제한과 중앙 운영 모드별 주문 권한 판정을 구현했습니다.
 - 멱등성·확인 대기 복구·지정가 전용 주문 상태 머신, 매도 의무 기록, 잔고·주문 대조 및 불일치 시 SAFE_HALT 처리를 구현했습니다.
-- APScheduler 시각표, Telegram 화이트리스트·확인 제어와 헬스 상태 요약을 구현했습니다.
+- APScheduler의 KST 예약 작업·미스파이어 잠금, 부팅 복구 게이트, Telegram 허용 채팅·단일 polling 잠금·DB 기반 2단계 확인을 구현했습니다. 아직 `main` 런타임 조립, 운영 작업 콜백, 실제 헬스 워치독과 기기 검증은 남아 있습니다.
 - Phase 1 백테스트 입력과 핵심 CAGR/MDD/turnover 계산 및 25개 장애 시나리오 검증을 구현했습니다.
 - Docker Compose, GitHub Actions 배포, 장중 배포 차단과 SQLite 백업·복구 스크립트를 구성했습니다.
 - 전략 전체 실행 파이프라인, KIS 주문·체결 연동, 실시간 NAV 구독, 실제 Walk-Forward/Out-of-Sample 백테스트 및 운영 배포 검증은 아직 완료되지 않았습니다.
@@ -33,6 +33,11 @@ src/kis_client.py              # 토큰 캐시 및 갱신 정책
 src/market_data.py             # 호가·iNAV 신선도와 일봉 품질 검증
 src/corporate_actions.py       # 검증된 기업행동 조정 처리
 src/quant_engine.py            # 핵심 모멘텀 계산과 데이터 검사
+src/boot_recovery.py           # 부팅 DB·토큰·계좌 복구 게이트
+src/main.py                    # 콜백 의존성 주입·Fail-Closed 런타임 조립
+src/scheduler.py               # KST 예약 작업·미스파이어 잠금
+src/telegram_bot.py            # Phase 1 Telegram 접근·확인 제어
+src/health_monitor.py          # DB·heartbeat·워치독 헬스 게이트
 tests/                         # 자동화된 단위 테스트
 backtest/                      # 데이터 로더·백테스트·워크포워드 검증
 ```

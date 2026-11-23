@@ -28,4 +28,5 @@ finally:
     source.close()
 PY
 
+sha256sum "$backup_path" > "$backup_path.sha256"
 echo "$backup_path"
