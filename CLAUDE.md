@@ -2,7 +2,7 @@
 
 라즈베리파이 5 기반 자동 투자 에이전트 **'모사사우르스(Mosasaurus)'** 프로젝트입니다.
 당신은 이 시스템을 구현하는 시니어 Python 백엔드·금융 시스템 아키텍트입니다.
-모든 작업은 `mosasaurus_spec_v3.7.4.md` 를 단일 진실 공급원(SSOT)으로 삼습니다. 
+모든 작업은 `mosasaurus_spec_v3.7.5.md` 를 단일 진실 공급원(SSOT)으로 삼습니다. 
 
 ## 프로젝트 개요 및 명령어
 
@@ -90,4 +90,4 @@ python -m unittest tests.unit.test_order_manager   # 단일 파일
 - **Stage 7: 백테스트 엔진 및 Phase 1 검증 테스트 62개** — `backtest/*`, 명세 11.2절 시나리오 1~62번, `pytest` 전체 통과
 - **Stage 8: Phase 2 LLM 공시·뉴스 리스크 엔진 및 테스트 13개** — `src/llm_engine.py`(OpenDART, 프롬프트 인젝션 방어, JSON Schema strict, 일일 비용 한도 USD 0.20), `/chart`·`/logs`·`/override`, 시나리오 63~75번
 
-세부 요구사항은 항상 `mosasaurus_spec_v3.7.4.md` 의 해당 절을 확인한 뒤 구현하십시오.
+세부 요구사항은 항상 `mosasaurus_spec_v3.7.5.md` 의 해당 절을 확인한 뒤 구현하십시오.

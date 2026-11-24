@@ -1,10 +1,10 @@
-# 라즈베리파이 5 기반 군 복무 특화 자동 투자 에이전트 '모사사우르스(Mosasaurus)' 통합 개발 명세서 (v3.7.4 — 재감사 결함 반영 · 승인 명령 체계 · 예수금 대사 · 취소 확정 규칙 확정판)
+# 라즈베리파이 5 기반 군 복무 특화 자동 투자 에이전트 '모사사우르스(Mosasaurus)' 통합 개발 명세서 (v3.7.5 — 무인 운영 보호성 손절 · 비상 재가격 삭제 · 대사 오탐 방지 · 회계 오염 제거 확정판)
 
 * **프로젝트명:** 모사사우르스 (`mosasaurus`)
 
-* **문서 버전:** v3.7.4 (v3.7.3 재감사 반영 패치 — 승인 명령 3종·예수금 필드 고정·취소 후 지연 체결 보정·슬롯 재정렬·120MA 매일 판정·`CANCEL_PENDING` 차단 범위 축소·장중 확정 전량 매도 한정·배포 서명 검증 / 이전: v3.7.3 감사 결함 반영 확정판 — `SAFE_HALT` 원인 기반 해제 경로 · 주문/실전 KIS 계약 · 상태 머신 마감 전이 · 현금흐름 중 HWM 동결 · `EMERGENCY` 재발동 방지 · 주말 토큰 타이머 · 저변동 쏠림·집중도 통제 · Runner 권한 분리 · REAL 플래그 저장소 외부화 · 상수 확정)
+* **문서 버전:** v3.7.5 (`docs/audit_v3.7.4_review.md` Blocker 9건 및 운영자 결정 D1·D2 반영 패치 — `SAFE_HALT` 원인별 보호성 손절·비상 재가격(정정 체인) 삭제·종결 불변 트리거 정정·매도 의무 수량 불변·정지 상태 대사·오염 제거 단위가격·파킹 시계열 결함 시 교체 생략·현금 필드 통일·`synchronous=FULL` / 이전: v3.7.4 v3.7.3 재감사 반영 패치 — 승인 명령 3종·예수금 필드 고정·취소 후 지연 체결 보정·슬롯 재정렬·120MA 매일 판정·`CANCEL_PENDING` 차단 범위 축소·장중 확정 전량 매도 한정·배포 서명 검증 / 이전: v3.7.3 감사 결함 반영 확정판 — `SAFE_HALT` 원인 기반 해제 경로 · 주문/실전 KIS 계약 · 상태 머신 마감 전이 · 현금흐름 중 HWM 동결 · `EMERGENCY` 재발동 방지 · 주말 토큰 타이머 · 저변동 쏠림·집중도 통제 · Runner 권한 분리 · REAL 플래그 저장소 외부화 · 상수 확정)
 
-* **작성 기준일:** 2026-11-24 (이전 판: v3.7.3, v3.7.2 2026-11-23)
+* **작성 기준일:** 2026-11-24 (이전 판: v3.7.4, v3.7.3 2026-11-24, v3.7.2 2026-11-23)
 
 * **운용 시장:** 한국거래소(KRX) 상장 현물 ETF
 
@@ -19,6 +19,22 @@
 * **중요 고지:** 본 문서는 소프트웨어 구현을 위한 결정론적 기술 명세이며 수익률이나 원금 보전을 보장하지 않는다. `REAL` 계좌 전환은 모든 출시 승인 기준 및 하드 게이트를 통과한 뒤 별도 승인 절차로 진행한다.
 
 * **외부 사실 검증 표기:** 본문에서 `[UNVERIFIED]` 가 붙은 KIS/외부 서비스 사실은 공식 샘플·포털에서 아직 확인되지 않은 항목이다. 구현 시 해당 기능은 **fail-closed 기본값** 으로 동작해야 하며, 공식 근거를 확인한 뒤 본 명세 개정으로만 `[UNVERIFIED]` 를 제거한다. `[VERIFIED: 출처]` 는 KIS 공식 샘플 저장소(`koreainvestment/open-trading-api`, `main`, 2026-11-24 열람)에서 확인한 값이다.
+
+### v3.7.5 변경 이력 (v3.7.4 대비)
+
+근거 문서: `docs/audit_v3.7.4_review.md` (Blocker 9건 — 이번 판에서 전부 반영, Major 20건 — 이번 판 범위 밖, 후속 개정 대상).
+
+| ID | 분류 | 변경 요지 | 주요 절 |
+| ----- | ----- | ----- | ----- |
+| D1 | 운영자 결정 (감사 B4) | `SAFE_HALT` 중 **보호성 손절(`PROTECTIVE_EXIT`)** 허용: 활성 원인이 모두 허용 원인(`DEPLOY_ROLLBACK`, `ACCOUNT_MISMATCH`, `UPS_LOW`, `CONFIG_INVALID`)일 때 KIS 잔고 기준 트레일링 스탑(코드 상수 `-10%`) 매도만 `Bid1` 1회 제출. 미해결 `SAFE_HALT` 24시간마다 `CRITICAL` 재경보 | 0.5, 0.6, 6.3, 7.1, 10.3, 10.5 |
+| D2 | 운영자 결정 (감사 B1) | 비상 매도 재가격(정정 체인) **삭제**. 위험 축소 매도는 `Bid1` 1회 제출, 미체결은 `exit_obligations` 로 익일 09:10 재시도. `replaces_order_id`·정정 인덱스·`execution.emergency` 설정 삭제, 활성 attempt 인덱스 1개로 통일 | 7.1–7.3, 9.2, 10.3, 11.2 |
+| V-B2 | Blocker | `trg_terminal_immutable` 을 "status 불변 + `filled_qty` 증가만 허용 + `remaining_qty = 0`" 으로 정정해 `LATE_FILL_CORRECTION` 과 충돌 제거 | 7.3, 9.2 |
+| V-B3 | Blocker | `exit_obligations.required_qty` 불변, 수량 재계산은 항상 `SUPERSEDED` + 새 `OPEN`, 체결 연결용 `order_intents.obligation_id` FK 추가 | 7.3, 9.2 |
+| V-B5 | Blocker | 대사는 정지 상태(활성 주문 0건 + 마지막 체결 후 유예)에서만 수행, 불일치는 `PROVISIONAL` → 2회 재현 시 확정, 조회 실패와 수량 불일치 분리, `cash_tolerance_krw` 10 → 1,000원, `DISMISSED`·`ADJUSTMENT` 추가 | 0.5, 2.2, 4.3, 6.2, 6.3, 9.2, 10.3 |
+| V-B6 | Blocker | 미분류 흐름은 오염 제거 단위가격 $U^*$ 로 스냅샷, 확정 시 발생일 직전 $U^*$ 로 단위 조정 후 재계산. 미분류 중에도 낙폭 악화 전이는 $U^*$ 로 계속 판정(HWM 상향만 동결). 학습 기간에도 HWM 동결 유지 | 6.2, 9.2, 10.3 |
+| V-B7 | Blocker | 대표 파킹 시계열 결함(`PRICE_SERIES_INVALID`·`TickerBlock`) 시 주간 교체 전체 생략(`RF_INVALID`), 보유 종목은 스탑·120MA로만 판정 | 5.1, 5.3 |
+| V-B8 | Blocker | `Cash_KIS` 를 대사 필드와 같은 D+2 정산 예수금으로 정의, 총평가액 교차 검증, Stage 2 완료 조건에 PAPER 실측 추가 | 2.2, 5.4, 10.3 |
+| V-B9 | Blocker | `PRAGMA synchronous=FULL`, 원자적 교체 후 디렉터리 `fsync`, DB 미기록 KIS 주문(고아 주문) 처리 규칙 | 3.3, 7.3, 9.2 |
 
 ### v3.7.4 변경 이력 (v3.7.3 대비)
 
@@ -135,14 +151,14 @@
 | 운영 모드(`OperatingMode`) | `SAFE_HALT`, `EMERGENCY`, `PAUSED`, `TRAINING`, `NORMAL` | 우선순위 순. 독립 플래그에서 매 평가 시 유도 |
 | 계좌 낙폭 단계(`DrawdownStage`) | `NORMAL`, `CAUTION`, `WARNING`, `CRITICAL` | 운영 모드가 아님. `WARNING` 은 모드명으로 쓰지 않는다 |
 | 데이터 품질(`DataQuality`) | `VALID`, `STALE`, `DATA_INVALID` | `DataQualityGate` 결과도 이 집합을 사용(v3.7.2의 `FAILED` 폐기) |
-| `SAFE_HALT` 원인(`HaltReason`) | `ACCOUNT_MISMATCH`, `PENDING_CONFIRMATION`, `DB_INTEGRITY`, `CALENDAR_MISMATCH`, `CREDENTIALS_UNAVAILABLE`, `UPS_LOW`, `CLOCK_UNSYNCED`, `BOOT_RECOVERY_FAILED`, `DEPLOY_ROLLBACK`, `CONFIG_INVALID` | 6.3절 해제 규칙표 참조. 원인이 1개 이상 활성이면 `SAFE_HALT` |
+| `SAFE_HALT` 원인(`HaltReason`) | `ACCOUNT_MISMATCH`, `PENDING_CONFIRMATION`, `DB_INTEGRITY`, `CALENDAR_MISMATCH`, `CREDENTIALS_UNAVAILABLE`, `UPS_LOW`, `CLOCK_UNSYNCED`, `BOOT_RECOVERY_FAILED`, `DEPLOY_ROLLBACK`, `CONFIG_INVALID` | 6.3절 해제 규칙표 참조. 원인이 1개 이상 활성이면 `SAFE_HALT`. **보호성 손절 허용 원인(`ProtectiveExitReason`, 코드 상수):** `DEPLOY_ROLLBACK`, `ACCOUNT_MISMATCH`, `UPS_LOW`, `CONFIG_INVALID` — 활성 원인이 모두 이 집합에 속할 때만 6.3절 보호성 손절이 가능하다(v3.7.5 D1) |
 | 계좌 매수 차단 플래그(`BuyBlock`) | `UNCLASSIFIED_CASH_FLOW`, `ACCOUNTING_INVALID`, `ACCOUNT_DATA_STALE` | `SAFE_HALT` 가 아니다. 신규 매수만 차단하고 위험 축소 매도는 0.6절대로 허용 |
 | 종목 격리 플래그(`TickerBlock`) | `CORPORATE_ACTION_UNVERIFIED`, `QUOTE_INVALID`, `PRICE_SERIES_INVALID`, `TRADING_HALTED` | 해당 종목의 신규 매수와 가격 기반 자동 매도만 차단 |
 | 주문 상태(`OrderStatus`, 11종) | `CREATED`, `SUBMITTING`, `PENDING_CONFIRMATION`, `ACCEPTED`, `PARTIALLY_FILLED`, `CANCEL_PENDING`, `FILLED`, `CANCELED`, `REJECTED`, `CONFIRMED_NOT_ACCEPTED`, `EXPIRED` | 앞 6개 = 활성(미해결), 뒤 5개 = 종결 |
 | 주문 의도 상태(`IntentStatus`) | `CREATED`, `IN_PROGRESS`, `COMPLETED`, `CLOSED`, `CONFLICT` | 7.3절 매핑표 참조 |
 | 매도 의무 상태(`ExitObligationStatus`) | `OPEN`, `RESOLVED`, `SUPERSEDED`, `VOIDED` | 9.2절 20번 |
 | 주문 의도 유형(`IntentType`) | `STRATEGY_REBALANCE`, `RISK_REDUCTION`, `PARKING_ALLOCATION`, `EXIT_OBLIGATION_RETRY`, `SMOKE_TEST` | |
-| 현금흐름 유형(`FlowType`) / 분류 상태 | `DEPOSIT`, `WITHDRAWAL`, `DISTRIBUTION`, `UNCLASSIFIED` / `CONFIRMED`, `UNCLASSIFIED_CASH_FLOW` | `UNCLASSIFIED_CASH_FLOW` 는 분류 상태 값이며 유형 값이 아니다 |
+| 현금흐름 유형(`FlowType`) / 분류 상태 | `DEPOSIT`, `WITHDRAWAL`, `DISTRIBUTION`, `ADJUSTMENT`, `UNCLASSIFIED` / `PROVISIONAL`, `CONFIRMED`, `UNCLASSIFIED_CASH_FLOW`, `DISMISSED` | `UNCLASSIFIED_CASH_FLOW` 는 분류 상태 값이며 유형 값이 아니다. `ADJUSTMENT` 는 수수료 반올림·이용료 등 성과에 포함하는 계좌 내부 조정(단위 조정 없음, 부호 무관). `PROVISIONAL` 은 1회 관측된 불일치(매수만 차단), `DISMISSED` 는 운영자 또는 자동 재대사로 무효화된 오탐(2.2절) |
 | LLM 결과(`LlmDecision`) | `RISK_VETO`, `NO_MATERIAL_RISK`, `REVIEW_REQUIRED`, `ANALYSIS_UNAVAILABLE`, `DISABLED` | |
 | 지역(`Region`) | `KR`, `US`, `GLOBAL` | `GLOBAL` 의 괴리·슬롯 규칙은 7.2절·5.3절 |
 | 자산 구분(`Category`) | `RISK_ASSET`, `SAFE_PARKING` | `SAFE_PARKING` 은 순위 경쟁 대상이 아니다 |
@@ -155,6 +171,7 @@
 | 운영 모드 \ 주문 유형 | 위험자산 전략 매수 | 위험자산 전략 매도(교체·리밸런싱) | `SAFE_PARKING` 매수 | 파킹 현금화 매도 | `REDUCE_ONLY` 위험 축소 매도 | 매도 의무 재주문 | 취소 요청 | 스모크 테스트 |
 | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
 | `SAFE_HALT` | X | X | X | X | X | X | O | X |
+| `SAFE_HALT` (활성 원인 ⊆ `ProtectiveExitReason`) | X | X | X | X | O(보호성 손절 한정, 6.3절) | O(트레일링 스탑 사유 의무 한정) | O | X |
 | `EMERGENCY` | X | X | X | X | O | O | O | X |
 | `PAUSED` | X | X | X | X | O | O | O | X |
 | `TRAINING` | X | X(정기 교체 보류) | O | X | O(`-7%` 스탑) | O | O | X |
@@ -182,7 +199,7 @@
 
 * **`LLM Risk Engine` *(Phase 2)*:** OpenDART 공시와 경제 뉴스의 사건 유형·중대성·관련 편입 기업을 JSON Schema로 분류하고 신규 매수 제한(`RISK_VETO`, `REVIEW_REQUIRED`, `ANALYSIS_UNAVAILABLE`) 결정.
 
-* **`Order Manager`:** `REAL` 하드 게이트 검증, `OrderIntent` 및 전송 `attempt` 추적, 지정가 및 비상 매도 재가격 산정, KIS 주문 전송, 부분 체결 추적, 정정·취소 및 계좌 대조.
+* **`Order Manager`:** `REAL` 하드 게이트 검증, `OrderIntent` 및 전송 `attempt` 추적, 지정가 산정(위험 축소 매도 `Bid1` 1회, 재가격 없음), KIS 주문 전송, 부분 체결 추적, 정정·취소 및 계좌 대조.
 
 * **`Operations Layer`:** APScheduler 기반 작업 실행, 하드웨어/네트워크 워치독, SQLite 마이그레이션·백업·롤백, `[모사사우르스]` Telegram 알림·원격 제어.
 
@@ -190,9 +207,15 @@
 
 * **외부 은행 연동 제외:** 시중 은행 계좌 조회, 잔액 계산, 은행–증권사 간 자동 이체 기능은 구현 범위에서 완전히 제외한다.
 
-* **KIS 계좌 내 현금흐름 감지 및 분류:** 사용자는 KIS 중개형 ISA 계좌로 비정기적인 추가 원금을 직접 입금할 수 있다. 모사사우르스는 외부 원금 유입(`DEPOSIT`), 외부 출금(`WITHDRAWAL`), 투자 분배금(`DISTRIBUTION`)을 엄격히 구분하며, 원인이 불명확한 현금 변동은 `UNCLASSIFIED_CASH_FLOW` 로 격리해 신규 매수와 HWM·낙폭 판정을 동결한다(6.2절).
+* **KIS 계좌 내 현금흐름 감지 및 분류:** 사용자는 KIS 중개형 ISA 계좌로 비정기적인 추가 원금을 직접 입금할 수 있다. 모사사우르스는 외부 원금 유입(`DEPOSIT`), 외부 출금(`WITHDRAWAL`), 투자 분배금(`DISTRIBUTION`)을 엄격히 구분하며, 원인이 불명확한 현금 변동은 `UNCLASSIFIED_CASH_FLOW` 로 격리해 신규 매수와 HWM 상향 갱신을 동결한다. 낙폭 판정은 미분류 금액을 제외한 오염 제거 단위가격으로 계속한다(6.2절, v3.7.5).
 
-* **현금흐름 감지 방식 (v3.7.3 확정):** KIS 공식 샘플에서 입출금 내역 전용 조회 API를 아직 확인하지 못했다 `[UNVERIFIED]`. 따라서 Phase 1 기본 감지 방식은 **예수금 대사(Cash Reconciliation)** 로 고정한다: 직전 마감 스냅샷의 **D+2 정산 예수금**(잔고 조회 `output2` 의 가수도정산금액 필드, 필드명 `prvs_rcdl_excc_amt` `[UNVERIFIED]` — 이 필드 하나로만 대사하며 D+0 예수금 `dnca_tot_amt` 와 혼용하지 않는다) + 당일 체결 대금(매도 수령액 − 매수 지급액 − 수수료·세금)의 **발생 기준 합계** = 기대 D+2 정산 예수금이며(ETF는 T+2 결제이므로 체결 즉시 D+2 필드에 반영되는지 `[UNVERIFIED]`, 반영 방식이 다르면 구현 전 포털로 확정하고 `docs/operations_runbook.md` 에 기록), 실제 KIS D+2 정산 예수금과의 차이(`unexplained_cash_delta`)가 `accounting.cash_tolerance_krw`(`10` 원)를 넘으면 `UNCLASSIFIED` 현금흐름 1건을 생성한다. 이때 `broker_transaction_id` 는 `RECON:{trade_date}:{sequence}` 합성 키를 사용한다. 분류는 ① 운영자 승인 분배금 일정(4.2절 `corporate_actions`)과 금액이 `accounting.distribution_match_tolerance`(`0.05`) 이내로 일치하면(기준 금액 = 검증된 이벤트의 `cash_amount × 기준일 보유수량`) `DISTRIBUTION` 으로 자동 확정, ② 그 외에는 Telegram `/classify [flow_id] DEPOSIT|WITHDRAWAL|DISTRIBUTION` 2단계 확인으로만 확정한다. 공식 입출금 조회 TR이 확인되면 명세 개정으로 브로커 거래 ID 방식을 추가하되 예수금 대사는 교차 검증으로 유지한다.
+* **현금흐름 감지 방식 (v3.7.3 확정):** KIS 공식 샘플에서 입출금 내역 전용 조회 API를 아직 확인하지 못했다 `[UNVERIFIED]`. 따라서 Phase 1 기본 감지 방식은 **예수금 대사(Cash Reconciliation)** 로 고정한다: 직전 마감 스냅샷의 **D+2 정산 예수금**(잔고 조회 `output2` 의 가수도정산금액 필드, 필드명 `prvs_rcdl_excc_amt` `[UNVERIFIED]` — 이 필드 하나로만 대사하며 D+0 예수금 `dnca_tot_amt` 와 혼용하지 않는다) + 당일 체결 대금(매도 수령액 − 매수 지급액 − 수수료·세금)의 **발생 기준 합계** = 기대 D+2 정산 예수금이며(ETF는 T+2 결제이므로 체결 즉시 D+2 필드에 반영되는지 `[UNVERIFIED]`, 반영 방식이 다르면 구현 전 포털로 확정하고 `docs/operations_runbook.md` 에 기록), 실제 KIS D+2 정산 예수금과의 차이(`unexplained_cash_delta`)가 `accounting.cash_tolerance_krw`(`1000` 원, v3.7.4의 `10` 원은 체결 건별 수수료 절사·유관기관비·예탁금 이용료로 상시 오탐을 일으켜 상향)를 넘으면 아래 2단계 판정을 적용한다. 이때 `broker_transaction_id` 는 `RECON:{trade_date}:{sequence}` 합성 키를 사용한다.
+  * **대사 실행 조건 (정지 상태, v3.7.5):** 예수금 대사와 보유 수량 대조(4.3절 3번)는 ① 계좌 전체에 활성 주문(0.5절 활성 6종)이 0건이고 ② 마지막 체결 반영 시각으로부터 `execution.late_fill_grace_seconds`(`60`초) 이상 지났을 때만 판정한다. 조건을 만족하지 못하면 판정을 건너뛰고(불일치로 보지 않는다) 다음 주기에 다시 시도한다. 주문 게이트 2번(7.1절)은 직전 정지 상태 대조 결과에 그 이후 같은 조회 묶음에서 확인한 당일 체결 누적 수량을 더한 기대 수량으로 검사한다.
+  * **2단계 판정:** 첫 불일치 관측은 `classification_status = PROVISIONAL` 행으로 기록하고 신규 매수만 차단한다(HWM·낙폭 동결 없음). `accounting.recon_confirm_interval_seconds`(`60`초) 이상 간격의 다음 정지 상태 대사에서 같은 부호·허용 오차 이내 금액으로 다시 관측되면 `UNCLASSIFIED_CASH_FLOW` 로 확정한다. 다음 대사가 차이를 설명하면(차이 ≤ 허용 오차) `PROVISIONAL` 행을 `DISMISSED` 로 자동 무효화하고 감사 기록을 남긴다.
+  * **분류:** ① 운영자 승인 분배금 일정(4.2절 `corporate_actions`)과 금액이 `accounting.distribution_match_tolerance`(`0.05`) 이내로 일치하면(기준 금액 = 검증된 이벤트의 `cash_amount × 기준일 보유수량`) `DISTRIBUTION` 으로 자동 확정, ② 그 외에는 Telegram `/classify [flow_id] DEPOSIT|WITHDRAWAL|DISTRIBUTION|ADJUSTMENT|DISMISS` 2단계 확인으로만 확정한다. `ADJUSTMENT` 는 단위 조정 없이 성과에 포함하고(부호 무관), `DISMISS` 는 오탐으로 판정해 `DISMISSED` 로 닫는다(단위 조정 없음, 감사 기록).
+  * 공식 입출금 조회 TR이 확인되면 명세 개정으로 브로커 거래 ID 방식을 추가하되 예수금 대사는 교차 검증으로 유지한다.
+
+* **현금 필드 단일 정의 (v3.7.5):** 본문 전체의 $\text{Cash}_{KIS}$(5.4절 총평가액·매수가능금액, 6.2절 $Equity_t$)는 대사 필드와 **같은** `accounting.valuation_cash_field`(= `prvs_rcdl_excc_amt`, D+2 정산 예수금) 하나만 사용한다. D+0 예수금(`dnca_tot_amt`)은 표시용으로만 쓴다(당일 매도대금이 D+2에야 반영되어 평가액이 과소 산출되기 때문). 총평가액은 $V = \text{Cash}_{KIS} + \sum \text{MarketValue}_i$ 로 계산하고 KIS 잔고의 총평가금액 필드(`accounting.valuation_total_field` = `tot_evlu_amt` `[UNVERIFIED: D+2 포함 여부]`)와 `accounting.valuation_cross_check_tolerance_krw`(`1000` 원)를 넘게 다르면 `ACCOUNT_DATA_STALE` 로 매수를 차단한다. **Stage 2 완료 조건:** PAPER 계좌에서 매도·매수 체결 후 D+0/D+1/D+2 시점의 `dnca_tot_amt`·`prvs_rcdl_excc_amt`·`nrcvb_buy_amt`·`tot_evlu_amt` 변화를 실측해 `docs/operations_runbook.md` 에 기록하고, 결과가 본 정의와 다르면 Stage 3 착수 전에 명세를 개정한다.
 
 ### 2.3 절대 금지 사항 (하드 코드 차단)
 
@@ -281,7 +304,7 @@
 
    * 토큰 발급 API 호출은 **1분당 1회** 로 제한되며 초과 시 `EGW00133` 오류가 발생한다. 따라서 호스트 토큰 갱신기(`scripts/refresh_kis_token.py`)는 마지막 토큰 발급 시각으로부터 **최소 65초의 쿨다운 락** 을 강제하여 어떠한 경우에도 `EGW00133` 를 유발하지 않는다. 쿨다운 기준 시각은 `token-cache/.last_issue_at` 에 원자적으로 기록하며, 동시 실행은 `flock` 으로 막는다.
 
-   * 컨테이너 내부 앱은 `/run/secrets/token.json` 을 **읽기 전용(`:ro`)** 으로만 읽으며, 호스트 OS(`systemd timer`)가 실행하는 `scripts/refresh_kis_token.py` 만 `/home/pi/.secrets/mosasaurus/token-cache/token.json` 을 같은 디렉터리의 임시 파일 작성 → `fsync` → 내용 검증 → 원자적 교체(Atomic Rename)한다. 교체 후 파일 권한은 `0640`, 소유 `pi:mosasecret` 이다.
+   * 컨테이너 내부 앱은 `/run/secrets/token.json` 을 **읽기 전용(`:ro`)** 으로만 읽으며, 호스트 OS(`systemd timer`)가 실행하는 `scripts/refresh_kis_token.py` 만 `/home/pi/.secrets/mosasaurus/token-cache/token.json` 을 같은 디렉터리의 임시 파일 작성 → 임시 파일에 소유 `pi:mosasecret`·권한 `0640` 지정(`fchown`·`fchmod`) → `fsync` → 내용 검증 → 원자적 교체(Atomic Rename) → **디렉터리 `fsync`** 순서로 처리한다(v3.7.5: 권한을 교체 후에 바꾸면 그 사이 컨테이너가 읽지 못하는 구간이 생기고, 디렉터리 `fsync` 가 없으면 정전 시 교체가 사라질 수 있다). `run/` 상태 파일 등 모든 원자적 교체에 같은 순서를 적용한다.
 
    * **앱의 토큰 재로드:** 앱은 토큰을 메모리에 캐시하되 **매 KIS 호출 직전** `token.json` 의 `mtime`·`size` 를 확인해 변경 시 재로드한다. 파일의 `expires_at` 이 현재 시각 이하이거나 파싱에 실패하면 KIS 호출을 하지 않고 `CREDENTIALS_UNAVAILABLE` 원인을 활성화한다. 앱은 `credentials_state` 메타데이터(만료 시각·상태)만 갱신한다.
 
@@ -321,9 +344,9 @@
 
    * Step 4: `SUBMITTING` 상태로 남은 주문을 모두 `PENDING_CONFIRMATION` 으로 전이한다(7.3절 크래시 전이).
 
-   * Step 5: KIS 계좌 잔고·보유 종목·당일(및 장 마감 후라면 전 개장일) 주문체결 내역을 조회하여 SQLite `positions`·`orders` 와 대조하고, 7.3절 장 마감 후 확정 규칙을 적용한다. 예수금 대사(2.2절)를 수행한다.
+   * Step 5: KIS 계좌 잔고·보유 종목·당일(및 장 마감 후라면 전 개장일) 주문체결 내역을 조회하여 SQLite `positions`·`orders` 와 대조하고, 7.3절 장 마감 후 확정 규칙을 적용한다. 예수금 대사(2.2절)를 수행한다. **고아 주문(v3.7.5):** KIS 당일 주문 중 DB `orders` 의 어떤 attempt와도 매칭되지 않는 주문이 있으면(정전으로 write-ahead 기록이 사라진 경우 등) `PENDING_CONFIRMATION` 원인을 활성화해 계좌 전체 신규 주문을 막고, 주문번호로 취소를 요청하며, `system_events` 에 `CRITICAL`(`ORPHAN_ORDER`)을 기록한다. 이 원인은 장 마감 후 완전 조회로 고아 주문의 최종 체결 수량을 확인하고 보유 수량 대조를 다시 수행한 뒤 자동 해제한다(대조 불일치는 `ACCOUNT_MISMATCH`). 고아 주문을 근거로 새 의도를 만들거나 재전송하지 않는다.
 
-   * Step 6: 판정. 보유 수량 불일치 → `ACCOUNT_MISMATCH`, 해소되지 않은 `PENDING_CONFIRMATION` → `PENDING_CONFIRMATION` 원인 활성화. 미분류 현금흐름은 `SAFE_HALT` 원인이 아니라 `UNCLASSIFIED_CASH_FLOW` 매수 차단 플래그로 기록한다. 활성 `SAFE_HALT` 원인이 없으면 `reconciliation_ok = True`, `last_successful_reconcile_at` 갱신 후 주문 Job 잠금을 해제한다. 원인이 남으면 원인 목록을 담아 `[모사사우르스]` Telegram 긴급 알림을 발송한다. 자동으로 `NORMAL` 플래그를 설정하지 않으며 저장된 모드 플래그를 그대로 유지한다.
+   * Step 6: 판정. 보유 수량 불일치(2.2절 정지 상태 대조, 2회 재현) → `ACCOUNT_MISMATCH`, 해소되지 않은 `PENDING_CONFIRMATION` → `PENDING_CONFIRMATION` 원인 활성화. 미분류 현금흐름은 `SAFE_HALT` 원인이 아니라 `UNCLASSIFIED_CASH_FLOW` 매수 차단 플래그로 기록한다. 활성 `SAFE_HALT` 원인이 없으면 `reconciliation_ok = True`, `last_successful_reconcile_at` 갱신 후 주문 Job 잠금을 해제한다. 원인이 남으면 원인 목록을 담아 `[모사사우르스]` Telegram 긴급 알림을 발송한다. 자동으로 `NORMAL` 플래그를 설정하지 않으며 저장된 모드 플래그를 그대로 유지한다.
 
 ### 3.4 GitHub Actions Self-Hosted Runner 기반 PR 자동 배포 및 롤백
 
@@ -407,9 +430,9 @@
 | ----- | ----- | ----- | ----- |
 | 1 | 4.1절 TTL 초과 `STALE` 데이터 | 4.1절 표의 범위 | 해당 범위 매수 차단 |
 | 2 | 최근 200거래일 내 가격 결측(`NULL` 또는 `0` 이하), 거래정지, 수정주가 불연속 또는 일간 수익률 $\pm 30\%$ 초과 미검증 이상치 | 종목 | `PRICE_SERIES_INVALID` 격리 |
-| 3 | KIS 계좌 보유 수량과 SQLite `positions.quantity` 불일치 | 계좌 | `ACCOUNT_MISMATCH` 원인 `SAFE_HALT` |
+| 3 | KIS 계좌 보유 수량과 SQLite `positions.quantity` 불일치 (2.2절 정지 상태에서 `accounting.recon_confirm_interval_seconds` 이상 간격 2회 연속 재현) | 계좌 | 첫 관측: 신규 매수 대기. 재현 시 `ACCOUNT_MISMATCH` 원인 `SAFE_HALT`. 조회 자체 실패(타임아웃·5xx)는 불일치가 아니며 `ACCOUNT_DATA_STALE` 매수 차단으로만 처리 |
 | 4 | `orders` 에 `SUBMITTING`·`PENDING_CONFIRMATION` 주문 잔존(계좌), 또는 대상 티커에 활성 상태(`CANCEL_PENDING` 포함) 주문 잔존(종목) | 계좌 / 종목 | 7.1절 게이트 3: 계좌 범위는 전체 신규 주문 대기, 종목 범위는 해당 티커 신규 주문 대기 |
-| 5 | `cash_flows` 에 `UNCLASSIFIED_CASH_FLOW` 잔존 | 계좌 | `UNCLASSIFIED_CASH_FLOW` 매수 차단 + HWM·낙폭 동결(6.2절) |
+| 5 | `cash_flows` 에 `PROVISIONAL` 또는 `UNCLASSIFIED_CASH_FLOW` 잔존 | 계좌 | `PROVISIONAL`: 신규 매수 대기만. `UNCLASSIFIED_CASH_FLOW`: 매수 차단 + HWM 상향 동결, 낙폭은 오염 제거 단위가격으로 계속 판정(6.2절) |
 | 6 | `exchange_calendars(XKRX)` 와 KIS 국내휴장일조회의 개장 여부 불일치 | 계좌 | `CALENDAR_MISMATCH` 원인 `SAFE_HALT` |
 | 7 | 기준 유효성 규칙(4.2절) 미충족 | 종목 | `CORPORATE_ACTION_UNVERIFIED` 격리 |
 
@@ -477,7 +500,8 @@
 
 * **단일 모멘텀 계산 정의 (직전 거래일까지 완료된 수정 종가** $P^{adj}_{i,t}$ **만 사용):**
 
-  * **인덱스 정의:** $t = 1, \dots, k$ 는 가장 최근 완료 거래일을 $t = k$ 로 하는 직전 $k$ 개 거래일이며, $k$ 개 수익률에는 $k+1$ 개 종가가 필요하다. 종목 $i$ 와 파킹 $f$ 의 시계열은 **거래일 교집합으로 정렬**하며, 최근 121개 종가 구간에서 어느 한쪽이라도 거래일이 빠지면 해당 종목은 `PRICE_SERIES_INVALID` 로 순위에서 제외한다(보간 금지).
+  * **인덱스 정의:** $t = 1, \dots, k$ 는 가장 최근 완료 거래일을 $t = k$ 로 하는 직전 $k$ 개 거래일이며, $k$ 개 수익률에는 $k+1$ 개 종가가 필요하다. 종목 $i$ 와 파킹 $f$ 의 시계열은 **거래일 교집합으로 정렬**하며, 최근 121개 종가 구간에서 **종목 $i$ 쪽** 거래일이 빠지면 해당 종목은 `PRICE_SERIES_INVALID` 로 순위에서 제외한다(보간 금지).
+  * **파킹 시계열 결함 (v3.7.5):** 대표 파킹 $f$ 쪽 시계열이 최근 121개 종가 구간에서 결측이거나 $f$ 에 `TickerBlock`(`PRICE_SERIES_INVALID`·`CORPORATE_ACTION_UNVERIFIED` 등)이 활성이면, 개별 종목을 무효로 만들지 않고 **순위 산출 전체를 `RF_INVALID`** 로 판정한다. `RF_INVALID` 이면 5.3절 주간 교체·리밸런싱·신규 진입을 모두 생략하고(전략 교체 매도 금지), 기존 보유 종목은 트레일링 스탑·120MA·`/remove` 로만 퇴출한다. 프리뷰는 `ranked_candidates_json` 에 `rf_status = "RF_INVALID"` 와 빈 교체 내역으로 저장하고 `system_events` `WARN` 및 Telegram 경보를 보낸다. 다음 정상 산출 시점에 자동으로 복귀한다.
 
   1. 수정주가 기반 일간 수익률 및 파킹 대용 수익률:
      
@@ -581,7 +605,7 @@
 
    * **기존 보유 종목 생존 우선 규칙:** 최종 슬롯에 기존 보유 종목이 포함되면 매도 주문을 생성하지 않고 기존 포지션을 유지한다.
 
-   * 기존 보유 포지션 중 ① 2단계 퇴출 대상이거나 ② 최종 슬롯에 포함되지 못한 종목만 전량 매도 `OrderIntent` 를 생성한다. `DATA_INVALID`·`TickerBlock` 은 매도 사유가 아니라 자동 주문 보류 사유이며, 임의 가격으로 자동 매도하지 않는다.
+   * 기존 보유 포지션 중 ① 2단계 퇴출 대상이거나 ② 최종 슬롯에 포함되지 못한 종목만 전량 매도 `OrderIntent` 를 생성한다. `DATA_INVALID`·`TickerBlock` 은 매도 사유가 아니라 자동 주문 보류 사유이며, 임의 가격으로 자동 매도하지 않는다. 순위 산출이 `RF_INVALID`(5.1절)이면 ②는 적용하지 않는다(파킹 데이터 결함으로 위험자산 전량이 슬롯에서 빠지는 것을 막기 위함).
 
    * 승계할 적격 후보가 부족하거나 장중 손절로 슬롯이 비워진 경우, 해당 미배정 비중은 대표 `SAFE_PARKING` 종목에 배정한다.
 
@@ -599,11 +623,11 @@
 
   * 외부 원금 유입은 `DEPOSIT`, 출금은 `WITHDRAWAL`, ETF 분배금 입금은 `DISTRIBUTION` 으로 기록한다.
 
-  * 원인을 식별할 수 없는 예수금 변동이 발생하면 `flow_type=UNCLASSIFIED`, `classification_status=UNCLASSIFIED_CASH_FLOW` 로 기록하고 신규 매수 차단 및 HWM·낙폭 동결(6.2절)을 적용한다.
+  * 원인을 식별할 수 없는 예수금 변동이 발생하면 `flow_type=UNCLASSIFIED`, `classification_status=UNCLASSIFIED_CASH_FLOW` 로 기록하고 신규 매수 차단 및 HWM 상향 동결·오염 제거 단위가격 판정(6.2절)을 적용한다. 그 전 단계로 2.2절 정지 상태 대사·`PROVISIONAL` 2회 재현 규칙을 따른다.
 
 * **사전 조건 (0 나누기 방지):** 계좌 총평가액 $V \le 0$ 이거나 6.2절 성과 지수가 초기화되지 않았으면 비중·Drift·수량 계산을 모두 생략하고 주문을 만들지 않는다. $P_{i,\text{limit}} \le 0$ 이면 해당 종목 `QUOTE_INVALID`.
 
-* 계좌 총평가액: $V = \text{Cash}_{KIS} + \sum \text{MarketValue}_{i}$ (평가는 원주가 기준 `Bid1` 이 아니라 KIS 잔고의 평가금액 필드를 사용)
+* 계좌 총평가액: $V = \text{Cash}_{KIS} + \sum \text{MarketValue}_{i}$ (평가는 원주가 기준 `Bid1` 이 아니라 KIS 잔고의 평가금액 필드를 사용). $\text{Cash}_{KIS}$ 는 2.2절 "현금 필드 단일 정의"의 D+2 정산 예수금(`accounting.valuation_cash_field`)이며, 총평가금액 교차 검증에 실패하면 이 값을 쓰지 않는다.
 
 * 슬롯 배정 종목 $i$ 의 목표 평가액: $T_i = V \times w_i$ (단, $w_{\text{parking}} = (1 - \text{cash\_buffer\_ratio}) - \sum_{i \in \text{RiskSlots}} w_i = 0.95 - \sum w_i$)
 
@@ -615,7 +639,7 @@
 
 * **일일 현금흐름 처리 및 파킹:** 모든 개장일 15:00에 현금흐름 분류와 계좌 대조를 수행한다. 5% 현금 버퍼와 최소 주문 금액을 초과하는 미배정 현금은 모든 주문·데이터 게이트 통과 시 대표 `SAFE_PARKING` 에만 배정한다. 모드·낙폭 단계별 허용은 0.6절 진리표를 따른다. 위험자산 슬롯에 배정되지 않은 비중은 항상 대표 `SAFE_PARKING` 목표액에 포함한다.
 
-* **매수가능금액** $C_{\text{available}}$ **(보수적 규칙):** $C_{\text{available}} = \min(\texttt{nrcvb\_buy\_amt},\ \text{Cash}_{KIS} - \sum \text{활성 매수 주문 잔여 금액})$. KIS 응답이 예약액을 이미 차감했는지와 무관하게 더 작은 값을 쓰므로 이중 차감은 보수적 방향으로만 작동한다. 두 값 중 하나라도 조회 실패·`STALE` 이면 신규 매수를 차단한다.
+* **매수가능금액** $C_{\text{available}}$ **(보수적 규칙):** $C_{\text{available}} = \min(\texttt{nrcvb\_buy\_amt},\ \text{Cash}_{KIS} - \sum \text{활성 매수 주문 잔여 금액})$. KIS 응답이 예약액을 이미 차감했는지와 무관하게 더 작은 값을 쓰므로 이중 차감은 보수적 방향으로만 작동한다. 두 값 중 하나라도 조회 실패·`STALE` 이면 신규 매수를 차단한다. 같은 날 매도 후 매수에서 `nrcvb_buy_amt` 가 당일 매도대금(D+2 미수령분)을 포함하는지는 `[UNVERIFIED]` 이며 2.2절 Stage 2 실측으로 확정한다. 확정 전에는 위 $\min$ 규칙(D+2 정산 예수금 기준)을 그대로 적용한다.
 
 * **최종 매수 수량** $Q_i$ **산출:**
   
@@ -664,7 +688,11 @@
 
   * **최초 초기화:** 계좌 최초 운용 시점에 총평가액 $Equity_0 > 0$ 이 확인되면 기준 단위가격 $U_0 = 100$, 보유 단위 수 $N_0 = Equity_0 / U_0$, $HWM_0 = U_0$ 로 초기화하고 성과 기간(`epoch`) 1을 연다. 평가액이 0이면 초기화를 보류한다. **초기화 시점까지 발생한 입금은 `cash_flows.consumed_by_init = 1` 로 표시하고 단위 조정에 다시 사용하지 않는다**(이중 계상 방지).
 
-  * **외부 현금흐름 반영 (일 단위 고정 규칙):** 개장일 $d$ 에 확정(`CONFIRMED`)된 `DEPOSIT`·`WITHDRAWAL` 은 직전 유효 마감 스냅샷의 단위가격 $U_{d-1}$ 으로 단위 수만 조정한다: $N \leftarrow N + F / U_{d-1}$ (입금 양수, 출금 음수). 장중 발생 시각과 무관하게 이 규칙을 적용하며(일 단위 근사), 현금흐름 자체로 단위가격은 변하지 않는다. 분류가 늦게 확정된 흐름은 실제 발생일이 아니라 **확정일의 직전 스냅샷 단위가격**으로 반영하고 차이를 감사 기록에 남긴다.
+  * **외부 현금흐름 반영 (일 단위 고정 규칙):** 개장일 $d$ 에 확정(`CONFIRMED`)된 `DEPOSIT`·`WITHDRAWAL` 은 직전 유효 마감 스냅샷의 단위가격 $U_{d-1}$ 으로 단위 수만 조정한다: $N \leftarrow N + F / U_{d-1}$ (입금 양수, 출금 음수). 장중 발생 시각과 무관하게 이 규칙을 적용하며(일 단위 근사), 현금흐름 자체로 단위가격은 변하지 않는다.
+
+  * **미분류 기간의 오염 제거 단위가격 (v3.7.5):** `UNCLASSIFIED_CASH_FLOW` 상태 흐름이 있는 동안 모든 스냅샷과 장중 평가는 $U^*_t = (Equity_t - \sum F_{\text{미분류}}) / N_t$ 를 단위가격으로 쓰고, 제외한 금액을 `daily_portfolio.unclassified_excluded_amount` 에 기록한다(미분류 입금이 수익처럼, 미분류 출금이 손실처럼 보이는 것을 막는다).
+  * **늦은 분류 확정 (v3.7.5, v3.7.4의 "확정일 직전 스냅샷" 규칙 폐기):** 분류가 확정되면 `DEPOSIT`·`WITHDRAWAL` 은 **흐름 발생일 직전 유효 마감 스냅샷의 단위가격** $U^*_{\text{flow\_date}-1}$ 로 $N \leftarrow N + F / U^*_{\text{flow\_date}-1}$ 를 적용한다. `DISTRIBUTION`·`ADJUSTMENT`·`DISMISSED` 는 단위 조정 없이 성과에 포함한다. 같은 트랜잭션에서 발생일부터 확정일까지의 `daily_portfolio` 행을 새 $N$ 으로 재계산하고 `restated = 1` 로 표시하며, HWM도 재계산된 스냅샷 기준으로 다시 산출한다(재계산 전후 값은 `audit_events` 에 기록).
+  * **예시:** $V=3{,}000{,}000$, $N=30{,}000$, $U=100$ 에서 5일차 2,000,000원 입금이 미분류로 남으면 $U^*=100$ 으로 유지되고(v3.7.4 방식은 $U=166.67$ 로 HWM이 오른 뒤 확정 시 $DD=-28.6\%$ 가짜 `CRITICAL`), 8일차 `DEPOSIT` 확정 시 $\Delta N = 2{,}000{,}000/100 = 20{,}000$ 으로 $U=100$ 이 이어진다.
 
   * **전액 출금 및 재초기화:** 조정 후 $N \le N_{min}$(`accounting.min_units`, `1e-6`)이면 단위가격을 계산하지 않고(0 나누기 방지) 현재 epoch를 닫는다. 이후 다시 $Equity > 0$ 이 되면 새 epoch를 열되 $U$ 는 직전 epoch의 마지막 유효 단위가격에서 이어 시작하고($N = Equity / U_{last}$), $HWM$ 도 이어받는다(TWR 연속성 유지). $N < 0$ 은 `ACCOUNTING_INVALID`.
 
@@ -674,7 +702,8 @@
 
   * **HWM 갱신 시점 (오염 방지):** $HWM_t = \max(HWM_{t-1}, U_t)$ 갱신은 **`post_close_reconcile` 마감 스냅샷에서만** 수행하며, 다음을 모두 만족해야 한다: 예수금 대사 일치(미분류 현금흐름 0건), 계좌 대조 일치, `twr_quality_status == VALID`. 장중에는 HWM을 갱신하지 않는다.
 
-  * **동결 규칙:** 미분류 현금흐름이 1건이라도 있거나 장중 예수금 대사가 불일치(`unexplained_cash_delta` > `accounting.cash_tolerance_krw`)하면 HWM 갱신과 **낙폭 단계 상향(악화) 전이를 모두 동결**하고 신규 매수를 차단한다. 동결 중에도 개별 종목 트레일링 스탑은 계속 작동한다. 분류 확정 후 단위 수를 조정하고 동결을 해제한다.
+  * **동결 규칙 (v3.7.5 정정):** 미분류 현금흐름(`UNCLASSIFIED_CASH_FLOW`)이 1건이라도 있으면 **HWM 상향 갱신만 동결**하고 신규 매수를 차단한다. 낙폭 단계 악화 전이는 동결하지 않고 오염 제거 단위가격 $U^*_t$ 로 계속 판정한다(v3.7.4는 악화 전이도 동결해 `/classify` 대기 중 `CRITICAL→EMERGENCY` 가 발동하지 않는 무방비 구간이 있었다). 회복 방향 전이는 분류 확정 후 재계산된 스냅샷에서만 수행한다. `PROVISIONAL`(1회 관측) 상태는 신규 매수만 대기시키고 HWM·낙폭에 영향을 주지 않는다. 개별 종목 트레일링 스탑은 항상 계속 작동한다. 분류 확정 후 단위 수를 조정하고 동결을 해제한다.
+  * **학습 기간 (`accounting.cash_recon_learning_days`, `14`):** 운용 시작 후 14개 개장일 동안은 미분류 흐름이 있어도 **신규 매수 차단만 생략하고 경보를 보낸다.** $U^*$ 사용과 HWM 상향 동결은 학습 기간에도 그대로 적용한다(v3.7.4는 학습 기간에 동결을 생략해 HWM 오염이 가능했다).
 
   * 현금흐름 금액을 확정할 수 없거나 평가액이 불완전하면 `twr_quality_status = DATA_INVALID` 및 `ACCOUNTING_INVALID` 매수 차단을 기록한다. 기존 HWM을 임의 보정하지 않고 원인 확인 후 재계산·대조한다.
 
@@ -695,17 +724,24 @@
 
 | 우선순위 | 상태명 | 발동 조건 | 신규 매수 | 정기 교체 | 기존 주문 조회·대조·취소 | 위험 축소 매도 (`REDUCE_ONLY`) | 해제 조건 |
 | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
-| 1 (최상위) | `SAFE_HALT` | 활성 `HaltReason` ≥ 1 (0.5절) | 차단 | 차단 | **허용** | **차단** | 모든 원인이 아래 해제 규칙표에 따라 해제됨 |
+| 1 (최상위) | `SAFE_HALT` | 활성 `HaltReason` ≥ 1 (0.5절) | 차단 | 차단 | **허용** | **차단** (예외: 활성 원인이 모두 `ProtectiveExitReason` 이면 아래 보호성 손절만 허용) | 모든 원인이 아래 해제 규칙표에 따라 해제됨 |
 | 2 | `EMERGENCY` | `/emergency` 명령 또는 계좌 `CRITICAL` 낙폭 | 차단 (미체결 매수 취소) | 차단 | **허용** | **조건부 허용** | `/emergency off` + 2단계 확인 (낙폭 원인이면 6.2절 리베이스) |
 | 3 | `PAUSED` | `/pause` 또는 `/stop` 명령 | 차단 | 차단 | **허용** | **조건부 허용** (하드 스탑 유지) | `/resume` + 2단계 확인 |
 | 4 | `TRAINING` | `/training on [일수]` + 2단계 확인 | 위험자산 차단 (`SAFE_PARKING` 만 허용) | 보류 (토요일 보고 유지) | **허용** | **허용** (강화 `-7.0%`) | `training_until` 도래 또는 `/training off` + 2단계 확인 (다음 평가 시점부터 즉시 적용) |
 | 5 (기본) | `NORMAL` | 위 1~4 미해당 | 허용 (낙폭 단계 제한 적용) | 허용 | **허용** | 허용 (평시 `-10.0%`) | 기본 상태 |
 
-> **조건부 위험 축소 매도 공통 게이트:** `EMERGENCY` 및 `PAUSED` 에서는 `Risk Manager` 가 생성한 `REDUCE_ONLY` 매도만 허용한다. KIS 계좌 대조·토큰·종목별 원주가/조정계수·최우선 호가가 모두 유효하고, 해당 티커에 활성 주문이 없으며, 주문 수량이 매도 가능 수량(보유 − 활성 매도 잔량)을 초과하지 않고, `Order Manager` 의 위험 축소 매도 게이트를 통과해야 한다. 하나라도 불명확하면 새 주문을 제출하지 않고 조회·대조·취소·경보만 수행한다. `SAFE_HALT` 는 원인 해소 전 모든 신규 주문(매수·매도)을 금지한다(`risk.safe_halt.allow_reduce_only_sell: false`). 시장가 전환은 항상 금지한다.
+> **조건부 위험 축소 매도 공통 게이트:** `EMERGENCY` 및 `PAUSED` 에서는 `Risk Manager` 가 생성한 `REDUCE_ONLY` 매도만 허용한다. KIS 계좌 대조·토큰·종목별 원주가/조정계수·최우선 호가가 모두 유효하고, 해당 티커에 활성 주문이 없으며, 주문 수량이 매도 가능 수량(보유 − 활성 매도 잔량)을 초과하지 않고, `Order Manager` 의 위험 축소 매도 게이트를 통과해야 한다. 하나라도 불명확하면 새 주문을 제출하지 않고 조회·대조·취소·경보만 수행한다. `SAFE_HALT` 는 원인 해소 전 모든 신규 주문(매수·매도)을 금지한다(`risk.safe_halt.allow_reduce_only_sell: false`). 유일한 예외는 아래 보호성 손절이다. 시장가 전환은 항상 금지한다.
+
+> **`SAFE_HALT` 중 보호성 손절 (`PROTECTIVE_EXIT`, v3.7.5 운영자 결정 D1):** 운영자가 군 복무 등으로 수동 해제를 오래 못 하는 동안 보유 포지션이 손절 없이 방치되는 것을 막는 예외다.
+> * **허용 조건 (모두 충족):** ① 활성 `HaltReason` 이 모두 `ProtectiveExitReason`(`DEPLOY_ROLLBACK`, `ACCOUNT_MISMATCH`, `UPS_LOW`, `CONFIG_INVALID`)에 속한다. `PENDING_CONFIRMATION`·`CREDENTIALS_UNAVAILABLE`·`DB_INTEGRITY`·`BOOT_RECOVERY_FAILED`·`CALENDAR_MISMATCH`·`CLOCK_UNSYNCED` 중 하나라도 활성이면 전면 차단을 유지한다(주문 결과 불확실·호출 불가·데이터 신뢰 불가·시각 신뢰 불가). ② 개장일 `market.regular_open` ~ `execution.new_order_cutoff` 사이다. ③ 해당 티커에 활성 주문이 없고 `TickerBlock` 이 없으며, 원주가와 `Bid1`·`Ask1` 호가가 TTL 이내로 유효하다.
+> * **판정:** 6.1절 트레일링 스탑만 사용한다(120MA·주간 교체·`/remove`·Phase 2 VETO는 보호성 손절 사유가 아니다). 스탑 비율은 **코드 상수**(평시 `-0.10`, `training_mode` 활성 시 `-0.07`)를 쓰며, `CONFIG_INVALID` 중에도 `rules.yaml` 값에 의존하지 않는다. 고점(`peak_price_adj`)은 DB에 기록된 값을 쓰고, 고점 기록이 없는 종목(예: DB에 없는 KIS 보유분)은 대상에서 제외하고 `CRITICAL` 경보만 보낸다.
+> * **수량·주문:** 수량은 DB가 아니라 **KIS 잔고 조회의 매도가능수량**(`ord_psbl_qty`) 이하로 한다(`ACCOUNT_MISMATCH` 에서는 DB 수량을 신뢰하지 않으며, 과매도는 브로커가 거부한다). 주문은 `RISK_REDUCTION` 의도(`cycle_id = R{거래일}:STOP`, `reason_code = PROTECTIVE_EXIT`), 지정가 `Bid1` **1회 제출**이며 재가격하지 않는다(7.2절). 미체결 잔량은 장 마감 후 `exit_obligations`(`reason_code = PROTECTIVE_EXIT`)로 넘기고, 다음 개장일 09:10 검문소에서 같은 허용 조건을 다시 확인한 뒤에만 재주문한다.
+> * **설정:** `risk.safe_halt.protective_exit.enabled`(`true`)로만 끌 수 있고, 허용 원인 집합과 스탑 비율은 설정으로 넓힐 수 없다(10.5절).
+> * **미해결 경보:** 어떤 `SAFE_HALT` 원인이든 24시간 넘게 활성이면 `risk.safe_halt.unresolved_alert_hours`(`24`)마다 `CRITICAL` 재경보(원인·경과 시간·보유 종목별 현재 낙폭·보호성 손절 가능 여부)를 보낸다.
 
 #### \[`SAFE_HALT` 원인별 해제 규칙표 (무인 복구 경로)\]
 
-자동 해제 원인은 조건이 충족되면 시스템이 스스로 `halt_reasons.cleared_at` 을 기록한다. 모든 해제(자동·수동)는 **해제 직후 계좌 대조 1회 성공**을 추가 조건으로 하며, 대조 실패 시 `ACCOUNT_MISMATCH` 가 새로 활성화된다.
+자동 해제 원인은 조건이 충족되면 시스템이 스스로 `halt_reasons.cleared_at` 을 기록한다. 모든 해제(자동·수동)는 **해제 직후 계좌 대조 1회 성공**을 추가 조건으로 한다. 대조 조회 자체가 실패하면(타임아웃·5xx) 원인을 해제하지 않고 5분 간격으로 재시도하며 `ACCOUNT_MISMATCH` 를 만들지 않는다. `ACCOUNT_MISMATCH` 는 정지 상태 대조에서 수량 불일치가 2회 재현될 때만 새로 활성화된다(4.3절 3번, v3.7.5: 일시적 조회 실패로 자동 해제 원인이 수동 해제 원인으로 격상되던 경로 제거).
 
 | 원인 | 해제 방식 | 해제 조건 |
 | ----- | ----- | ----- |
@@ -749,7 +785,7 @@
 | **Phase 1 (기본)** | `/reconcile` | 1 | KIS 계좌 잔고·미체결 주문과 내부 SQLite DB 즉시 대조(읽기·대조만, 상태 덮어쓰기 없음) |
 | **Phase 1 (기본)** | `/reconcile adopt` | 2 | 대조 차이를 표시한 뒤 KIS 상태(SSOT)를 DB `positions` 에 채택하고 차이를 감사 기록 (`ACCOUNT_MISMATCH` 해제 경로) |
 | **Phase 1 (기본)** | `/clear_halt [원인\|ALL]` | 2 | 수동 해제 원인(6.3절 표) 해제. 실행 전 자동 `/reconcile` 성공이 필수이며, 자동 해제 원인은 이 명령으로 강제 해제할 수 없다 |
-| **Phase 1 (기본)** | `/classify [flow_id] [DEPOSIT\|WITHDRAWAL\|DISTRIBUTION]` | 2 | 미분류 현금흐름 분류 확정(2.2절) |
+| **Phase 1 (기본)** | `/classify [flow_id] [DEPOSIT\|WITHDRAWAL\|DISTRIBUTION\|ADJUSTMENT\|DISMISS]` | 2 | 미분류 현금흐름 분류 확정 또는 오탐 무효화(2.2절, `ADJUSTMENT`·`DISMISS` 는 단위 조정 없음) |
 | **Phase 1 (기본)** | `/ca_confirm [id]` | 2 | 감지된 기업행위 후보 검증 승인(4.2절). 확인 메시지에 `ex_date`·계수·분배금 추정액 표시 |
 | **Phase 1 (기본)** | `/approve_real [approval_id]` | 2 | 호스트 승인 파일(`approvals/real_activation.json`)의 `approval_id`·SHA-256과 일치할 때만 `operator_approvals(REAL_ACTIVATION)` 생성. 확인 메시지에 승인 파일 SHA 앞 8자·만료 시각·계좌 별칭을 표시 |
 | **Phase 1 (기본)** | `/approve_smoke [approval_id]` | 2 | `REAL` 활성 상태에서만 `operator_approvals(SMOKE_SESSION, 만료 ≤ 60분)` 생성. 승인 파일 SHA 대조 |
@@ -777,9 +813,9 @@
 
   1. 환경 조건: `REAL` 이면 위 활성화 조건 충족, `PAPER` 이면 모의 도메인·모의 TR ID 사용.
 
-  2. `reconciliation_ok == true` 이고 마지막 성공 대조 시각이 `ttl_seconds.reconciliation`(`300`초) 이내이며 계좌 잔고·보유 수량이 일치한다.
+  2. `reconciliation_ok == true` 이고 마지막 성공 대조 시각이 `ttl_seconds.reconciliation`(`300`초) 이내이며 계좌 잔고·보유 수량이 일치한다(2.2절 정지 상태 대조 기준). **예외 (보호성 손절, 6.3절):** `PROTECTIVE_EXIT` 매도는 이 조건 대신 "KIS 잔고 조회가 `ttl_seconds.reconciliation` 이내에 성공했고 주문 수량 ≤ KIS 매도가능수량"만 확인한다.
 
-  3. **계좌 범위 불확실 주문 없음:** 계좌 전체에 `SUBMITTING`, `PENDING_CONFIRMATION` 주문이 없다(전송 여부가 불명확한 주문만 계좌 전체를 막는다). **종목 범위:** 대상 티커에 활성 상태(0.5절 활성 6종, `CANCEL_PENDING` 포함) 주문이 없다(단, 7.2절 비상 매도 재가격 체인의 자기 자신 이전 attempt는 예외). `CANCEL_PENDING` 은 취소 대상이 명확하므로 다른 종목의 주문을 막지 않는다. 매수는 추가로 `BuyBlock` 플래그가 없어야 한다.
+  3. **계좌 범위 불확실 주문 없음:** 계좌 전체에 `SUBMITTING`, `PENDING_CONFIRMATION` 주문이 없다(전송 여부가 불명확한 주문만 계좌 전체를 막는다). **종목 범위:** 대상 티커에 활성 상태(0.5절 활성 6종, `CANCEL_PENDING` 포함) 주문이 없다(v3.7.5: 비상 매도 재가격 체인 삭제로 예외 없음). `CANCEL_PENDING` 은 취소 대상이 명확하므로 다른 종목의 주문을 막지 않는다. 매수는 추가로 `BuyBlock` 플래그가 없어야 한다.
 
   4. 토큰·시장 캘린더·해당 종목 가격·호가·기업행위 기준(4.2절)이 모두 유효하고 TTL 이내이며, 대상 종목의 `classification_verified == 1` 이고 `TickerBlock` 이 없다.
 
@@ -793,9 +829,9 @@
 
   9. 시각 조건: 현재 시각이 `market.regular_open`(`09:00:00`) 이후, `execution.new_order_cutoff`(`15:10:00`) 이전이다. 취소 요청은 이 조건의 예외다.
 
-* **일반 전략 주문 게이트:** `STRATEGY_REBALANCE`·`PARKING_ALLOCATION` 의도는 위 공통 게이트에 더해 `backtest_approvals` 에 `status = 'APPROVED'` 레코드가 있고, 그 레코드의 `strategy_params_hash` 가 현재 `rules.yaml` 전략 영역(`strategy`, `momentum`, `portfolio`, `trailing_stop`, `universe`, `execution.fee_rate`, `execution.emergency`, `risk.portfolio_drawdown`)의 정규화 SHA-256과 같아야 한다. 승인 레코드에는 백테스트 결과 ID·코드 커밋 SHA·데이터 범위·보고서 해시가 있어야 한다. 이 조건이 v3.7.2의 `is_calibrated_by_backtest == true` 를 대체한다(`rules.yaml` 의 해당 키는 정보 표시용이며 게이트 판정에 사용하지 않는다). `PAPER` 에서는 `deployment.paper_requires_backtest_approval`(`false`)로 생략할 수 있다. 모드·낙폭 단계 허용은 0.6절을 따른다.
+* **일반 전략 주문 게이트:** `STRATEGY_REBALANCE`·`PARKING_ALLOCATION` 의도는 위 공통 게이트에 더해 `backtest_approvals` 에 `status = 'APPROVED'` 레코드가 있고, 그 레코드의 `strategy_params_hash` 가 현재 `rules.yaml` 전략 영역(`strategy`, `momentum`, `portfolio`, `trailing_stop`, `universe`, `execution.fee_rate`, `risk.portfolio_drawdown`)의 정규화 SHA-256과 같아야 한다. 승인 레코드에는 백테스트 결과 ID·코드 커밋 SHA·데이터 범위·보고서 해시가 있어야 한다. 이 조건이 v3.7.2의 `is_calibrated_by_backtest == true` 를 대체한다(`rules.yaml` 의 해당 키는 정보 표시용이며 게이트 판정에 사용하지 않는다). `PAPER` 에서는 `deployment.paper_requires_backtest_approval`(`false`)로 생략할 수 있다. 모드·낙폭 단계 허용은 0.6절을 따른다.
 
-* **위험 축소 매도 게이트:** `RISK_REDUCTION`·`EXIT_OBLIGATION_RETRY` 의도는 `Risk Manager` 또는 09:10 검문소가 명시적으로 생성한 보유 포지션 매도만 허용한다. 수량은 매도 가능 수량(보유 − 활성 매도 잔량)을 초과할 수 없다. `SAFE_HALT`, 공통 게이트 3·4 실패, 유효하지 않은 호가가 있으면 매도 주문도 제출하지 않는다. 백테스트 승인 조건은 적용하지 않는다. 이 정책은 예외적인 별도 주문 시스템이 아니라 공통 게이트 안의 주문 유형별 권한 검사다.
+* **위험 축소 매도 게이트:** `RISK_REDUCTION`·`EXIT_OBLIGATION_RETRY` 의도는 `Risk Manager` 또는 09:10 검문소가 명시적으로 생성한 보유 포지션 매도만 허용한다. 수량은 매도 가능 수량(보유 − 활성 매도 잔량)을 초과할 수 없다. `SAFE_HALT`(6.3절 보호성 손절 예외 제외), 공통 게이트 3·4 실패, 유효하지 않은 호가가 있으면 매도 주문도 제출하지 않는다. 위험 축소 매도는 항상 `Bid1` 지정가 1회 제출이며 재가격하지 않는다(7.2절). 백테스트 승인 조건은 적용하지 않는다. 이 정책은 예외적인 별도 주문 시스템이 아니라 공통 게이트 안의 주문 유형별 권한 검사다.
 
 * **실계좌 1주 스모크 테스트 전용 게이트:** 스모크 세션은 설정 파일 플래그가 아니라 DB 상태다(v3.7.2의 `rules.yaml` `smoke_test_mode` 폐기 — `:ro` 설정은 앱이 되돌릴 수 없기 때문). 운영자는 `REAL` 활성화 상태에서 호스트에서 `scripts/approve_smoke.sh` 로 `approvals/smoke_session.json` 을 만들고 Telegram 2단계 확인으로 `operator_approvals(approval_type='SMOKE_SESSION', expires_at ≤ 60분 후)` 를 생성한다. 세션 중에는 정상 대조·유효 데이터·유효 호가·미해결 주문 0건을 필수로 하고, `smoke_test.allowed_tickers` 내 종목 1개, `BUY` 1주(`smoke_test.max_quantity`), 지정가 주문 1건(`smoke_test.max_orders_per_session`)만 허용하며 전략 신호·슬롯 배분·Drift 보충 매수를 적용하지 않는다. 주문 1건이 종결되거나 세션이 만료되면 승인 레코드를 `CONSUMED`/`EXPIRED` 로 닫고 감사 기록을 남긴다(성공·실패·타임아웃 무관). 타임아웃은 일반 주문과 동일하게 `PENDING_CONFIRMATION` 으로 처리하며 재전송하지 않는다. 스모크로 매수한 1주는 이후 대표 파킹 보유분으로 취급한다.
 
@@ -812,14 +848,14 @@
     | `SMOKE_TEST` | `S{approval_id}` | 스모크 세션별 1회 |
 
   * 동일 키가 이미 존재하는데 새 요청의 `intent_payload_hash`(수량·가격 정책·사유)가 다르면 새 의도를 만들지 않고 기존 의도를 `CONFLICT` 로 표시하지 않은 채 `INTENT_CONFLICT` 이벤트만 기록해 주문을 중단한다. 수량·가격 정책은 최초 생성된 의도의 값을 유지한다.
-  * `order_intents.parent_intent_id`(PK)와 `idempotency_key`(UNIQUE)로 중복 의도를 막고, `orders(parent_intent_id) WHERE status IN (활성 6종)` **partial UNIQUE index** 로 같은 의도의 동시 활성 attempt를 DB 수준에서 막는다(9.2절).
-  * **재시도 경로 (게이트 7의 유일한 예외):** 같은 의도의 새 attempt는 ① 직전 attempt가 `CONFIRMED_NOT_ACCEPTED`(7.3절) 이거나 ② 7.2절 비상 매도 재가격 체인일 때만 만든다. 새 attempt의 수량 = 의도 요청 수량 − 모든 attempt 누적 체결 수량이며, 가격은 attempt마다 7.2절 규칙으로 새로 산출한다.
+  * `order_intents.parent_intent_id`(PK)와 `idempotency_key`(UNIQUE)로 중복 의도를 막고, `orders(parent_intent_id) WHERE status IN (활성 6종)` **partial UNIQUE index**(`ux_orders_one_active_attempt`, 9.2절 — 인덱스는 이 1개뿐이다)로 같은 의도의 동시 활성 attempt를 DB 수준에서 막는다.
+  * **재시도 경로 (게이트 7의 유일한 예외):** 같은 의도의 새 attempt는 직전 attempt가 `CONFIRMED_NOT_ACCEPTED`(7.3절)일 때만 만든다(v3.7.5: 비상 매도 재가격 체인 경로 삭제). 새 attempt의 수량 = 의도 요청 수량 − 모든 attempt 누적 체결 수량이며, 가격은 attempt마다 7.2절 규칙으로 새로 산출한다.
 
 * **동시성 통제:** `Order Manager` 는 티커별 상호배제 락을 보유한 상태에서만 의도 생성·수량 산출·제출을 수행한다. 같은 티커에 활성 매도 의도가 있으면 다른 유형의 새 매도 의도(예: 15:00 교체 매도 중 발생한 스탑)를 만들지 않고 `SELL_ALREADY_ACTIVE` 로 기록하며, 활성 의도가 종결된 뒤 잔여 보유분이 있으면 위험 사유 의도를 새로 만든다. APScheduler Job은 `max_instances=1`, `coalesce=True` 로 설정한다.
 
 * **매도 선행 파이프라인:** 5.3절 Step B-5의 시한(`sell_first_deadline` `15:06:00`, `new_order_cutoff` `15:10:00`)을 따른다. 매도 단계 주문이 모두 종결되고 KIS 매수가능금액을 재조회하기 전에는 신규 매수 주문을 생성하지 않는다. 시한까지 미확정이면 매수 단계로 진행하지 않고 해당 배치를 종료한다.
 
-### 7.2 지정가(`LIMIT`) 가격 산정 및 비상 매도 재가격 정책
+### 7.2 지정가(`LIMIT`) 가격 산정 및 위험 축소 매도 가격 정책
 
 1. **호가 유효성 및 스프레드 제한:** `Bid1 > 0`, `Ask1 > 0`, `Ask1 > Bid1` 이 아니면 `QUOTE_INVALID`. $MidPrice = (Ask_1 + Bid_1)/2$, $\frac{Ask_1 - Bid_1}{MidPrice} \le 0.003$ (`max_spread_ratio`) 초과 시 주문 보류. 위험 축소 매도는 스프레드 제한을 `execution.max_spread_ratio_reduce_only`(`0.010`)로 완화한다.
 
@@ -829,7 +865,7 @@
 
    * 미국 지수형(`region == 'US'`)·해외 혼합(`region == 'GLOBAL'`): 한국 장중 해외 본장 휴장에 따른 환율·야간선물 괴리를 반영해 **`±0.012`** (`nav_deviation_limit_us`, `nav_deviation_limit_global`)까지 허용.
 
-   * 위험 축소 매도는 iNAV 괴리를 주문 차단 조건으로 쓰지 않고, iNAV가 유효할 때만 4번의 시장 이상 감지 하한으로 사용한다.
+   * 위험 축소 매도는 iNAV 괴리를 주문 차단 조건으로 쓰지 않는다. 단, iNAV가 유효하고 `Bid1 < iNAV × (1 − execution.reduce_only_nav_floor_ratio)`(`0.020`)이면 `MARKET_ANOMALY` 경보를 보내고 그 개장일에는 제출하지 않는다(익일 09:10 재평가).
 
 3. **KRX ETF 호가 단위 (상수):** 가격 $p$ 의 호가 단위 $tick(p)$ 는 $p < 2{,}000$ 원이면 `1` 원, $p \ge 2{,}000$ 원이면 `5` 원이다(`execution.etf_tick_table`, 주식 호가표를 사용하지 않는다) `[UNVERIFIED: KRX 업무규정 현행값 구현 전 확인]`. 1틱 아래 가격은 $down(p) = p - tick(p - 1)$ 이다. 모든 주문 가격은 해당 단위의 배수여야 하며 KIS 호가가 배수가 아니면 `QUOTE_INVALID` 로 처리한다.
 
@@ -841,27 +877,11 @@
 
    * 일반 주문은 재가격하지 않는다. 미체결 잔량은 15:14:30 일괄 취소된다.
 
-5. **비상 매도(하드 스탑) 재가격 정책 (`execution.emergency`):** `RISK_REDUCTION`·`EXIT_OBLIGATION_RETRY` 의도에 적용한다.
+5. **위험 축소 매도 지정가 (v3.7.5: 비상 재가격 삭제, 운영자 결정 D2):** `RISK_REDUCTION`·`EXIT_OBLIGATION_RETRY` 의도(보호성 손절 포함)는 $P_{\text{limit}} = Bid_1$ 로 **1회만 제출**하고 정정·재가격하지 않는다. 스탑 판정과 위험 축소 매도 자체는 항상 작동한다.
 
-   * `execution.emergency.enabled: false` 이면 재가격만 비활성화된다: 위험 축소 매도는 $P_{\text{limit}} = Bid_1$ 로 1회 제출되고, 미체결 잔량은 마감 후 `exit_obligations` 로 이월된다. **스탑 판정과 위험 축소 매도 자체는 비활성화되지 않는다.**
-   * `enabled: true` 일 때의 결정론적 절차:
-
-     ```
-     price_0 = Bid1_now                          # 유효 Bid1 그대로 (오프셋 0틱, initial_offset_ticks = 0)
-     submit(price_0)
-     for n in 1..max_reprices (5):
-         wait until now >= last_submit_at + reprice_interval_seconds (20s)
-         refresh status (REST 체결조회, 필요 시 WS 통보)
-         if filled or now >= new_order_cutoff: break
-         if quote invalid/stale: stop repricing, alert, break          # SAFE_HALT로 승격하지 않음(종목 격리)
-         floor = ceil_to_tick(iNAV * (1 - max_nav_deviation_ratio)) if iNAV valid else None   # 0.020
-         candidate = min(Bid1_now, down(price_{n-1}))    # 새 Bid1을 따라가되 최소 1틱씩 하향(price_step_ticks = 1)
-         if floor and candidate < floor: alert MARKET_ANOMALY, break   # 이상 시장에서 더 낮추지 않음
-         modify(order, candidate)                          # 정정(RVSE_CNCL_DVSN_CD=01, QTY_ALL_ORD_YN=Y)
-     ```
-
-   * 재가격은 **정정 주문**으로 수행한다. 정정 요청은 새 `orders` 행(`replaces_order_id` = 직전 attempt)으로 기록하며, 직전 attempt는 정정 확인 시 `CANCELED`(누적 체결 수량 유지)로 종결한다. 정정이 거부되면(이미 체결 등) 직전 attempt 상태를 조회로 확정한다. 정정 응답 타임아웃은 새 attempt를 `PENDING_CONFIRMATION` 으로 두고 재가격을 중단한다.
-   * 최대 재가격 이후에도 미체결이거나 호가가 소멸하면 **절대 시장가로 전환하지 않고** 마지막 주문을 그대로 두어 15:14:30 일괄 취소에 맡기며, 마감 후 잔량을 `exit_obligations` 의 `OPEN` 의무로 보존하고 Telegram 긴급 알림을 발송한다.
+   * 미체결 잔량은 **절대 시장가로 전환하지 않고** 15:14:30 일괄 취소에 맡긴 뒤, 마감 후 `exit_obligations` 의 `OPEN` 의무로 넘기고 Telegram 긴급 알림을 발송한다. 다음 개장일 09:10 검문소(7.3절)가 그 시점의 `Bid1` 로 1회 재주문한다.
+   * 호가가 무효·`STALE` 이면 제출하지 않고(종목 격리, `SAFE_HALT` 로 승격하지 않음) 10분 간격으로 재평가한다.
+   * v3.7.4의 정정 체인(`execution.emergency`, `replaces_order_id`, `ux_orders_one_active_replacement`)은 2회차 정정부터 DB 부분 UNIQUE 인덱스와 충돌해 실제로 동작할 수 없었으므로 삭제한다. 재도입하려면 인덱스·종결 규칙·매도 가능 수량 정의를 함께 재설계하는 별도 명세 개정이 필요하다.
 
 ### 7.3 11상태 주문 상태 머신 및 `PENDING_CONFIRMATION` 복구 규칙
 
@@ -869,11 +889,11 @@
 
 * **활성 상태 (6종):** `CREATED`, `SUBMITTING`, `PENDING_CONFIRMATION`, `ACCEPTED`, `PARTIALLY_FILLED`, `CANCEL_PENDING`
 
-* **종결 상태 (5종, 불변):** `FILLED`, `CANCELED`, `REJECTED`, `CONFIRMED_NOT_ACCEPTED`, `EXPIRED` *(종결 상태의 `status` 는 덮어쓰지 않으며, 이후 알게 된 사실은 `order_events` 에 새 이벤트로 기록한다. 예외: 종결 후 `execution.late_fill_grace_seconds`(`60`초) 또는 같은 거래일 `post_close_reconcile` 까지 KIS 조회에 직전 체결분이 늦게 반영되어 누적 체결 수량이 늘어나면 `LATE_FILL_CORRECTION` 이벤트로 `filled_qty`·`trade_fills` 만 보정한다(`status` 불변). 보정 후 보유 수량 대조가 일치하면 `ACCOUNT_MISMATCH` 로 처리하지 않는다. 대조가 불일치하거나 누적 수량이 감소하면 `ACCOUNT_MISMATCH` 이다.)*
+* **종결 상태 (5종, 불변):** `FILLED`, `CANCELED`, `REJECTED`, `CONFIRMED_NOT_ACCEPTED`, `EXPIRED` *(종결 상태의 `status` 는 덮어쓰지 않으며, 이후 알게 된 사실은 `order_events` 에 새 이벤트로 기록한다. 예외: 종결 후 `execution.late_fill_grace_seconds`(`60`초) 또는 같은 거래일 `post_close_reconcile` 까지 KIS 조회에 직전 체결분이 늦게 반영되어 누적 체결 수량이 늘어나면 `LATE_FILL_CORRECTION` 이벤트로 `filled_qty`·`trade_fills` 만 보정한다(`status` 불변). 보정은 **한 트랜잭션**에서 `filled_qty` 를 증가시키고 `remaining_qty = 0` 으로 고정하며 `order_events`(`event_type = LATE_FILL_CORRECTION`)를 함께 기록한다. 9.2절 `trg_terminal_immutable` 은 이 형태(상태 불변 + `filled_qty` 증가만 + `remaining_qty = 0`)만 허용한다(v3.7.5: v3.7.4 트리거는 `filled_qty` 변경을 전부 막아 이 보정과 충돌했다). 보정 후 보유 수량 대조가 일치하면 `ACCOUNT_MISMATCH` 로 처리하지 않는다. 대조가 불일치하거나 누적 수량이 감소하면 `ACCOUNT_MISMATCH` 이다.)*
 
 * `UNRESOLVED_EXIT` 는 운영상 미해결 매도 의무를 부르는 표시명일 뿐 KIS 주문 상태가 아니다. 장 마감까지 해결되지 않은 매도 필요 수량은 별도 `exit_obligations` 레코드로 관리하며 주문 상태 머신과 분리한다.
 
-* **Write-Ahead 규칙:** `SUBMITTING`(정정은 새 attempt의 `SUBMITTING`) 상태와 `request_payload_hash` 를 **DB에 커밋한 뒤에만** HTTP 요청을 보낸다. 따라서 `CREATED` 로 남은 주문은 전송된 적이 없음이 보장된다.
+* **Write-Ahead 규칙:** `SUBMITTING`(취소 요청은 `CANCEL_PENDING`) 상태와 `request_payload_hash` 를 **DB에 커밋한 뒤에만** HTTP 요청을 보낸다. 따라서 `CREATED` 로 남은 주문은 전송된 적이 없음이 보장된다. 커밋은 `PRAGMA synchronous=FULL`(9.2절)로 디스크 확정까지 기다린다. 그래도 기록이 사라진 경우는 3.3절 `boot_recovery` 고아 주문 규칙으로 처리한다.
 
 #### \[허용 상태 전이표 (이 표에 없는 전이는 금지)\]
 
@@ -888,13 +908,13 @@
 | `PENDING_CONFIRMATION` | `REJECTED` / `CANCELED` | 조회에서 거부 또는 이미 취소된 주문으로 발견 |
 | `PENDING_CONFIRMATION` | `CONFIRMED_NOT_ACCEPTED` | 아래 "미접수 확정 규칙" 충족 |
 | `ACCEPTED` | `PARTIALLY_FILLED` / `FILLED` | 누적 체결 수량 증가 |
-| `ACCEPTED` / `PARTIALLY_FILLED` | `CANCEL_PENDING` | 취소 또는 정정 요청 전송(write-ahead) |
+| `ACCEPTED` / `PARTIALLY_FILLED` | `CANCEL_PENDING` | 취소 요청 전송(write-ahead). 정정 요청은 Phase 1에서 사용하지 않는다(v3.7.5) |
 | `ACCEPTED` | `REJECTED` | 접수 후 거래소 거부 통보 확인 |
 | `PARTIALLY_FILLED` | `FILLED` | 잔량 0 |
 | `ACCEPTED` / `PARTIALLY_FILLED` | `EXPIRED` | 장 마감 후 조회에서 미체결 잔량 소멸 확인(취소 요청 없이 당일 주문 만료) |
-| `CANCEL_PENDING` | `CANCELED` | 취소·정정 확인 후 `execution.cancel_confirm_consecutive_matches`(`2`)회 연속 조회에서 잔량·누적 체결 수량이 일치하거나, 장 마감 후 완전 조회로 확정(그 전에는 `CANCEL_PENDING` 유지) |
+| `CANCEL_PENDING` | `CANCELED` | 취소 확인 후 `execution.cancel_confirm_consecutive_matches`(`2`)회 연속 조회에서 잔량·누적 체결 수량이 일치하거나, 장 마감 후 완전 조회로 확정(그 전에는 `CANCEL_PENDING` 유지) |
 | `CANCEL_PENDING` | `FILLED` | 취소 처리 전 전량 체결 |
-| `CANCEL_PENDING` | `ACCEPTED` / `PARTIALLY_FILLED` | 취소·정정 거부 응답 확인(원주문 유효) |
+| `CANCEL_PENDING` | `ACCEPTED` / `PARTIALLY_FILLED` | 취소 거부 응답 확인(원주문 유효) |
 | `CANCEL_PENDING` | `EXPIRED` | 취소 응답 불명 상태에서 장 마감 후 잔량 소멸 확인 |
 
 * v3.7.2 도식의 `CONFIRMED_NOT_ACCEPTED → SUBMITTING` 화살표는 폐기한다. 재전송은 7.1절 "재시도 경로"에 따라 **같은 의도의 새 `orders` 행을 `CREATED` 로 생성**하는 것이며, 종결된 기존 행은 변하지 않는다.
@@ -920,9 +940,13 @@
 
   * 미체결 매수는 취소 확정 후 당일 종료하며 익일로 이월하지 않는다.
 
-  * 장 마감 시 매도 필요 잔량은 `exit_obligations` 에 `OPEN` 으로 기록한다(티커당 `OPEN` 1건; 이미 있으면 `required_qty` 를 현재 매도 필요 수량으로 갱신하고 이벤트 기록). 익일 `09:10` 검문소에서 KIS 잔고·미체결·체결을 재조회하고 기존 주문이 모두 종결되었으며 계좌·가격·호가 데이터가 유효한 경우에만 잔여 수량 `min(required_qty − filled_qty, 매도 가능 수량)` 에 대한 `EXIT_OBLIGATION_RETRY` 의도를 생성한다(7.2절 비상 매도 절차 적용). 확인이 불가능하면 의무를 유지하고 신규 주문은 제출하지 않으며 10분 간격으로 재확인한다.
+  * 장 마감 시 매도 필요 잔량은 `exit_obligations` 에 `OPEN` 으로 기록한다(티커당 `OPEN` 1건). **`required_qty` 는 생성 후 변경하지 않는다(v3.7.5).** 이미 `OPEN` 의무가 있고 새로 계산한 매도 필요 수량이 `required_qty − filled_qty` 와 다르면 아래 "의무 대체"로만 처리한다(v3.7.4의 "`required_qty` 갱신"은 `filled_qty <= required_qty` CHECK 위반과 체결분 이중 차감을 일으켜 폐기). 익일 `09:10` 검문소에서 KIS 잔고·미체결·체결을 재조회하고 기존 주문이 모두 종결되었으며 계좌·가격·호가 데이터가 유효한 경우에만 잔여 수량 `min(required_qty − filled_qty, 매도 가능 수량)` 에 대한 `EXIT_OBLIGATION_RETRY` 의도(`order_intents.obligation_id` = 해당 의무)를 생성한다(7.2절 위험 축소 매도 가격, `Bid1` 1회). 확인이 불가능하면 의무를 유지하고 신규 주문은 제출하지 않으며 10분 간격으로 재확인한다.
 
-  * **의무 종결:** 누적 체결로 `filled_qty == required_qty` 이면 `RESOLVED`. 대조 결과 해당 종목 보유 수량이 0이면(수동 매도 등) `VOIDED` 와 감사 기록. 보유 수량 변화로 필요 수량을 다시 계산해 새 의무로 대체할 때는 기존 의무를 `SUPERSEDED` 로 닫고 같은 트랜잭션에서 새 `OPEN` 을 만든다. 가격이 회복되어도 의무는 자동 소멸하지 않는다.
+  * **의무 체결 집계:** 의무의 `filled_qty` 는 `obligation_id` 가 그 의무인 의도들의 `trade_fills.qty` 합계이며, 체결 기록과 같은 트랜잭션에서 갱신한다. 의무와 무관한 매도 체결은 집계하지 않는다.
+
+  * **의무 종결:** 누적 체결로 `filled_qty == required_qty` 이면 `RESOLVED`. 대조 결과 해당 종목 보유 수량이 0이면(수동 매도 등) `VOIDED` 와 감사 기록. 가격이 회복되어도 의무는 자동 소멸하지 않는다.
+
+  * **의무 대체 (`SUPERSEDED`, 순서 고정):** 보유 수량 변화로 필요 수량이 달라지면 한 트랜잭션에서 ① 기존 의무 `status = SUPERSEDED` 로 UPDATE ② 새 의무를 `required_qty = 새 잔여 필요 수량`, `filled_qty = 0`, `status = OPEN` 으로 INSERT ③ 기존 의무의 `superseded_by` = 새 의무 ID로 UPDATE 순서로 처리한다(티커당 `OPEN` 1건 유일 인덱스와 FK 즉시 검사 때문에 이 순서만 가능하다). 기존 의무에 연결된 활성 의도가 있으면 대체하지 않고 그 의도가 종결된 뒤 처리한다.
 
 #### \[주문 의도 상태 매핑\]
 
@@ -1043,23 +1067,35 @@
 
 #### \[DB 무결성 및 마이그레이션 필수 규칙\]
 
-* 모든 SQLite 연결에서 `PRAGMA journal_mode=WAL;`, `PRAGMA foreign_keys=ON;`, `PRAGMA busy_timeout=5000;`(`db.busy_timeout_ms`), `PRAGMA synchronous=NORMAL;` 을 강제한다.
+* 모든 SQLite 연결에서 `PRAGMA journal_mode=WAL;`, `PRAGMA foreign_keys=ON;`, `PRAGMA busy_timeout=5000;`(`db.busy_timeout_ms`), `PRAGMA synchronous=FULL;` 을 강제한다(v3.7.5: WAL + `NORMAL` 은 정전 시 마지막 커밋이 사라질 수 있어 write-ahead 주문 기록 보장과 충돌한다. 쓰기량이 작아 `FULL` 의 비용은 무시할 수준이다). 연결 직후 `PRAGMA journal_mode`·`synchronous` 값을 읽어 기대값이 아니면 `DB_INTEGRITY` 원인으로 처리한다.
 
 * **쓰기 직렬화:** 프로세스 안의 모든 쓰기는 단일 DB writer(전용 스레드 또는 프로세스 전역 락)를 통해 `BEGIN IMMEDIATE` 트랜잭션으로 수행하고, 쓰기 트랜잭션은 `db.max_write_tx_ms`(`1000`) 이내로 끝낸다. KIS 네트워크 호출 중에는 DB write lock을 점유하지 않으며, 외부 API 호출 전후 상태만 짧은 트랜잭션으로 기록한다(write-ahead 규칙, 7.3절).
 
 * `migrations/` 디렉터리에 버전 관리되는 실제 `CREATE TABLE` DDL을 작성한다. 각 파일 첫 줄에 `-- backward_compatible: true|false` 헤더를 둔다(없으면 `false`, 3.4절 롤백 판단). 모든 PK, FK(`ON DELETE RESTRICT` 또는 `SET NULL` 기본, 무심한 `CASCADE` 금지), `UNIQUE`, `NOT NULL`, `CHECK` 제약(`requested_qty > 0`, `filled_qty >= 0`, `remaining_qty >= 0`, `filled_qty + remaining_qty <= requested_qty`, `order_type = 'LIMIT'`, `order_price > 0`, `product_type = 'SPOT_ETF'`, `leverage_multiplier = 1.0`, `is_inverse = 0`, `is_futures_based = 0`, 0.5절 enum)을 SQL 수준에서 강제한다.
 
-* **테이블 생성 순서(FK 의존):** `universe_assets` → `universe_history`·`daily_candles`·`corporate_actions` → `pending_actions` → `backtest_approvals`·`operator_approvals` → `order_intents` → `orders` → `order_events`·`trade_fills` → `exit_obligations` → 나머지. 순환 FK는 없다(`orders.replaces_order_id` 자기 참조만 허용).
+* **테이블 생성 순서(FK 의존):** `universe_assets` → `universe_history`·`daily_candles`·`corporate_actions` → `pending_actions` → `backtest_approvals`·`operator_approvals` → `exit_obligations` → `order_intents` → `orders` → `order_events`·`trade_fills` → 나머지. 순환 FK는 없다(자기 참조는 `exit_obligations.superseded_by` 만 허용, v3.7.5에서 `orders.replaces_order_id` 삭제). `order_intents.obligation_id` → `exit_obligations` FK 때문에 `exit_obligations` 는 `order_intents` 보다 먼저 생성하고, `exit_obligations.last_order_id` → `orders` 참조는 삭제한다(순환 방지, 마지막 주문은 `order_intents.obligation_id` 로 조회).
 
 * **필수 인덱스:**
   * `orders(status, updated_at)`, `orders(parent_intent_id, submitted_at)`, `orders(ticker, submitted_at)`, `order_events(order_id, created_at)`, `trade_fills(executed_at)`, `system_events(severity, created_at)`, `exit_obligations(status, ticker)` (`order_intents.idempotency_key`·`daily_candles(ticker, trade_date)` 는 UNIQUE/PK로 이미 인덱싱되므로 별도 인덱스를 만들지 않는다).
   * **Partial UNIQUE index:**
-    * `CREATE UNIQUE INDEX ux_orders_one_active_attempt ON orders(parent_intent_id) WHERE replaces_order_id IS NULL AND status IN ('CREATED','SUBMITTING','PENDING_CONFIRMATION','ACCEPTED','PARTIALLY_FILLED','CANCEL_PENDING');` — 같은 의도의 원 attempt(정정이 아닌 전송)는 동시에 1건만 활성일 수 있다.
-    * `CREATE UNIQUE INDEX ux_orders_one_active_replacement ON orders(parent_intent_id) WHERE replaces_order_id IS NOT NULL AND status IN (활성 6종);` — 비상 매도 정정 체인에서 활성 정정 attempt는 1건만 허용한다. 정정 attempt는 직전 attempt를 `CANCEL_PENDING` 으로 전이하는 **같은 트랜잭션에서** 삽입하며, 다음 재가격은 직전 정정 attempt가 종결된 뒤에만 가능하다(7.2절 대기 규칙과 일치).
+    * `CREATE UNIQUE INDEX ux_orders_one_active_attempt ON orders(parent_intent_id) WHERE status IN ('CREATED','SUBMITTING','PENDING_CONFIRMATION','ACCEPTED','PARTIALLY_FILLED','CANCEL_PENDING');` — 같은 의도의 attempt는 동시에 1건만 활성일 수 있다(v3.7.5: 정정 체인 삭제로 인덱스를 이 1개로 통일, `ux_orders_one_active_replacement` 삭제).
     * `CREATE UNIQUE INDEX ux_exit_obligation_open ON exit_obligations(ticker) WHERE status = 'OPEN';`
     * `CREATE UNIQUE INDEX ux_safety_flag_active ON safety_flags(flag_type, code, IFNULL(ticker, '')) WHERE cleared_at IS NULL;`
     * `CREATE UNIQUE INDEX ux_slot_ticker ON portfolio_slots(ticker) WHERE ticker IS NOT NULL;`
-  * **트리거:** `trg_orders_match_intent`(BEFORE INSERT ON `orders`): `orders.ticker`·`side` 가 부모 `order_intents` 와 다르면 `RAISE(ABORT)`. `trg_terminal_immutable`(BEFORE UPDATE ON `orders`): 기존 상태가 종결 5종이면 `status`·`filled_qty` 변경을 `RAISE(ABORT)`.
+  * **트리거:** `trg_orders_match_intent`(BEFORE INSERT ON `orders`): `orders.ticker`·`side` 가 부모 `order_intents` 와 다르면 `RAISE(ABORT)`. `trg_terminal_immutable`(BEFORE UPDATE ON `orders`, v3.7.5 정정): 기존 상태가 종결 5종이면 `status` 변경, `filled_qty` 감소, `remaining_qty <> 0` 을 `RAISE(ABORT)` 한다. `filled_qty` 증가는 7.3절 `LATE_FILL_CORRECTION` 을 위해 허용한다.
+
+    ```sql
+    CREATE TRIGGER trg_terminal_immutable BEFORE UPDATE ON orders
+    WHEN OLD.status IN ('FILLED','CANCELED','REJECTED','CONFIRMED_NOT_ACCEPTED','EXPIRED')
+    BEGIN
+      SELECT RAISE(ABORT, 'terminal order is immutable')
+      WHERE NEW.status <> OLD.status
+         OR NEW.filled_qty < OLD.filled_qty
+         OR NEW.remaining_qty <> 0;
+    END;
+    ```
+
+    `trg_obligation_required_immutable`(BEFORE UPDATE ON `exit_obligations`, v3.7.5 신설): `NEW.required_qty <> OLD.required_qty` 이면 `RAISE(ABORT)` (7.3절 의무 대체 규칙).
 
 #### \[Phase 1 필수 테이블 — 24개\]
 
@@ -1079,17 +1115,17 @@
 
  8. **`portfolio_slots`**: `slot_id` TEXT PK CHECK IN (`S1`, `S2`, `S3`), `target_weight` REAL NOT NULL, `ticker` TEXT FK, `assigned_at` TEXT NOT NULL, `assignment_reason` TEXT NOT NULL (같은 종목 중복 배정은 `ux_slot_ticker` 로 차단)
 
- 9. **`order_intents`**: `parent_intent_id` TEXT PK, `idempotency_key` TEXT NOT NULL UNIQUE, `cycle_id` TEXT NOT NULL, `intent_type` TEXT NOT NULL CHECK IN (0.5절 5종), `slot_id` TEXT, `ticker` TEXT NOT NULL FK, `side` TEXT NOT NULL CHECK IN (`BUY`, `SELL`), `requested_qty` INTEGER NOT NULL CHECK(`requested_qty` > 0), `price_policy` TEXT NOT NULL CHECK IN (`ASK1`, `BID1`, `EMERGENCY_REPRICE`), `intent_payload_hash` TEXT NOT NULL, `status` TEXT NOT NULL CHECK IN (`CREATED`, `IN_PROGRESS`, `COMPLETED`, `CLOSED`, `CONFLICT`), `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL
+ 9. **`order_intents`**: `parent_intent_id` TEXT PK, `idempotency_key` TEXT NOT NULL UNIQUE, `cycle_id` TEXT NOT NULL, `intent_type` TEXT NOT NULL CHECK IN (0.5절 5종), `slot_id` TEXT, `ticker` TEXT NOT NULL FK, `side` TEXT NOT NULL CHECK IN (`BUY`, `SELL`), `requested_qty` INTEGER NOT NULL CHECK(`requested_qty` > 0), `price_policy` TEXT NOT NULL CHECK IN (`ASK1`, `BID1`), `obligation_id` TEXT REFERENCES `exit_obligations(obligation_id)` (`EXIT_OBLIGATION_RETRY` 의도와, 미체결 잔량이 의무로 넘어간 위험 축소 의도에 기록), CHECK(`intent_type` <> 'EXIT_OBLIGATION_RETRY' OR `obligation_id` IS NOT NULL), `intent_payload_hash` TEXT NOT NULL, `status` TEXT NOT NULL CHECK IN (`CREATED`, `IN_PROGRESS`, `COMPLETED`, `CLOSED`, `CONFLICT`), `created_at` TEXT NOT NULL, `updated_at` TEXT NOT NULL
 
-10. **`orders`**: `order_id` TEXT PK, `parent_intent_id` TEXT NOT NULL FK REFERENCES `order_intents(parent_intent_id)`, `attempt_id` TEXT UNIQUE NOT NULL, `replaces_order_id` TEXT REFERENCES `orders(order_id)`, `kis_order_no` TEXT, `kis_org_no` TEXT, `ticker` TEXT NOT NULL FK, `side` TEXT NOT NULL CHECK IN (`BUY`, `SELL`), `requested_qty` INTEGER NOT NULL CHECK(> 0), `filled_qty` INTEGER NOT NULL DEFAULT 0 CHECK(>= 0), `remaining_qty` INTEGER NOT NULL CHECK(>= 0), CHECK(`filled_qty` + `remaining_qty` <= `requested_qty`), `order_type` TEXT NOT NULL CHECK(`order_type` = 'LIMIT'), `order_price` INTEGER NOT NULL CHECK(`order_price` > 0), `status` TEXT NOT NULL CHECK IN (11종), `broker_status_code` TEXT, `last_broker_checked_at` TEXT, `request_payload_hash` TEXT, `response_payload_sanitized` TEXT, `slot_id` TEXT, `strategy_reason` TEXT NOT NULL, `created_at` TEXT NOT NULL, `submitted_at` TEXT (CREATED 단계에서는 NULL, `SUBMITTING` 전이 시 기록), `updated_at` TEXT NOT NULL
+10. **`orders`**: `order_id` TEXT PK, `parent_intent_id` TEXT NOT NULL FK REFERENCES `order_intents(parent_intent_id)`, `attempt_id` TEXT UNIQUE NOT NULL, `kis_order_no` TEXT, `kis_org_no` TEXT, `ticker` TEXT NOT NULL FK, `side` TEXT NOT NULL CHECK IN (`BUY`, `SELL`), `requested_qty` INTEGER NOT NULL CHECK(> 0), `filled_qty` INTEGER NOT NULL DEFAULT 0 CHECK(>= 0), `remaining_qty` INTEGER NOT NULL CHECK(>= 0), CHECK(`filled_qty` + `remaining_qty` <= `requested_qty`), `order_type` TEXT NOT NULL CHECK(`order_type` = 'LIMIT'), `order_price` INTEGER NOT NULL CHECK(`order_price` > 0), `status` TEXT NOT NULL CHECK IN (11종), `broker_status_code` TEXT, `last_broker_checked_at` TEXT, `request_payload_hash` TEXT, `response_payload_sanitized` TEXT, `slot_id` TEXT, `strategy_reason` TEXT NOT NULL, `created_at` TEXT NOT NULL, `submitted_at` TEXT (CREATED 단계에서는 NULL, `SUBMITTING` 전이 시 기록), `updated_at` TEXT NOT NULL
 
 11. **`order_events`**: `event_id` INTEGER PK AUTOINCREMENT, `order_id` TEXT NOT NULL FK, `event_type` TEXT NOT NULL, `old_status` TEXT, `new_status` TEXT NOT NULL, `actor` TEXT NOT NULL, `reason_code` TEXT NOT NULL, `correlation_id` TEXT NOT NULL, `payload_sanitized` TEXT, `created_at` TEXT NOT NULL
 
 12. **`trade_fills`**: `fill_id` INTEGER PK AUTOINCREMENT, `order_id` TEXT NOT NULL FK, `kis_execution_id` TEXT NOT NULL (4.4절 합성 키), `ticker` TEXT NOT NULL FK, `side` TEXT NOT NULL, `qty` INTEGER NOT NULL CHECK(`qty` > 0), `cumulative_qty` INTEGER NOT NULL CHECK(`cumulative_qty` > 0), `price` REAL NOT NULL CHECK(`price` > 0) (증분 평균가일 수 있으므로 REAL), `price_source` TEXT NOT NULL CHECK IN (`REST_DELTA`, `WS_NOTICE`), `fee` INTEGER NOT NULL DEFAULT 0, `tax` INTEGER NOT NULL DEFAULT 0, `executed_at` TEXT NOT NULL, UNIQUE (`order_id`, `kis_execution_id`), UNIQUE (`order_id`, `cumulative_qty`)
 
-13. **`daily_portfolio`**: `snapshot_date` TEXT PK, `performance_epoch` INTEGER NOT NULL, `total_equity` INTEGER NOT NULL, `cash_balance` INTEGER NOT NULL, `parking_value` INTEGER NOT NULL, `risk_asset_value` INTEGER NOT NULL, `unmanaged_value` INTEGER NOT NULL DEFAULT 0, `distribution_receivable` INTEGER NOT NULL DEFAULT 0, `units_outstanding` REAL NOT NULL CHECK(`units_outstanding` >= 0), `flow_adjusted_unit_nav` REAL, `hwm_flow_adjusted` REAL NOT NULL, `hwm_rebased` INTEGER NOT NULL DEFAULT 0, `hwm_frozen` INTEGER NOT NULL DEFAULT 0, `drawdown_stage` TEXT NOT NULL CHECK IN (`NORMAL`, `CAUTION`, `WARNING`, `CRITICAL`), `twr_cumulative` REAL NOT NULL, `twr_quality_status` TEXT NOT NULL CHECK IN (`VALID`, `DATA_INVALID`), `benchmark_values` TEXT NOT NULL, `data_quality_status` TEXT NOT NULL
+13. **`daily_portfolio`**: `snapshot_date` TEXT PK, `performance_epoch` INTEGER NOT NULL, `total_equity` INTEGER NOT NULL, `cash_balance` INTEGER NOT NULL, `parking_value` INTEGER NOT NULL, `risk_asset_value` INTEGER NOT NULL, `unmanaged_value` INTEGER NOT NULL DEFAULT 0, `distribution_receivable` INTEGER NOT NULL DEFAULT 0, `unclassified_excluded_amount` INTEGER NOT NULL DEFAULT 0 (6.2절 $U^*$ 산출 시 제외한 미분류 금액), `restated` INTEGER NOT NULL DEFAULT 0 CHECK IN (0, 1) (늦은 분류 확정으로 재계산된 행), `units_outstanding` REAL NOT NULL CHECK(`units_outstanding` >= 0), `flow_adjusted_unit_nav` REAL, `hwm_flow_adjusted` REAL NOT NULL, `hwm_rebased` INTEGER NOT NULL DEFAULT 0, `hwm_frozen` INTEGER NOT NULL DEFAULT 0, `drawdown_stage` TEXT NOT NULL CHECK IN (`NORMAL`, `CAUTION`, `WARNING`, `CRITICAL`), `twr_cumulative` REAL NOT NULL, `twr_quality_status` TEXT NOT NULL CHECK IN (`VALID`, `DATA_INVALID`), `benchmark_values` TEXT NOT NULL, `data_quality_status` TEXT NOT NULL
 
-14. **`cash_flows`**: `id` INTEGER PK AUTOINCREMENT, `broker_transaction_id` TEXT UNIQUE NOT NULL (예수금 대사 방식은 `RECON:{trade_date}:{sequence}`), `detection_method` TEXT NOT NULL CHECK IN (`CASH_RECON`, `BROKER_TX`), `flow_date` TEXT NOT NULL, `occurred_at` TEXT NOT NULL, `amount` INTEGER NOT NULL CHECK(`amount` <> 0), `flow_type` TEXT NOT NULL CHECK IN (`DEPOSIT`, `WITHDRAWAL`, `DISTRIBUTION`, `UNCLASSIFIED`), CHECK((`flow_type` IN ('DEPOSIT','DISTRIBUTION') AND `amount` > 0) OR (`flow_type` = 'WITHDRAWAL' AND `amount` < 0) OR `flow_type` = 'UNCLASSIFIED'), `classification_status` TEXT NOT NULL CHECK IN (`CONFIRMED`, `UNCLASSIFIED_CASH_FLOW`), `consumed_by_init` INTEGER NOT NULL DEFAULT 0, `unit_price_applied` REAL, `units_delta` REAL, `applied_snapshot_date` TEXT, `source` TEXT NOT NULL, `observed_at` TEXT NOT NULL, `confirmed_at` TEXT, `confirmed_via_action_id` TEXT REFERENCES `pending_actions(id)`, `memo` TEXT
+14. **`cash_flows`**: `id` INTEGER PK AUTOINCREMENT, `broker_transaction_id` TEXT UNIQUE NOT NULL (예수금 대사 방식은 `RECON:{trade_date}:{sequence}`), `detection_method` TEXT NOT NULL CHECK IN (`CASH_RECON`, `BROKER_TX`), `flow_date` TEXT NOT NULL, `occurred_at` TEXT NOT NULL, `amount` INTEGER NOT NULL CHECK(`amount` <> 0), `flow_type` TEXT NOT NULL CHECK IN (`DEPOSIT`, `WITHDRAWAL`, `DISTRIBUTION`, `ADJUSTMENT`, `UNCLASSIFIED`), CHECK((`flow_type` IN ('DEPOSIT','DISTRIBUTION') AND `amount` > 0) OR (`flow_type` = 'WITHDRAWAL' AND `amount` < 0) OR `flow_type` IN ('ADJUSTMENT','UNCLASSIFIED')), `classification_status` TEXT NOT NULL CHECK IN (`PROVISIONAL`, `CONFIRMED`, `UNCLASSIFIED_CASH_FLOW`, `DISMISSED`), CHECK(`classification_status` NOT IN ('PROVISIONAL','UNCLASSIFIED_CASH_FLOW') OR `flow_type` = 'UNCLASSIFIED'), `first_observed_at` TEXT NOT NULL, `reconfirmed_at` TEXT (2.2절 2회 재현 시각), `consumed_by_init` INTEGER NOT NULL DEFAULT 0, `unit_price_applied` REAL, `units_delta` REAL, `applied_snapshot_date` TEXT, `source` TEXT NOT NULL, `observed_at` TEXT NOT NULL, `confirmed_at` TEXT, `confirmed_via_action_id` TEXT REFERENCES `pending_actions(id)`, `memo` TEXT
 
 15. **`corporate_actions`**: `id` INTEGER PK AUTOINCREMENT, `provider_event_id` TEXT UNIQUE NOT NULL (`DETECT:{ticker}:{ex_date}` 또는 승인 일정 ID), `ticker` TEXT NOT NULL FK, `action_type` TEXT NOT NULL CHECK IN (`CASH_DISTRIBUTION`, `SPLIT`, `MERGE`, `OTHER`), `ex_date` TEXT NOT NULL, `record_date` TEXT, `pay_date` TEXT, `cash_amount` REAL, `detected_factor` REAL, `adjustment_factor` REAL, `verified` INTEGER NOT NULL DEFAULT 0 CHECK IN (0, 1), `verification_source` TEXT CHECK IN (`ALLOWLIST_SCHEDULE`, `OPERATOR_CONFIRMED`), CHECK(`verified` = 0 OR (`verification_source` IS NOT NULL AND `adjustment_factor` IS NOT NULL)), `verified_at` TEXT, `source` TEXT NOT NULL
 
@@ -1101,7 +1137,7 @@
 
 19. **`audit_events`**: `id` INTEGER PK AUTOINCREMENT, `actor` TEXT NOT NULL, `action` TEXT NOT NULL, `target` TEXT NOT NULL, `diff_sanitized` TEXT NOT NULL, `correlation_id` TEXT NOT NULL, `created_at` TEXT NOT NULL
 
-20. **`exit_obligations`**: `obligation_id` TEXT PK, `ticker` TEXT NOT NULL FK, `source_event_id` TEXT UNIQUE NOT NULL, `required_qty` INTEGER NOT NULL CHECK(`required_qty` > 0), `filled_qty` INTEGER NOT NULL DEFAULT 0 CHECK(`filled_qty` >= 0 AND `filled_qty` <= `required_qty`), `status` TEXT NOT NULL CHECK IN (`OPEN`, `RESOLVED`, `SUPERSEDED`, `VOIDED`), `superseded_by` TEXT REFERENCES `exit_obligations(obligation_id)`, `reason_code` TEXT NOT NULL, `last_order_id` TEXT REFERENCES `orders(order_id)`, `created_at` TEXT NOT NULL, `last_checked_at` TEXT, `resolved_at` TEXT
+20. **`exit_obligations`**: `obligation_id` TEXT PK, `ticker` TEXT NOT NULL FK, `source_event_id` TEXT UNIQUE NOT NULL, `required_qty` INTEGER NOT NULL CHECK(`required_qty` > 0), `filled_qty` INTEGER NOT NULL DEFAULT 0 CHECK(`filled_qty` >= 0 AND `filled_qty` <= `required_qty`), `status` TEXT NOT NULL CHECK IN (`OPEN`, `RESOLVED`, `SUPERSEDED`, `VOIDED`), `superseded_by` TEXT REFERENCES `exit_obligations(obligation_id)`, `reason_code` TEXT NOT NULL (`STOP`, `MA120`, `REMOVE`, `VETO`, `PROTECTIVE_EXIT`), `created_at` TEXT NOT NULL, `last_checked_at` TEXT, `resolved_at` TEXT
 
 21. **`pending_actions`** *(v3.7.2 Phase 2 → Phase 1로 이동)*: `id` TEXT PK, `action_type` TEXT NOT NULL CHECK IN (`EMERGENCY_ON`, `EMERGENCY_OFF`, `RESUME`, `TRAINING_ON`, `TRAINING_OFF`, `UNIVERSE_ADD`, `UNIVERSE_REMOVE`, `OVERRIDE_VETO`, `RECONCILE_ADOPT`, `CLEAR_HALT`, `CLASSIFY_FLOW`, `CA_CONFIRM`, `APPROVE_REAL`, `APPROVE_SMOKE`, `APPROVE_BACKTEST`), `args_hash` TEXT NOT NULL, `code_hash` TEXT NOT NULL UNIQUE (확인 코드 SHA-256, 평문 저장 금지), `ticker` TEXT, `reason` TEXT NOT NULL, `approval_status` TEXT NOT NULL CHECK IN (`PENDING`, `APPROVED`, `EXPIRED`, `REJECTED`), `failed_attempts` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `expires_at` TEXT NOT NULL, `confirmed_at` TEXT
 
@@ -1378,16 +1414,9 @@ execution:
   cancel_confirm_consecutive_matches: 2
   order_match_window_seconds: 300
   allow_intraday_not_accepted_for: ["SELL"]     # BUY는 장 마감 후 확정만
-  emergency:
-    enabled: false                # false = 재가격만 비활성(위험 축소 매도는 Bid1 1회 제출)
-    reprice_method: "MODIFY"      # 정정 주문
-    initial_offset_ticks: 0
-    reprice_interval_seconds: 20
-    max_reprices: 5
-    max_nav_deviation_ratio: 0.020
-    price_step_ticks: 1
-    require_fresh_bid_ask: true
-    unresolved_exit_policy: "NEXT_SESSION_RECHECK"
+  # v3.7.5: execution.emergency(비상 재가격) 블록 삭제 — 위험 축소 매도는 Bid1 1회 제출 후 exit_obligations 이월(7.2절)
+  reduce_only_nav_floor_ratio: 0.020   # Bid1 < iNAV×(1-0.02) 이면 MARKET_ANOMALY, 당일 미제출
+  unresolved_exit_policy: "NEXT_SESSION_RECHECK"
 
 risk:
   portfolio_drawdown:
@@ -1405,6 +1434,9 @@ risk:
     allow_reconciliation: true
     allow_cancel_requests: true
     allow_reduce_only_sell: false   # v3.7.2 true는 본문과 충돌하던 오류 — 정정
+    protective_exit:                # v3.7.5 D1: 허용 원인·스탑 비율은 코드 상수(6.3절), 설정은 끄기만 가능
+      enabled: true
+    unresolved_alert_hours: 24      # 미해결 SAFE_HALT CRITICAL 재경보 주기
     require_operator_clearance: "PER_REASON"   # 6.3절 원인별 해제표
 
 corporate_action:
@@ -1416,10 +1448,14 @@ accounting:
   investment_distribution_type: "DISTRIBUTION"
   unclassified_cash_flow_action: "BLOCK_NEW_BUYS_AND_FREEZE_HWM"
   detection_method: "CASH_RECON"
-  cash_tolerance_krw: 10
+  cash_tolerance_krw: 1000              # v3.7.5: 10 → 1000 (수수료 절사·이용료 오탐 방지)
   cash_recon_field: "prvs_rcdl_excc_amt"   # D+2 정산 예수금 [UNVERIFIED], D+0 필드와 혼용 금지
+  valuation_cash_field: "prvs_rcdl_excc_amt"   # v3.7.5: V·C_available·Equity 도 같은 필드(2.2절)
+  valuation_total_field: "tot_evlu_amt"        # 교차 검증용 [UNVERIFIED: D+2 포함 여부]
+  valuation_cross_check_tolerance_krw: 1000
+  recon_confirm_interval_seconds: 60    # PROVISIONAL → 확정에 필요한 재관측 최소 간격
   distribution_match_tolerance: 0.05
-  cash_recon_learning_days: 14          # 첫 14일은 불일치를 경보만 하고 동결·차단하지 않음(Shadow 기간)
+  cash_recon_learning_days: 14          # 첫 14개 개장일은 미분류 흐름에도 매수 차단만 생략(U*·HWM 동결은 유지, 6.2절)
   min_units: 0.000001
   twr_method: "unitized_nav"      # v3.7.2 linked_subperiod_returns 표기 통일
   hwm_method: "flow_adjusted_index"
@@ -1541,9 +1577,9 @@ news:
 
 부팅 시 아래 검사 중 하나라도 실패하면 `CONFIG_INVALID` 원인으로 `SAFE_HALT` 에 진입하고 주문 Job을 시작하지 않는다.
 
-1. **안전 방향 검사:** 설정이 본문보다 느슨하면 실패한다: `allow_market_order != false`, `risk.safe_halt.allow_reduce_only_sell != false`, `execution.retry_unknown_order != false`, `llm.policy.allow_llm_direct_order/force_sell != false`, `universe.reject_*` 중 `false` 존재, `allowed_risk_asset_classes` 에 `EQUITY` 외 값 존재.
+1. **안전 방향 검사:** 설정이 본문보다 느슨하면 실패한다: `allow_market_order != false`, `risk.safe_halt.allow_reduce_only_sell != false`, `execution.retry_unknown_order != false`, `llm.policy.allow_llm_direct_order/force_sell != false`, `universe.reject_*` 중 `false` 존재, `allowed_risk_asset_classes` 에 `EQUITY` 외 값 존재, `risk.safe_halt.protective_exit` 에 `enabled` 외 키 존재(허용 원인·스탑 비율을 설정으로 넓히려는 시도), `accounting.valuation_cash_field != accounting.cash_recon_field`.
 2. **값 범위 검사:** 슬롯 비중 합 + `cash_buffer_ratio` ≤ 1.0, 모멘텀 가중치 합 = 1.0, 낙폭 임계값 `0 > caution > warning > critical`, 스탑 `-1 < normal < training < 0`(훈련 임계값이 0에 더 가까워 더 엄격), 모든 시각 순서 `morning_prep < regular_open < daily_pipeline < sell_first_deadline < new_order_cutoff < order_cancel_sweep_time < regular_close < post_close_reconcile_time`.
-3. **키 존재 검사:** 본문에서 참조하는 모든 키가 존재하고 알 수 없는 키가 없다(오타 방지). 폐기 키(`smoke_test_mode`, `order_expire_time`, `order_cancel_deadline`, `min_volatility_floor`, `mount_token_file_read_only`)가 있으면 실패한다.
+3. **키 존재 검사:** 본문에서 참조하는 모든 키가 존재하고 알 수 없는 키가 없다(오타 방지). 폐기 키(`smoke_test_mode`, `order_expire_time`, `order_cancel_deadline`, `min_volatility_floor`, `mount_token_file_read_only`, v3.7.5의 `execution.emergency`)가 있으면 실패한다.
 4. **환경 일치 검사:** `deployment.environment` 와 7.1절 REAL 활성화 조건, KIS 도메인·TR ID 세트가 일치한다.
 5. **allowlist 검사:** 모든 allowlist 종목이 `asset_class`·`underlying_index_family`·출처 URL·확인일을 갖고, 대표 파킹 종목이 `SAFE_PARKING` 이며 `allowlisted_synthetic_parking_tickers` 에 포함된다.
 
@@ -1609,15 +1645,15 @@ news:
 
 19. **호가 스프레드 및** $iNAV$ **차단:** 스프레드가 `0.3%` 를 초과하거나 `US`/`GLOBAL` ETF의 $iNAV$ 괴리율이 `1.2%` (`KR` 은 `0.5%`)를 초과하면 매수 주문이 보류되고, 위험 축소 매도는 iNAV `STALE` 에서도 호가가 유효하면 허용되는지 검증한다.
 
-20. **비상 매도 가격 유효성:** 비상 지정가가 `Bid1` 보다 높은 가격으로 산출되지 않고, ETF 호가 단위 하향·재가격 간격(`20초`)·최대 횟수(`5회`)·괴리 하한(`2.0%`)·정정 주문 방식을 준수하는지 검증한다.
+20. **`SAFE_HALT` 중 보호성 손절 (v3.7.5 D1):** 활성 원인이 `DEPLOY_ROLLBACK`·`ACCOUNT_MISMATCH`·`UPS_LOW`·`CONFIG_INVALID` 뿐일 때 트레일링 스탑(상수 `-10%`, 훈련 `-7%`) 도달 종목만 KIS 매도가능수량 이하로 `Bid1` 1회 매도되고, 같은 상황에서 `PENDING_CONFIRMATION`·`CREDENTIALS_UNAVAILABLE`·`DB_INTEGRITY`·`BOOT_RECOVERY_FAILED`·`CALENDAR_MISMATCH`·`CLOCK_UNSYNCED` 중 하나가 함께 활성이면 전면 차단되며, 120MA 이탈·고점 기록 없는 종목은 매도되지 않고, `CONFIG_INVALID` 에서도 설정값이 아닌 코드 상수가 쓰이며, 미해결 `SAFE_HALT` 가 24시간마다 재경보되는지 검증한다.
 
-21. **비상 매도 미체결 이월:** 최대 재가격 이후에도 미체결이면 시장가로 전환하지 않고 `exit_obligations` 의 `OPEN` 상태 및 Telegram 긴급 경보를 생성하는지 검증한다.
+21. **위험 축소 매도 1회 제출·이월 (v3.7.5 D2):** 스탑 매도가 `Bid1` 지정가 1회만 제출되고 정정·재가격 요청이 전송되지 않으며, 미체결 잔량이 시장가로 전환되지 않고 장 마감 후 `exit_obligations` `OPEN` 과 Telegram 긴급 경보로 이어지고, `Bid1 < iNAV × 0.98` 이면 `MARKET_ANOMALY` 로 당일 미제출되는지 검증한다.
 
-22. **15:14:30 일괄 취소 및 익일 09:10 검문소:** 마감 시한에 미체결 매수는 취소 후 당일 종료되고, `exit_obligations` 의 미해결 매도 잔량은 익일 `09:10` 검문소에서 기존 주문 종료 확인 후 `EXIT_OBLIGATION_RETRY` 로 최우선 재매도되는지 검증한다.
+22. **15:14:30 일괄 취소 및 익일 09:10 검문소:** 마감 시한에 미체결 매수는 취소 후 당일 종료되고, `exit_obligations` 의 미해결 매도 잔량은 익일 `09:10` 검문소에서 기존 주문 종료 확인 후 `obligation_id` 가 연결된 `EXIT_OBLIGATION_RETRY` 로 최우선 재매도되는지 검증한다. 추가로 `required_qty` 100, 60주 체결 후 필요 수량이 바뀌면 `required_qty` 를 갱신하지 않고 `SUPERSEDED`(순서: UPDATE → INSERT → UPDATE) + 새 `OPEN`(required 40, filled 0)으로 대체되며, `required_qty` UPDATE 시도는 트리거로 거부되고, 의무와 무관한 매도 체결은 `filled_qty` 에 집계되지 않는지 검증한다(v3.7.5).
 
 23. **Drawdown Circuit Breaker:** 유량 보정 계좌 낙폭이 `-15%` 도달 시 `EMERGENCY` 로 자동 전이되어 매수 차단 및 미체결 매수를 취소하고, 회복 방향 전이는 `recovery_buffer` 를 지켜야만 일어나는지 검증한다.
 
-24. **`SAFE_HALT` 권한 분리:** `SAFE_HALT` 상태에서는 조회·대조·취소만 가능하고 매수·매도 신규 주문은 모두 차단되며(`allow_reduce_only_sell: false`), `EMERGENCY`/`PAUSED` 에서만 데이터·계좌·호가 검증을 통과한 `REDUCE_ONLY` 매도가 허용되는지 검증한다.
+24. **`SAFE_HALT` 권한 분리:** `SAFE_HALT` 상태에서는 조회·대조·취소만 가능하고 매수·매도 신규 주문은 모두 차단되며(`allow_reduce_only_sell: false`, 유일한 예외는 20번 보호성 손절), `EMERGENCY`/`PAUSED` 에서만 데이터·계좌·호가 검증을 통과한 `REDUCE_ONLY` 매도가 허용되는지 검증한다.
 
 25. **다중 모드 우선순위 복구:** `TRAINING` 중 `EMERGENCY` 발동 후 해제 시 `NORMAL` 이 아닌 `TRAINING` 으로 복귀(독립 플래그)하며, 재부팅 후 `boot_recovery` 완료 전까지 신규 주문이 차단되는지 검증한다.
 
@@ -1627,9 +1663,9 @@ news:
 
 #### \[Phase 1: DB·보안·배포·하드 게이트 검증 — 12개\]
 
-28. **DB 제약조건 및 FK 무결성:** 잘못된 주문 상태·수량(`filled + remaining > requested`)·가격(`<= 0`)·중복 체결 ID·고아 FK·의도와 다른 티커/방향·종결 상태 변경이 SQLite 수준(CHECK·트리거)에서 거부되는지 검증한다.
+28. **DB 제약조건 및 FK 무결성:** 잘못된 주문 상태·수량(`filled + remaining > requested`)·가격(`<= 0`)·중복 체결 ID·고아 FK·의도와 다른 티커/방향·종결 상태의 `status` 변경·`filled_qty` 감소가 SQLite 수준(CHECK·트리거)에서 거부되고, 종결 주문의 `LATE_FILL_CORRECTION`(`filled_qty` 증가 + `remaining_qty = 0`)은 허용되어 보정 후 대조가 일치하면 `ACCOUNT_MISMATCH` 가 생기지 않는지 검증한다(v3.7.5).
 
-29. **SQLite WAL 동시성 및 백업 복구:** API 조회 중 DB 쓰기 락 경합이 발생하지 않고(단일 writer·`busy_timeout`), `restore_test.sh` 가 무결성을 통과하는지 검증한다.
+29. **SQLite WAL 동시성·내구성 및 백업 복구:** API 조회 중 DB 쓰기 락 경합이 발생하지 않고(단일 writer·`busy_timeout`), 모든 연결이 `journal_mode=WAL`·`synchronous=FULL` 로 열리며(기대값이 아니면 `DB_INTEGRITY`), `boot_recovery` 가 DB에 없는 KIS 당일 주문(고아 주문)을 발견하면 `PENDING_CONFIRMATION` 원인 활성화·취소 요청·`ORPHAN_ORDER` 경보 후 재전송 없이 장 마감 확정으로 해제하고, `restore_test.sh` 가 무결성을 통과하는지 검증한다(v3.7.5).
 
 30. **Migration 및 배포 실패 롤백:** 이전 버전 DB에서 새 migration 적용 후 health check 실패 시 이전 Docker 이미지로 롤백되고, `backward_compatible: false`(또는 헤더 없음) migration이 있으면 백업 복원 후 이전 앱이 기동되며 `DEPLOY_ROLLBACK` 원인이 활성화되는지 검증한다.
 
@@ -1659,7 +1695,7 @@ news:
 
 42. **기업행위 감지·검증·종목 격리:** 분배락 소급 조정이 감지되면 해당 종목만 `CORPORATE_ACTION_UNVERIFIED` 로 격리되고(시스템 `SAFE_HALT` 아님), allowlist 일정 일치 시 자동 검증, 그 외에는 `/ca_confirm` 후에만 `PeakPrice` 재기준화·격리 해제되는지 검증한다.
 
-43. **예수금 대사와 HWM·낙폭 동결:** 장중 출금으로 평가액이 15% 이상 감소해도 미분류 상태에서는 낙폭 단계가 악화되지 않고 `EMERGENCY` 가 발동하지 않으며, 입금은 HWM을 올리지 않고, `/classify` 확정 후 단위 수가 조정되는지 검증한다.
+43. **예수금 대사·오염 제거 단위가격 (v3.7.5):** ① 활성 주문이 있거나 마지막 체결 후 60초 이내면 대사·수량 대조를 건너뛰고, ② 첫 불일치는 `PROVISIONAL`(매수 대기만)이며 60초 이상 간격 재관측 시에만 `UNCLASSIFIED_CASH_FLOW`·`ACCOUNT_MISMATCH` 로 확정되고 다음 대사가 차이를 설명하면 `DISMISSED` 로 무효화되며, 조회 실패는 `ACCOUNT_DATA_STALE` 로만 처리되고, ③ 미분류 입금 2,000,000원(초기 300만 원)이 HWM을 올리지 않고 $U^*$ 가 유지되며 늦은 `DEPOSIT` 확정 시 발생일 직전 $U^*$ 로 단위가 조정되어 가짜 `CRITICAL` 이 생기지 않고, ④ 미분류 출금으로 실제 낙폭이 `-15%` 에 도달하면 $U^*$ 기준으로 `EMERGENCY` 가 발동하며, ⑤ 학습 기간에도 HWM 상향 동결이 유지되고, ⑥ 매도 체결 당일 $V$·$C_{available}$ 이 D+2 정산 예수금 필드로 계산되고 `tot_evlu_amt` 교차 검증 실패 시 매수가 차단되는지 검증한다.
 
 44. **초기화 입금 이중 계상 방지 및 epoch:** 평가액 0에서 첫 입금으로 초기화할 때 같은 입금이 단위 조정에 다시 반영되지 않고, 전액 출금 후 재입금 시 새 epoch가 직전 단위가격을 이어받는지 검증한다.
 
@@ -1685,9 +1721,9 @@ news:
 
 55. **티커 락과 중복 매도 방지:** 15:00 교체 매도와 장중 스탑이 같은 티커에 동시에 발생해도 매도 수량 합이 보유 수량을 넘지 않는지 검증한다.
 
-56. **`cycle_id`·활성 attempt 유일성:** 의도 유형별 `cycle_id` 포맷으로 개장일별 파킹 매수가 서로 막지 않고, 같은 의도의 활성 attempt 2건 삽입이 partial UNIQUE index로 거부되는지 검증한다.
+56. **`cycle_id`·활성 attempt 유일성:** 의도 유형별 `cycle_id` 포맷으로 개장일별 파킹 매수가 서로 막지 않고, 같은 의도의 활성 attempt 2건 삽입이 단일 partial UNIQUE index(`ux_orders_one_active_attempt`)로 거부되며, `orders.replaces_order_id` 컬럼과 정정 인덱스가 스키마에 없는지 검증한다(v3.7.5).
 
-57. **비상 매도 설정 분기·ETF 호가:** `execution.emergency.enabled: false` 에서도 스탑 매도가 `Bid1` 1회 제출되고, `true` 에서 정정 체인 의사코드대로 동작하며, 2,000원 이상 ETF의 1틱이 5원으로 계산되는지 검증한다.
+57. **파킹 시계열 결함·ETF 호가 (v3.7.5):** 대표 파킹의 최근 121개 종가 중 1일 결측 또는 `TickerBlock` 시 순위 산출이 `RF_INVALID` 가 되어 주간 교체·전략 매도가 생성되지 않고 보유 종목은 스탑·120MA로만 판정되며(위험자산 전량 매도 Intent 0건), 2,000원 이상 ETF의 1틱이 5원으로 계산되는지 검증한다.
 
 58. **주간 교체 승계:** 주간 첫 개장일 교체 단계가 misfire 또는 `SAFE_HALT` 로 전혀 실행되지 않으면 다음 개장일 15:00에 1회 승계되고, 부분 실행된 경우 승계되지 않는지 검증한다.
 
@@ -1737,9 +1773,9 @@ news:
 
 * \[ \] `PENDING_CONFIRMATION` 상태에서 중복 주문이 발생하지 않고 장 마감 후 결정론적 확정이 작동하는 장애 주입 테스트를 통과했다.
 
-* \[ \] 비상 매도 재가격·미체결·`exit_obligations` 생성·재조회·해소 절차를 모의 환경에서 검증했다.
+* \[ \] 위험 축소 매도 `Bid1` 1회 제출·미체결·`exit_obligations` 생성·재조회·대체(`SUPERSEDED`)·해소 절차와 `SAFE_HALT` 중 보호성 손절을 모의 환경에서 검증했다.
 
-* \[ \] `SAFE_HALT` 에서 조회·대조·취소만 수행되고 매수·매도 신규 주문이 모두 차단되며, 원인별 자동/수동 해제 경로가 무인 상태에서 작동함을 확인했다.
+* \[ \] `SAFE_HALT` 에서 조회·대조·취소만 수행되고 매수·매도 신규 주문이 모두 차단되며(6.3절 보호성 손절 예외만 허용), 원인별 자동/수동 해제 경로가 무인 상태에서 작동함을 확인했다.
 
 * \[ \] `TWR` 및 유량 보정 `HWM` 의 입금·출금·분배금 처리, 예수금 대사, 미분류 중 동결, `EMERGENCY` 리베이스 검증을 통과했다.
 

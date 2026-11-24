@@ -333,7 +333,7 @@ class ConfigValidationTests(unittest.TestCase):
         validate_config(load_config(environ={}))
 
     def test_rules_yaml_matches_spec_block(self):
-        text = (ROOT / "mosasaurus_spec_v3.7.4.md").read_text(encoding="utf-8")
+        text = (ROOT / "mosasaurus_spec_v3.7.5.md").read_text(encoding="utf-8")
         start = text.index("### 10.3 ")
         fence = text.index("```\n", start) + 4
         end = text.index("\n```", fence)
