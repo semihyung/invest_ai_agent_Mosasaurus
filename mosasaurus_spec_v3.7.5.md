@@ -28,7 +28,7 @@
 | ----- | ----- | ----- | ----- |
 | D1 | 운영자 결정 (감사 B4) | `SAFE_HALT` 중 **보호성 손절(`PROTECTIVE_EXIT`)** 허용: 활성 원인이 모두 허용 원인(`DEPLOY_ROLLBACK`, `ACCOUNT_MISMATCH`, `UPS_LOW`, `CONFIG_INVALID`)일 때 KIS 잔고 기준 트레일링 스탑(코드 상수 `-10%`) 매도만 `Bid1` 1회 제출. 미해결 `SAFE_HALT` 24시간마다 `CRITICAL` 재경보 | 0.5, 0.6, 6.3, 7.1, 10.3, 10.5 |
 | D2 | 운영자 결정 (감사 B1) | 비상 매도 재가격(정정 체인) **삭제**. 위험 축소 매도는 `Bid1` 1회 제출, 미체결은 `exit_obligations` 로 익일 09:10 재시도. `replaces_order_id`·정정 인덱스·`execution.emergency` 설정 삭제, 활성 attempt 인덱스 1개로 통일 | 7.1–7.3, 9.2, 10.3, 11.2 |
-| V-B2 | Blocker | `trg_terminal_immutable` 을 "status 불변 + `filled_qty` 증가만 허용 + `remaining_qty = 0`" 으로 정정해 `LATE_FILL_CORRECTION` 과 충돌 제거 | 7.3, 9.2 |
+| V-B2 | Blocker | `trg_terminal_immutable` 을 "status 불변 + `filled_qty` 증가만 허용(그때 `remaining_qty = 0`) + 잔량 증가 금지" 로 정정해 `LATE_FILL_CORRECTION` 과 충돌 제거 | 7.3, 9.2 |
 | V-B3 | Blocker | `exit_obligations.required_qty` 불변, 수량 재계산은 항상 `SUPERSEDED` + 새 `OPEN`, 체결 연결용 `order_intents.obligation_id` FK 추가 | 7.3, 9.2 |
 | V-B5 | Blocker | 대사는 정지 상태(활성 주문 0건 + 마지막 체결 후 유예)에서만 수행, 불일치는 `PROVISIONAL` → 2회 재현 시 확정, 조회 실패와 수량 불일치 분리, `cash_tolerance_krw` 10 → 1,000원, `DISMISSED`·`ADJUSTMENT` 추가 | 0.5, 2.2, 4.3, 6.2, 6.3, 9.2, 10.3 |
 | V-B6 | Blocker | 미분류 흐름은 오염 제거 단위가격 $U^*$ 로 스냅샷, 확정 시 발생일 직전 $U^*$ 로 단위 조정 후 재계산. 미분류 중에도 낙폭 악화 전이는 $U^*$ 로 계속 판정(HWM 상향만 동결). 학습 기간에도 HWM 동결 유지 | 6.2, 9.2, 10.3 |
@@ -889,7 +889,7 @@
 
 * **활성 상태 (6종):** `CREATED`, `SUBMITTING`, `PENDING_CONFIRMATION`, `ACCEPTED`, `PARTIALLY_FILLED`, `CANCEL_PENDING`
 
-* **종결 상태 (5종, 불변):** `FILLED`, `CANCELED`, `REJECTED`, `CONFIRMED_NOT_ACCEPTED`, `EXPIRED` *(종결 상태의 `status` 는 덮어쓰지 않으며, 이후 알게 된 사실은 `order_events` 에 새 이벤트로 기록한다. 예외: 종결 후 `execution.late_fill_grace_seconds`(`60`초) 또는 같은 거래일 `post_close_reconcile` 까지 KIS 조회에 직전 체결분이 늦게 반영되어 누적 체결 수량이 늘어나면 `LATE_FILL_CORRECTION` 이벤트로 `filled_qty`·`trade_fills` 만 보정한다(`status` 불변). 보정은 **한 트랜잭션**에서 `filled_qty` 를 증가시키고 `remaining_qty = 0` 으로 고정하며 `order_events`(`event_type = LATE_FILL_CORRECTION`)를 함께 기록한다. 9.2절 `trg_terminal_immutable` 은 이 형태(상태 불변 + `filled_qty` 증가만 + `remaining_qty = 0`)만 허용한다(v3.7.5: v3.7.4 트리거는 `filled_qty` 변경을 전부 막아 이 보정과 충돌했다). 보정 후 보유 수량 대조가 일치하면 `ACCOUNT_MISMATCH` 로 처리하지 않는다. 대조가 불일치하거나 누적 수량이 감소하면 `ACCOUNT_MISMATCH` 이다.)*
+* **종결 상태 (5종, 불변):** `FILLED`, `CANCELED`, `REJECTED`, `CONFIRMED_NOT_ACCEPTED`, `EXPIRED` *(종결 상태의 `status` 는 덮어쓰지 않으며, 이후 알게 된 사실은 `order_events` 에 새 이벤트로 기록한다. 예외: 종결 후 `execution.late_fill_grace_seconds`(`60`초) 또는 같은 거래일 `post_close_reconcile` 까지 KIS 조회에 직전 체결분이 늦게 반영되어 누적 체결 수량이 늘어나면 `LATE_FILL_CORRECTION` 이벤트로 `filled_qty`·`trade_fills` 만 보정한다(`status` 불변). 보정은 **한 트랜잭션**에서 `filled_qty` 를 증가시키고 `remaining_qty = 0` 으로 고정하며 `order_events`(`event_type = LATE_FILL_CORRECTION`)를 함께 기록한다. 9.2절 `trg_terminal_immutable` 은 이 형태(상태 불변 + `filled_qty` 증가 + `remaining_qty = 0`)의 체결 변경만 허용한다(v3.7.5: v3.7.4 트리거는 `filled_qty` 변경을 전부 막아 이 보정과 충돌했다). 보정 후 보유 수량 대조가 일치하면 `ACCOUNT_MISMATCH` 로 처리하지 않는다. 대조가 불일치하거나 누적 수량이 감소하면 `ACCOUNT_MISMATCH` 이다.)*
 
 * `UNRESOLVED_EXIT` 는 운영상 미해결 매도 의무를 부르는 표시명일 뿐 KIS 주문 상태가 아니다. 장 마감까지 해결되지 않은 매도 필요 수량은 별도 `exit_obligations` 레코드로 관리하며 주문 상태 머신과 분리한다.
 
@@ -1082,7 +1082,7 @@
     * `CREATE UNIQUE INDEX ux_exit_obligation_open ON exit_obligations(ticker) WHERE status = 'OPEN';`
     * `CREATE UNIQUE INDEX ux_safety_flag_active ON safety_flags(flag_type, code, IFNULL(ticker, '')) WHERE cleared_at IS NULL;`
     * `CREATE UNIQUE INDEX ux_slot_ticker ON portfolio_slots(ticker) WHERE ticker IS NOT NULL;`
-  * **트리거:** `trg_orders_match_intent`(BEFORE INSERT ON `orders`): `orders.ticker`·`side` 가 부모 `order_intents` 와 다르면 `RAISE(ABORT)`. `trg_terminal_immutable`(BEFORE UPDATE ON `orders`, v3.7.5 정정): 기존 상태가 종결 5종이면 `status` 변경, `filled_qty` 감소, `remaining_qty <> 0` 을 `RAISE(ABORT)` 한다. `filled_qty` 증가는 7.3절 `LATE_FILL_CORRECTION` 을 위해 허용한다.
+  * **트리거:** `trg_orders_match_intent`(BEFORE INSERT ON `orders`): `orders.ticker`·`side` 가 부모 `order_intents` 와 다르면 `RAISE(ABORT)`. `trg_terminal_immutable`(BEFORE UPDATE ON `orders`, v3.7.5 정정): 기존 상태가 종결 5종이면 `status` 변경, `filled_qty` 감소, `remaining_qty` 증가, `filled_qty` 를 늘리면서 `remaining_qty <> 0` 으로 두는 변경을 `RAISE(ABORT)` 한다. `filled_qty` 증가(+ 잔량 0)는 7.3절 `LATE_FILL_CORRECTION` 을 위해 허용하며, 수량과 무관한 갱신(조회 시각 기록 등)은 잔량이 남은 종결 주문에도 허용한다.
 
     ```sql
     CREATE TRIGGER trg_terminal_immutable BEFORE UPDATE ON orders
@@ -1091,7 +1091,8 @@
       SELECT RAISE(ABORT, 'terminal order is immutable')
       WHERE NEW.status <> OLD.status
          OR NEW.filled_qty < OLD.filled_qty
-         OR NEW.remaining_qty <> 0;
+         OR NEW.remaining_qty > OLD.remaining_qty
+         OR (NEW.filled_qty > OLD.filled_qty AND NEW.remaining_qty <> 0);
     END;
     ```
 
@@ -1285,7 +1286,7 @@ services:
 
 ```
 project_name: "mosasaurus"
-version: "3.7.4"
+version: "3.7.5"
 is_calibrated_by_backtest: false  # 정보 표시용. REAL 전략 게이트는 DB backtest_approvals + strategy_params_hash로 판정(7.1절)
 
 smoke_test:                       # 세션 활성화는 DB operator_approvals(SMOKE_SESSION)로만 (v3.7.2 smoke_test_mode 폐기)

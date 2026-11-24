@@ -158,13 +158,67 @@ class SchedulerJobTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_invalid_parking_asset_blocks_preview(self):
-        """기준 파킹 자산 데이터가 무효면 점수 비교를 중단합니다."""
+    def _rf_invalid_preview(self):
+        """저장된 프리뷰 1건과 RF_INVALID 경보 건수를 읽습니다."""
+        connection = connect_database(self.db_path)
+        try:
+            preview = connection.execute(
+                "SELECT ranked_candidates_json, projected_trades_json FROM weekly_previews"
+            ).fetchall()
+            events = connection.execute(
+                "SELECT COUNT(*) FROM system_events WHERE event_type = 'RF_INVALID'"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        return preview, events
+
+    def test_invalid_parking_data_skips_rotation_with_rf_invalid_preview(self):
+        """v3.7.5: 파킹 데이터가 무효면 순위 산출 전체를 RF_INVALID 로 두고 교체 거래를 만들지 않습니다."""
         connection = connect_database(self.db_path)
         try:
             connection.execute(
                 "UPDATE universe_assets SET data_status = 'DATA_INVALID' "
                 "WHERE ticker = '423160'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        self._handler()()
+        self._handler()()  # 재실행해도 프리뷰·경보가 중복되지 않는다(멱등).
+
+        preview, events = self._rf_invalid_preview()
+        self.assertEqual(len(preview), 1)
+        ranked = json.loads(preview[0]["ranked_candidates_json"])
+        self.assertEqual(ranked["rf_status"], "RF_INVALID")
+        self.assertEqual(ranked["candidates"], [])
+        self.assertEqual(json.loads(preview[0]["projected_trades_json"]), [])
+        self.assertEqual(events, 1)
+
+    def test_parking_history_shorter_than_200_sessions_is_rf_invalid_not_a_crash(self):
+        """파킹 일봉이 200개 미만이어도 예외로 멈추지 않고 RF_INVALID 로 교체를 생략합니다."""
+        connection = connect_database(self.db_path)
+        try:
+            connection.execute(
+                "DELETE FROM daily_candles WHERE ticker = '423160' AND trade_date = "
+                "(SELECT MAX(trade_date) FROM daily_candles WHERE ticker = '423160')"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        self._handler()()
+
+        preview, events = self._rf_invalid_preview()
+        self.assertEqual(json.loads(preview[0]["ranked_candidates_json"])["rf_status"], "RF_INVALID")
+        self.assertEqual(events, 1)
+
+    def test_misclassified_parking_asset_still_raises(self):
+        """분류·상품 자격이 틀린 파킹 자산은 데이터 결함이 아니라 설정 오류이므로 계속 예외입니다."""
+        connection = connect_database(self.db_path)
+        try:
+            connection.execute(
+                "UPDATE universe_assets SET classification_verified = 0 WHERE ticker = '423160'"
             )
             connection.commit()
         finally:

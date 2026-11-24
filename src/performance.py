@@ -12,14 +12,17 @@ class CashFlowType(str, Enum):
     DEPOSIT = "DEPOSIT"
     WITHDRAWAL = "WITHDRAWAL"
     DISTRIBUTION = "DISTRIBUTION"
+    ADJUSTMENT = "ADJUSTMENT"  # 수수료 반올림·이용료 등 성과에 포함하는 내부 조정(단위 조정 없음)
     UNCLASSIFIED = "UNCLASSIFIED"
 
 
 class CashFlowClassificationStatus(str, Enum):
     """브로커 현금흐름 원인이 확인되었는지 나타냅니다."""
 
+    PROVISIONAL = "PROVISIONAL"  # 1회 관측된 불일치(매수만 대기)
     CONFIRMED = "CONFIRMED"
     UNCLASSIFIED_CASH_FLOW = "UNCLASSIFIED_CASH_FLOW"
+    DISMISSED = "DISMISSED"  # 오탐으로 무효화
 
 
 class TWRQualityStatus(str, Enum):
@@ -204,6 +207,7 @@ def apply_cash_flow(
     epoch_closed = False
     if classification.adjusts_units:
         # 명세 6.2절: 입출금은 직전 마감 스냅샷의 단위가격으로 단위 수만 조정합니다.
+        # (분류가 늦어진 흐름은 `restate_after_late_flow` 로 발생일 직전 단위가격을 써서 따로 반영합니다.)
         reference_nav = state.last_close_unit_nav or state.unit_nav
         new_units = state.units + amount / reference_nav
         if not math.isfinite(new_units) or new_units < -MIN_UNITS:
@@ -252,6 +256,7 @@ def update_flow_adjusted_performance(
     as_of: datetime,
     close_snapshot: bool = True,
     freeze: bool = False,
+    unclassified_excluded_amount: float = 0.0,
 ) -> PerformanceState:
     """평가 시점의 총자산으로 단위가격·TWR·낙폭을 갱신하고 HWM은 조건부로만 올립니다.
 
@@ -259,6 +264,11 @@ def update_flow_adjusted_performance(
     아닐 때만 갱신합니다. 그렇지 않으면 HWM을 그대로 두고 낙폭만 계산해, 입금·출금
     직후의 일시적 평가액 변화가 HWM을 오염시키는 것을 막습니다. 전액 출금으로 닫힌
     성과 기간은 새 입금(평가액 > 0)이 확인되면 직전 단위가격에서 이어서 다시 엽니다.
+
+    v3.7.5 오염 제거 단위가격 $U^*$: 미분류 현금흐름이 있으면 그 금액
+    (`unclassified_excluded_amount`, 입금 양수·출금 음수)을 평가액에서 뺀 값으로 단위가격을
+    계산합니다. 미분류 입금이 수익처럼, 미분류 출금이 손실처럼 보이는 것을 막고, 낙폭 판정은
+    동결하지 않고 이 값으로 계속합니다.
     """
     if not isinstance(state, PerformanceState):
         raise TypeError("state must be a PerformanceState value.")
@@ -273,6 +283,10 @@ def update_flow_adjusted_performance(
         raise ValueError("Total equity must be a finite non-negative amount.")
     if not isinstance(close_snapshot, bool) or not isinstance(freeze, bool):
         raise ValueError("close_snapshot and freeze must be booleans.")
+    if not _finite_amount(unclassified_excluded_amount):
+        raise ValueError("unclassified_excluded_amount must be a finite amount.")
+    # 오염 제거: 미분류 금액을 뺀 평가액을 단위가격 계산에 쓴다(0 미만이면 0 으로 본다).
+    total_equity = max(0.0, total_equity - unclassified_excluded_amount)
     timestamp = _utc_datetime(as_of)
     if timestamp < _utc_datetime(state.as_of):
         raise ValueError("Performance valuation cannot precede the latest event.")
@@ -325,6 +339,77 @@ def update_flow_adjusted_performance(
         epoch_closed=epoch_closed,
         hwm_frozen=freeze,
     )
+
+
+@dataclass(frozen=True)
+class SnapshotRow:
+    """재계산 대상 일일 스냅샷의 최소 입력(`daily_portfolio` 한 행)입니다."""
+
+    snapshot_date: str
+    total_equity: float
+    excluded_amount: float  # 이 스냅샷 계산에서 제외했던 미분류 금액(입금 +, 출금 −)
+    units: float
+    hwm: float  # 그 날 마감 시점의 HWM
+
+
+@dataclass(frozen=True)
+class RestatedRow:
+    """늦은 현금흐름 확정으로 다시 계산된 스냅샷입니다."""
+
+    snapshot_date: str
+    units: float
+    excluded_amount: float
+    unit_nav: float
+    hwm: float
+    restated: bool
+
+
+def restate_after_late_flow(
+    snapshots: list[SnapshotRow],
+    *,
+    flow_date: str,
+    amount: float,
+    flow_type: str | CashFlowType,
+    hwm_before_flow: float,
+) -> tuple[float | None, float | None, list[RestatedRow]]:
+    """늦게 분류된 입출금을 발생일 직전 단위가격으로 반영해 스냅샷을 다시 계산합니다(명세 6.2절 v3.7.5).
+
+    반환값은 (적용한 단위가격, 단위 수 변화 ΔN, 재계산된 행들)입니다.
+    - `DEPOSIT`·`WITHDRAWAL`: 단위 수 변화 ΔN = F / U*(발생일 직전)을 발생일부터 모든 스냅샷의 단위 수에
+      더하고, 제외했던 금액에서 F 를 빼서(더는 미분류가 아님) 단위가격을 다시 구한 뒤 HWM 도 다시 산출한다.
+    - `DISTRIBUTION`·`ADJUSTMENT`: 단위 조정 없이 제외 금액만 빼서 성과에 포함한다(ΔN = 0).
+    `snapshots` 는 날짜 오름차순이며 발생일 이후 행만 재계산한다. 발생일 직전 행이 없으면
+    기준 단위가격을 알 수 없어 (None, None, []) 를 반환한다(호출자가 수동 확인).
+    """
+    classified = CashFlowType(flow_type)
+    if classified in (CashFlowType.UNCLASSIFIED,):
+        raise ValueError("Only a classified cash flow can be restated.")
+    ordered = sorted(snapshots, key=lambda row: row.snapshot_date)
+    before = [row for row in ordered if row.snapshot_date < flow_date]
+    after = [row for row in ordered if row.snapshot_date >= flow_date]
+    if not after:
+        return None, 0.0, []
+    delta_units = 0.0
+    reference_nav: float | None = None
+    if classified in (CashFlowType.DEPOSIT, CashFlowType.WITHDRAWAL):
+        if not before:
+            return None, None, []
+        previous = before[-1]
+        reference_nav = (previous.total_equity - previous.excluded_amount) / previous.units
+        if not math.isfinite(reference_nav) or reference_nav <= 0:
+            return None, None, []
+        delta_units = amount / reference_nav
+    rows: list[RestatedRow] = []
+    running_hwm = hwm_before_flow
+    for row in after:
+        units = row.units + delta_units
+        excluded = row.excluded_amount - amount
+        if units <= MIN_UNITS:
+            raise ValueError("Restated unit count is not positive.")
+        unit_nav = (row.total_equity - excluded) / units
+        running_hwm = max(running_hwm, unit_nav)
+        rows.append(RestatedRow(row.snapshot_date, units, excluded, unit_nav, running_hwm, True))
+    return reference_nav, delta_units, rows
 
 
 def rebase_hwm(state: PerformanceState) -> PerformanceState:

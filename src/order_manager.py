@@ -116,6 +116,9 @@ class OrderIntent:
     ticker: str
     side: OrderSide
     quantity: int
+    # 명세 7.3절: 매도 의무 재주문(`EXIT_OBLIGATION_RETRY`)은 어떤 의무의 체결인지 FK 로 연결한다.
+    # 멱등성 키에는 넣지 않는다(cycle_id `X{obligation_id}:{거래일}` 에 이미 의무가 반영돼 있음).
+    obligation_id: str | None = None
 
     def idempotency_key(self) -> str:
         """사이클·종류·슬롯·종목·방향으로 키를 결정적으로 생성합니다."""
@@ -199,6 +202,17 @@ def persist_order_intent(
     if intent.intent_type is OrderIntentType.SMOKE_TEST:
         if intent.side is not OrderSide.BUY or intent.quantity != 1:
             raise ValueError("Smoke tests permit only a one-share BUY intent.")
+    if intent.intent_type is OrderIntentType.EXIT_OBLIGATION_RETRY:
+        if (
+            intent.side is not OrderSide.SELL
+            or not isinstance(intent.obligation_id, str)
+            or not intent.obligation_id.strip()
+        ):
+            raise ValueError("An exit-obligation retry must be a SELL linked to an obligation_id.")
+    elif intent.obligation_id is not None and (
+        not isinstance(intent.obligation_id, str) or not intent.obligation_id.strip()
+    ):
+        raise ValueError("obligation_id must be None or a non-empty string.")
     key = intent.idempotency_key()
     payload_hash = intent.payload_hash(policy_payload=policy_payload)
     parent_id = hashlib.sha256(key.encode("ascii")).hexdigest()
@@ -229,9 +243,9 @@ def persist_order_intent(
             """
             INSERT INTO order_intents (
                 parent_intent_id, idempotency_key, cycle_id, intent_type,
-                slot_id, ticker, side, requested_qty, intent_payload_hash,
-                status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)
+                slot_id, ticker, side, requested_qty, obligation_id,
+                intent_payload_hash, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)
             """,
             (
                 parent_id,
@@ -242,6 +256,7 @@ def persist_order_intent(
                 intent.ticker,
                 intent.side.value,
                 intent.quantity,
+                intent.obligation_id,
                 payload_hash,
                 timestamp,
                 timestamp,
@@ -632,77 +647,6 @@ def round_down_to_tick(price: int, tick: int | None = None) -> int:
     return price - price % size
 
 
-def tick_down(price: int) -> int:
-    """한 호가 아래 가격입니다: `down(p) = p - tick(p - 1)`(경계에서 단위가 바뀌어도 정확)."""
-    if isinstance(price, bool) or not isinstance(price, int) or price <= 1:
-        raise ValueError("price must be an integer above 1.")
-    return price - etf_tick_size(price - 1)
-
-
-def _ceil_to_tick(price: float) -> int:
-    """가격을 호가 단위 배수로 올림합니다(비상 하한선 계산용)."""
-    candidate = math.ceil(price)
-    size = etf_tick_size(max(candidate, 1))
-    return candidate if candidate % size == 0 else candidate + (size - candidate % size)
-
-
-@dataclass(frozen=True)
-class RepriceDecision:
-    """비상 매도 재가격 한 단계의 결과입니다(`price` 가 None 이면 재가격 중단)."""
-
-    price: int | None
-    reason: str  # OK | MAX_REPRICES | QUOTE_INVALID | MARKET_ANOMALY
-
-
-def next_emergency_price(
-    quote: Quote,
-    *,
-    previous_price: int | None,
-    reprice_count: int,
-    max_reprices: int = 5,
-    max_nav_deviation_ratio: float = 0.020,
-    quote_fresh: bool = True,
-) -> RepriceDecision:
-    """명세 7.2절 의사코드: 새 Bid1 을 따라가되 직전 가격보다 최소 1틱 낮추고 iNAV 하한을 지킵니다.
-
-    최초 가격(`previous_price=None`)은 유효 Bid1 그대로(오프셋 0틱)입니다. 호가가 무효·오래됐으면
-    중단하고, iNAV×(1-2%) 아래로 내려가야 하면 이상 시장으로 보고 중단합니다(시장가로 전환 금지).
-    """
-    if isinstance(reprice_count, bool) or not isinstance(reprice_count, int) or reprice_count < 0:
-        raise ValueError("reprice_count must be a non-negative integer.")
-    if reprice_count > max_reprices:
-        return RepriceDecision(None, "MAX_REPRICES")
-    if (
-        not quote_fresh
-        or not isinstance(quote, Quote)
-        or isinstance(quote.bid, bool)
-        or isinstance(quote.ask, bool)
-        or not isinstance(quote.bid, int)
-        or not isinstance(quote.ask, int)
-        or quote.bid <= 0
-        or quote.ask < quote.bid
-    ):
-        return RepriceDecision(None, "QUOTE_INVALID")
-    candidate = round_down_to_tick(quote.bid)
-    if previous_price is not None:
-        if previous_price <= 1:
-            return RepriceDecision(None, "MARKET_ANOMALY")
-        candidate = min(candidate, tick_down(previous_price))
-    nav = quote.nav
-    if (
-        nav is not None
-        and not isinstance(nav, bool)
-        and isinstance(nav, (int, float))
-        and math.isfinite(nav)
-        and nav > 0
-        and candidate < _ceil_to_tick(nav * (1 - max_nav_deviation_ratio))
-    ):
-        return RepriceDecision(None, "MARKET_ANOMALY")
-    if candidate <= 0:
-        return RepriceDecision(None, "MARKET_ANOMALY")
-    return RepriceDecision(candidate, "OK")
-
-
 def cancel_can_finalize(
     *,
     consecutive_matches: int,
@@ -777,7 +721,8 @@ def record_fill_from_cumulative(
     if not isinstance(executed_at, datetime) or executed_at.tzinfo is None:
         raise ValueError("executed_at must be timezone-aware.")
     order = connection.execute(
-        "SELECT ticker, side, requested_qty, kis_order_no FROM orders WHERE order_id = ?",
+        "SELECT ticker, side, requested_qty, kis_order_no, status, parent_intent_id "
+        "FROM orders WHERE order_id = ?",
         (order_id,),
     ).fetchone()
     if order is None:
@@ -805,6 +750,9 @@ def record_fill_from_cumulative(
     execution_id = f"{order['kis_order_no'] or order_id}:{new_cumulative_qty}"
     if source == "WS_NOTICE":
         execution_id = f"{order['kis_order_no'] or order_id}:WS:{new_cumulative_qty}"
+    # 종결 주문의 늦은 체결 보정은 잔량을 0 으로 고정한다(DB 트리거 trg_terminal_immutable, 7.3절).
+    is_terminal = order["status"] in {status.value for status in TERMINAL_ORDER_STATUSES}
+    remaining = 0 if is_terminal else order["requested_qty"] - new_cumulative_qty
     with connection:
         connection.execute(
             """
@@ -820,13 +768,60 @@ def record_fill_from_cumulative(
         )
         connection.execute(
             """
-            UPDATE orders SET filled_qty = ?, remaining_qty = requested_qty - ?, updated_at = ?
+            UPDATE orders SET filled_qty = ?, remaining_qty = ?, updated_at = ?
             WHERE order_id = ? AND filled_qty < ?
             """,
-            (new_cumulative_qty, new_cumulative_qty, executed_at.isoformat(),
+            (new_cumulative_qty, remaining, executed_at.isoformat(),
              order_id, new_cumulative_qty),
         )
+        _sync_obligation_filled_qty(connection, order["parent_intent_id"], executed_at)
     return True
+
+
+def _sync_obligation_filled_qty(
+    connection: sqlite3.Connection,
+    parent_intent_id: str,
+    occurred_at: datetime,
+) -> None:
+    """의도가 매도 의무에 연결돼 있으면 의무의 `filled_qty` 를 체결 기록 합계로 다시 계산합니다(7.3절).
+
+    의무의 `filled_qty` 는 `obligation_id` 가 그 의무인 의도들의 `trade_fills.qty` 합계이며,
+    체결 기록과 같은 트랜잭션에서 갱신합니다. 의무와 무관한 매도 체결은 집계하지 않습니다.
+    합계가 필요 수량에 도달하면 `RESOLVED` 로 닫습니다.
+    """
+    link = connection.execute(
+        "SELECT obligation_id FROM order_intents WHERE parent_intent_id = ?",
+        (parent_intent_id,),
+    ).fetchone()
+    if link is None or link["obligation_id"] is None:
+        return
+    obligation_id = link["obligation_id"]
+    filled = connection.execute(
+        """
+        SELECT COALESCE(SUM(f.qty), 0)
+        FROM trade_fills AS f
+        JOIN orders AS o ON o.order_id = f.order_id
+        JOIN order_intents AS i ON i.parent_intent_id = o.parent_intent_id
+        WHERE i.obligation_id = ?
+        """,
+        (obligation_id,),
+    ).fetchone()[0]
+    row = connection.execute(
+        "SELECT required_qty, status FROM exit_obligations WHERE obligation_id = ?",
+        (obligation_id,),
+    ).fetchone()
+    if row is None:
+        return
+    capped = min(filled, row["required_qty"])
+    connection.execute(
+        "UPDATE exit_obligations SET filled_qty = ? WHERE obligation_id = ?",
+        (capped, obligation_id),
+    )
+    if capped >= row["required_qty"] and row["status"] == "OPEN":
+        connection.execute(
+            "UPDATE exit_obligations SET status = 'RESOLVED', resolved_at = ? WHERE obligation_id = ?",
+            (occurred_at.isoformat(), obligation_id),
+        )
 
 
 def apply_late_fill_correction(
@@ -906,6 +901,21 @@ def supersede_exit_obligation(
         ).fetchone()
         if old is None or old["status"] != "OPEN":
             raise ValueError("Only an OPEN exit obligation can be superseded.")
+        active = connection.execute(
+            """
+            SELECT 1
+            FROM order_intents AS i
+            JOIN orders AS o ON o.parent_intent_id = i.parent_intent_id
+            WHERE i.obligation_id = ?
+              AND o.status IN ('CREATED', 'SUBMITTING', 'PENDING_CONFIRMATION',
+                               'ACCEPTED', 'PARTIALLY_FILLED', 'CANCEL_PENDING')
+            LIMIT 1
+            """,
+            (obligation_id,),
+        ).fetchone()
+        if active is not None:
+            raise ValueError("An exit obligation with an active order cannot be superseded.")
+        # 순서 고정(티커당 OPEN 1건 유일 인덱스·FK 즉시 검사): 기존 UPDATE → 새 INSERT → 기존 superseded_by.
         connection.execute(
             "UPDATE exit_obligations SET status = 'SUPERSEDED', resolved_at = ? WHERE obligation_id = ?",
             (created_at.isoformat(), obligation_id),
@@ -938,16 +948,27 @@ def create_kis_order_transport(environment: str, **kwargs: Any) -> "KisOrderAdap
     return KisOrderAdapter(environment, **kwargs)
 
 
+# 명세 7.2절: 위험 축소 매도는 iNAV 가 유효할 때 Bid1 이 iNAV×(1-2%) 아래면 이상 시장으로 보고 제출하지 않습니다.
+REDUCE_ONLY_NAV_FLOOR_RATIO = 0.020
+
+
+class MarketAnomalyError(ValueError):
+    """위험 축소 매도 호가가 iNAV 하한보다 낮아 당일 제출하지 않아야 하는 이상 시장입니다."""
+
+
 def calculate_limit_price(
     quote: Quote,
     side: OrderSide,
     *,
-    emergency_sell: bool = False,
+    reduce_only: bool = False,
     tick: int | None = None,
 ) -> int:
-    """일반 최우선 호가 또는 검증된 비상 매도 가격을 LIMIT으로 산출합니다.
+    """일반 최우선 호가 또는 위험 축소 매도 가격(Bid1 1회)을 LIMIT으로 산출합니다.
 
     `tick` 을 생략하면 KRX ETF 호가표(2,000원 미만 1원, 이상 5원)로 가격마다 자동 선택합니다.
+    위험 축소 매도(`reduce_only=True`)는 재가격하지 않고 Bid1 한 번만 쓰며, iNAV 가 유효한데
+    Bid1 이 iNAV×(1-2%) 보다 낮으면 `MarketAnomalyError` 를 올려 당일 제출을 막습니다
+    (iNAV 가 없거나 무효여도 위험 축소 매도 자체는 막지 않습니다).
     """
     if not isinstance(quote, Quote):
         raise TypeError("quote must be a Quote value.")
@@ -969,64 +990,22 @@ def calculate_limit_price(
     ):
         raise ValueError("Quote must have a positive, non-crossed integer spread.")
 
-    if emergency_sell:
+    if reduce_only:
         if side is not OrderSide.SELL:
-            raise ValueError("Emergency limit price is only valid for SELL.")
+            raise ValueError("Reduce-only limit price is only valid for SELL.")
+        nav = quote.nav
         if (
-            quote.nav is None
-            or isinstance(quote.nav, bool)
-            or not isinstance(quote.nav, (int, float))
-            or not math.isfinite(quote.nav)
-            or quote.nav <= 0
+            nav is not None
+            and not isinstance(nav, bool)
+            and isinstance(nav, (int, float))
+            and math.isfinite(nav)
+            and nav > 0
+            and quote.bid < nav * (1 - REDUCE_ONLY_NAV_FLOOR_RATIO)
         ):
-            raise ValueError("Emergency sell requires NAV.")
-        if abs((quote.bid - quote.nav) / quote.nav) > 0.020:
-            raise ValueError("Emergency sell NAV deviation exceeds 2%.")
+            raise MarketAnomalyError("Bid1 is below the iNAV floor; do not submit today.")
         return round_down_to_tick(quote.bid, tick)
     reference_price = quote.ask if side is OrderSide.BUY else quote.bid
     return round_down_to_tick(reference_price, tick)
-
-
-def calculate_emergency_reprice(
-    quote: Quote,
-    *,
-    reprice_count: int,
-    tick: int = 10,
-    canceled_confirmed: bool = True,
-    quote_fresh: bool = True,
-) -> int | None:
-    """기존 취소 확정 후 유효 호가 기준으로 한 틱씩 낮춘 재주문가를 계산합니다."""
-    if not isinstance(quote, Quote):
-        return None
-    if (
-        isinstance(reprice_count, bool)
-        or not isinstance(reprice_count, int)
-        or reprice_count < 0
-        or reprice_count >= 5
-    ):
-        return None
-    if not canceled_confirmed or not quote_fresh:
-        return None
-    if (
-        isinstance(tick, bool)
-        or not isinstance(tick, int)
-        or tick <= 0
-        or isinstance(quote.bid, bool)
-        or isinstance(quote.ask, bool)
-        or not isinstance(quote.bid, int)
-        or not isinstance(quote.ask, int)
-        or quote.bid <= 0
-        or quote.ask < quote.bid
-        or quote.nav is None
-        or isinstance(quote.nav, bool)
-        or not isinstance(quote.nav, (int, float))
-        or not math.isfinite(quote.nav)
-        or quote.nav <= 0
-    ):
-        return None
-    if abs((quote.bid - quote.nav) / quote.nav) > 0.020:
-        return None
-    return max(0, quote.bid // tick * tick - tick)
 
 
 @dataclass(frozen=True)
@@ -1056,6 +1035,9 @@ class RealOrderGateContext:
     cash_buffer_valid: bool = True
     liquidity_limit_valid: bool = True
     limit_order_only: bool = True
+    # v3.7.5 D1: `SAFE_HALT` 중 보호성 손절. 공통 게이트 2번은 "KIS 잔고 조회가 TTL 이내 성공 + 수량 ≤ KIS 매도가능수량"
+    # (호출자가 reconciliation_fresh·quantity_valid 로 전달)만 확인하고, 매수 전용 조건(미분류 현금흐름)은 적용하지 않는다.
+    protective_exit: bool = False
 
 
 def validate_real_order_gate(context: RealOrderGateContext) -> bool:
@@ -1086,16 +1068,17 @@ def validate_real_order_gate(context: RealOrderGateContext) -> bool:
         context.cash_buffer_valid,
         context.liquidity_limit_valid,
         context.limit_order_only,
+        context.protective_exit,
     )
     if any(not isinstance(value, bool) for value in bool_fields):
         raise ValueError("REAL order gate fields must be booleans.")
     common_gates_pass = (
         context.environment == "REAL"
         and context.operator_approval
-        and context.reconciliation_ok
+        and (context.reconciliation_ok or context.protective_exit)
         and context.reconciliation_fresh
         and not context.unresolved_order_exists
-        and not context.unclassified_cash_flow_exists
+        and (not context.unclassified_cash_flow_exists or context.protective_exit)
         and context.token_valid
         and context.calendar_valid
         and context.quote_valid
@@ -1149,15 +1132,16 @@ def validate_order_submission_gate(context: RealOrderGateContext) -> bool:
         context.cash_buffer_valid,
         context.liquidity_limit_valid,
         context.limit_order_only,
+        context.protective_exit,
     )
     if any(not isinstance(value, bool) for value in bool_fields):
         raise ValueError("PAPER order gate fields must be booleans.")
     return (
         context.intent_type is not OrderIntentType.SMOKE_TEST
-        and context.reconciliation_ok
+        and (context.reconciliation_ok or context.protective_exit)
         and context.reconciliation_fresh
         and not context.unresolved_order_exists
-        and not context.unclassified_cash_flow_exists
+        and (not context.unclassified_cash_flow_exists or context.protective_exit)
         and context.token_valid
         and context.calendar_valid
         and context.quote_valid
@@ -1386,33 +1370,24 @@ def recover_exit_obligation_quantity(
         or not quote_and_adjustment_valid
     ):
         return None
-    # 잔고가 줄었으면 외부 체결분을 반영해 의무 잔량을 낮춥니다.
-    remaining = min(
-        row["required_qty"] - row["filled_qty"],
-        broker_position_qty,
-    )
-    observed_filled = row["required_qty"] - remaining
-    if remaining <= 0:
+    # 의무의 체결 수량은 연결된 의도의 `trade_fills` 합계만 인정한다(잔고 감소로 추정하지 않는다).
+    filled = row["filled_qty"]
+    if filled >= row["required_qty"]:
         with connection:
             connection.execute(
-                """
-                UPDATE exit_obligations
-                SET status = 'RESOLVED', resolved_at = ?
-                WHERE obligation_id = ?
-                """,
+                "UPDATE exit_obligations SET status = 'RESOLVED', resolved_at = ? WHERE obligation_id = ?",
                 (checked_at.isoformat(), obligation_id),
             )
         return 0
-    with connection:
-        connection.execute(
-            """
-            UPDATE exit_obligations
-            SET filled_qty = MAX(filled_qty, ?)
-            WHERE obligation_id = ?
-            """,
-            (observed_filled, obligation_id),
-        )
-    return remaining
+    if broker_position_qty == 0:
+        # 대조 결과 보유 수량이 0 이면(수동 매도 등) 의무를 무효화한다(감사 기록 대상).
+        with connection:
+            connection.execute(
+                "UPDATE exit_obligations SET status = 'VOIDED', resolved_at = ? WHERE obligation_id = ?",
+                (checked_at.isoformat(), obligation_id),
+            )
+        return 0
+    return min(row["required_qty"] - filled, broker_position_qty)
 
 
 def orders_due_for_cancel(

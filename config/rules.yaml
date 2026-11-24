@@ -1,5 +1,5 @@
 project_name: "mosasaurus"
-version: "3.7.4"
+version: "3.7.5"
 is_calibrated_by_backtest: false  # 정보 표시용. REAL 전략 게이트는 DB backtest_approvals + strategy_params_hash로 판정(7.1절)
 
 smoke_test:                       # 세션 활성화는 DB operator_approvals(SMOKE_SESSION)로만 (v3.7.2 smoke_test_mode 폐기)
@@ -128,16 +128,9 @@ execution:
   cancel_confirm_consecutive_matches: 2
   order_match_window_seconds: 300
   allow_intraday_not_accepted_for: ["SELL"]     # BUY는 장 마감 후 확정만
-  emergency:
-    enabled: false                # false = 재가격만 비활성(위험 축소 매도는 Bid1 1회 제출)
-    reprice_method: "MODIFY"      # 정정 주문
-    initial_offset_ticks: 0
-    reprice_interval_seconds: 20
-    max_reprices: 5
-    max_nav_deviation_ratio: 0.020
-    price_step_ticks: 1
-    require_fresh_bid_ask: true
-    unresolved_exit_policy: "NEXT_SESSION_RECHECK"
+  # v3.7.5: execution.emergency(비상 재가격) 블록 삭제 — 위험 축소 매도는 Bid1 1회 제출 후 exit_obligations 이월(7.2절)
+  reduce_only_nav_floor_ratio: 0.020   # Bid1 < iNAV×(1-0.02) 이면 MARKET_ANOMALY, 당일 미제출
+  unresolved_exit_policy: "NEXT_SESSION_RECHECK"
 
 risk:
   portfolio_drawdown:
@@ -155,6 +148,9 @@ risk:
     allow_reconciliation: true
     allow_cancel_requests: true
     allow_reduce_only_sell: false   # v3.7.2 true는 본문과 충돌하던 오류 — 정정
+    protective_exit:                # v3.7.5 D1: 허용 원인·스탑 비율은 코드 상수(6.3절), 설정은 끄기만 가능
+      enabled: true
+    unresolved_alert_hours: 24      # 미해결 SAFE_HALT CRITICAL 재경보 주기
     require_operator_clearance: "PER_REASON"   # 6.3절 원인별 해제표
 
 corporate_action:
@@ -166,10 +162,14 @@ accounting:
   investment_distribution_type: "DISTRIBUTION"
   unclassified_cash_flow_action: "BLOCK_NEW_BUYS_AND_FREEZE_HWM"
   detection_method: "CASH_RECON"
-  cash_tolerance_krw: 10
+  cash_tolerance_krw: 1000              # v3.7.5: 10 → 1000 (수수료 절사·이용료 오탐 방지)
   cash_recon_field: "prvs_rcdl_excc_amt"   # D+2 정산 예수금 [UNVERIFIED], D+0 필드와 혼용 금지
+  valuation_cash_field: "prvs_rcdl_excc_amt"   # v3.7.5: V·C_available·Equity 도 같은 필드(2.2절)
+  valuation_total_field: "tot_evlu_amt"        # 교차 검증용 [UNVERIFIED: D+2 포함 여부]
+  valuation_cross_check_tolerance_krw: 1000
+  recon_confirm_interval_seconds: 60    # PROVISIONAL → 확정에 필요한 재관측 최소 간격
   distribution_match_tolerance: 0.05
-  cash_recon_learning_days: 14          # 첫 14일은 불일치를 경보만 하고 동결·차단하지 않음(Shadow 기간)
+  cash_recon_learning_days: 14          # 첫 14개 개장일은 미분류 흐름에도 매수 차단만 생략(U*·HWM 동결은 유지, 6.2절)
   min_units: 0.000001
   twr_method: "unitized_nav"      # v3.7.2 linked_subperiod_returns 표기 통일
   hwm_method: "flow_adjusted_index"

@@ -36,6 +36,56 @@ def _read_candles(
     ).fetchall()
 
 
+def _save_rf_invalid_preview(
+    connection: sqlite3.Connection,
+    *,
+    base_date: str,
+    defect: str,
+    timestamp: datetime,
+) -> None:
+    """대표 파킹 시계열 결함으로 순위 산출을 건너뛴 프리뷰(`RF_INVALID`)를 멱등하게 저장합니다(명세 5.1절 v3.7.5).
+
+    개별 종목을 무효로 만들지 않고 교체·리밸런싱·신규 진입을 모두 생략한다. 기존 슬롯은 그대로 두고
+    예상 거래는 비워, 보유 종목이 트레일링 스탑·120MA 로만 판정되게 한다(전략 교체 매도 금지).
+    """
+    existing_slots = [
+        {"slot_id": row["slot_id"], "ticker": row["ticker"]}
+        for row in connection.execute(
+            "SELECT slot_id, ticker FROM portfolio_slots WHERE ticker IS NOT NULL ORDER BY slot_id"
+        ).fetchall()
+    ]
+    payloads = (
+        json.dumps({"rf_status": "RF_INVALID", "reason": defect, "candidates": []},
+                   sort_keys=True, separators=(",", ":")),
+        json.dumps(existing_slots, sort_keys=True, separators=(",", ":")),
+        "[]",
+    )
+    preview_id = "weekly-" + hashlib.sha256(base_date.encode("ascii")).hexdigest()[:24]
+    existing = connection.execute(
+        "SELECT 1 FROM weekly_previews WHERE preview_id = ?", (preview_id,)
+    ).fetchone()
+    if existing is not None:
+        return
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO weekly_previews (
+                preview_id, base_candle_date, ranked_candidates_json,
+                projected_slots_json, projected_trades_json, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'CREATED', ?)
+            """,
+            (preview_id, base_date, *payloads, timestamp.isoformat()),
+        )
+        connection.execute(
+            """
+            INSERT INTO system_events (component, event_type, severity, message, created_at)
+            VALUES ('scheduler', 'RF_INVALID', 'WARN', ?, ?)
+            """,
+            (f"대표 파킹 시계열 결함({defect}): 이번 주 교체·리밸런싱을 생략합니다.",
+             timestamp.isoformat()),
+        )
+
+
 def create_weekly_preview_handler(
     connection_factory: Callable[[], sqlite3.Connection],
     rules: Mapping[str, Any],
@@ -116,7 +166,6 @@ def create_weekly_preview_handler(
                 parking_asset is None
                 or parking_asset["category"] != "SAFE_PARKING"
                 or parking_asset["product_type"] != "SPOT_ETF"
-                or parking_asset["data_status"] != "VALID"
                 or parking_asset["classification_verified"] != 1
                 or parking_asset["leverage_multiplier"] != 1.0
                 or parking_asset["is_inverse"] != 0
@@ -138,10 +187,8 @@ def create_weekly_preview_handler(
                 ticker=parking_ticker,
                 base_date=cutoff_date,
             )
-            if len(parking_rows) < 200:
-                raise RuntimeError("Parking asset does not have 200 completed candles.")
             parking_rows.reverse()
-            base_date = parking_rows[-1]["trade_date"]
+            base_date = parking_rows[-1]["trade_date"] if parking_rows else cutoff_date
             unverified_parking_action = connection.execute(
                 """
                 SELECT 1 FROM corporate_actions
@@ -150,8 +197,19 @@ def create_weekly_preview_handler(
                 """,
                 (parking_ticker, base_date),
             ).fetchone()
-            if unverified_parking_action:
-                raise RuntimeError("Parking asset has an unverified corporate action.")
+            # v3.7.5: 파킹 시계열 결함은 개별 종목 탈락이 아니라 순위 산출 전체(RF_INVALID)의 결함이다.
+            parking_defect = None
+            if len(parking_rows) < 200:
+                parking_defect = "PARKING_HISTORY_SHORT"
+            elif unverified_parking_action:
+                parking_defect = "PARKING_CORPORATE_ACTION_UNVERIFIED"
+            elif parking_asset["data_status"] != "VALID":
+                parking_defect = "PARKING_DATA_INVALID"
+            if parking_defect is not None:
+                _save_rf_invalid_preview(
+                    connection, base_date=base_date, defect=parking_defect, timestamp=timestamp
+                )
+                return
             parking_closes = [float(row["adjusted_close"]) for row in parking_rows]
             held_tickers = {
                 row["ticker"]

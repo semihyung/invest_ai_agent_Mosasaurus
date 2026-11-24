@@ -14,7 +14,7 @@ from typing import Callable, Mapping
 from src.config import ConfigError, validate_config
 from src.kis_client import KisTokenCache
 from src.order_manager import OrderStatus, persist_order_transition
-from src.reconciliation import ReconciliationResult
+from src.reconciliation import ReconciliationResult, evaluate_account_mismatch
 from src.safety_flags import (
     active_halt_reasons,
     evaluate_auto_clear,
@@ -82,6 +82,7 @@ def boot_recovery(
     now: datetime | None = None,
     config: Mapping[str, object] | None = None,
     run_dir: str | None = None,
+    cancel_order: Callable[[str], None] | None = None,
 ) -> BootRecoveryResult:
     """명세서 순서대로 복구 검사를 수행하고 활성 SAFE_HALT 원인이 남으면 주문을 잠급니다."""
     if not isinstance(connection, sqlite3.Connection):
@@ -103,6 +104,7 @@ def boot_recovery(
     timestamp = current_time.astimezone(timezone.utc).isoformat()
     # 이번 복구에서 "문제 없음"으로 확인된 항목(자동 해제 조건)을 모읍니다.
     resolved: dict[str, bool] = {}
+    orphan_found = False
 
     # Step 0: 시각 신뢰(호스트가 clock.json 을 기록하는 환경에서만 검사).
     if run_dir is not None:
@@ -159,19 +161,47 @@ def boot_recovery(
             if not isinstance(result, ReconciliationResult):
                 raise TypeError("reconcile_account must return ReconciliationResult.")
             reconciliation_ok = result.reconciliation_ok
+            # v3.7.5: 활성 주문이 남아 있으면 정지 상태가 아니므로 불일치 판정을 건너뛰고,
+            # 첫 관측은 매수 대기(PROVISIONAL)로만 두며 2회 재현 시에만 ACCOUNT_MISMATCH 를 만든다.
+            active_orders = connection.execute(
+                "SELECT COUNT(*) FROM orders WHERE status IN "
+                "('CREATED','SUBMITTING','PENDING_CONFIRMATION','ACCEPTED','PARTIALLY_FILLED','CANCEL_PENDING')"
+            ).fetchone()[0]
+            verdict = evaluate_account_mismatch(
+                connection, result, now=current_time, quiescent=active_orders == 0
+            )
             if reconciliation_ok:
                 resolved["BOOT_RECOVERY_FAILED"] = True
-            else:
-                raise_flag(connection, "HALT", "ACCOUNT_MISMATCH", now=current_time,
-                           detail=",".join(result.failure_codes))
+            elif verdict != "CONFIRMED":
+                # 첫 관측·판정 보류·고아 주문 등은 사람이 풀 일이 아니다. 자동 해제 원인으로 두고
+                # 10분 간격 재시도에서 다시 대조해 확정(ACCOUNT_MISMATCH)하거나 풀리게 한다.
+                raise_flag(connection, "HALT", "BOOT_RECOVERY_FAILED", now=current_time,
+                           detail="RECONCILIATION_PENDING_CONFIRMATION")
+            # 고아 주문(KIS 에만 있는 당일 주문): 전송 기록이 사라졌을 수 있으므로 계좌 전체 신규 주문을 막고
+            # 취소를 요청한다. 재전송하거나 새 의도를 만들지 않는다.
+            orphans = result.orphan_orders
+            if orphans:
+                orphan_found = True
+                for order_key in orphans:
+                    if cancel_order is not None:
+                        try:
+                            cancel_order(order_key)
+                        except (OSError, RuntimeError, ValueError):
+                            pass  # 취소 실패는 아래 CRITICAL 이벤트와 PENDING_CONFIRMATION 으로 남는다.
+                    connection.execute(
+                        "INSERT INTO system_events (component, event_type, severity, message, created_at) "
+                        "VALUES ('boot_recovery', 'ORPHAN_ORDER', 'CRITICAL', ?, ?)",
+                        (f"ORPHAN_ORDER: {order_key}", timestamp),
+                    )
+                connection.commit()
 
     # Step 6: 판정. 해소되지 않은 PENDING_CONFIRMATION 은 HALT, 미분류 현금흐름은 매수 차단만.
     pending = connection.execute(
         "SELECT 1 FROM orders WHERE status = 'PENDING_CONFIRMATION' LIMIT 1"
     ).fetchone()
-    if pending is not None:
+    if pending is not None or orphan_found:
         raise_flag(connection, "HALT", "PENDING_CONFIRMATION", now=current_time,
-                   detail="전송 여부 불명 주문이 남아 있음")
+                   detail="전송 여부 불명 주문 또는 고아 주문이 남아 있음")
     else:
         resolved["PENDING_CONFIRMATION"] = True
     unclassified = connection.execute(

@@ -1,13 +1,16 @@
-# Order State Machine (명세 v3.7.4 7장)
+# Order State Machine (명세 v3.7.5 7장)
 
 활성 6종: `CREATED`, `SUBMITTING`, `PENDING_CONFIRMATION`, `ACCEPTED`, `PARTIALLY_FILLED`, `CANCEL_PENDING`.
 종결 5종: `FILLED`, `CANCELED`, `REJECTED`, `CONFIRMED_NOT_ACCEPTED`, `EXPIRED`. 종결 상태의 `status` 는 불변이며
-DB 트리거(`trg_terminal_immutable`)가 변경을 거부합니다. 재전송은 종결된 행을 되살리지 않고
+DB 트리거(`trg_terminal_immutable`)가 변경을 거부합니다. 단, 늦게 반영된 체결 보정(`LATE_FILL_CORRECTION`)은
+체결 수량 증가 + 잔량 0 의 형태로만 허용하고, 체결 감소·잔량 증가는 거부합니다. 재전송은 종결된 행을 되살리지 않고
 **같은 의도의 새 `orders` 행**(새 `attempt_id`)을 만드는 것입니다.
 
 ## Write-ahead 규칙
 
-`SUBMITTING`(정정은 새 attempt 의 `SUBMITTING`)과 `request_payload_hash` 를 DB 에 **커밋한 뒤에만** HTTP 요청을 보냅니다.
+`SUBMITTING`(취소 요청은 `CANCEL_PENDING`)과 `request_payload_hash` 를 DB 에 **커밋한 뒤에만** HTTP 요청을 보냅니다.
+커밋은 `PRAGMA synchronous=FULL` 로 디스크 확정까지 기다립니다(v3.7.5: 정전 시 기록이 사라지지 않게).
+그래도 DB 에 없는 KIS 당일 주문(고아 주문)이 발견되면 계좌 전체 신규 주문을 막고 취소만 요청합니다(재전송 금지).
 따라서 `CREATED` 로 남은 주문은 전송된 적이 없음이 보장되며 `boot_recovery` 에서 `EXPIRED` 로 닫습니다.
 `SUBMITTING` 으로 남은 주문(크래시)은 `PENDING_CONFIRMATION` 으로 전이합니다.
 
@@ -47,19 +50,23 @@ REST 조회는 주문 단위 누적값만 주므로 `trade_fills` 는 **누적 �
 ## 의도 상태 매핑
 
 `CREATED`(attempt 없음) → `IN_PROGRESS`(활성 attempt) → `COMPLETED`(누적 체결 = 요청) / `CLOSED`(모두 종결·재시도 불가) / `CONFLICT`(운영자 폐기).
-같은 의도의 활성 원 attempt 는 partial UNIQUE index 로 1건, 비상 정정 체인의 활성 정정 attempt 도 1건입니다.
+같은 의도의 활성 attempt 는 partial UNIQUE index(`ux_orders_one_active_attempt`) 하나로 1건만 허용합니다(v3.7.5: 정정 체인 삭제로 인덱스 1개).
 
 ## 취소·마감·매도 의무
 
 `15:14:30` 에 주문번호가 있는 모든 활성 주문의 취소를 요청합니다(주문번호가 없는 `PENDING_CONFIRMATION` 은 마감 후 확정).
 취소 요청은 취소 확정이 아닙니다. 미해결 매도 잔량은 `exit_obligations`(`OPEN`, 티커당 1건)로 보존하고 익일 `09:10` 검문소에서
 계좌·주문·호가·조정계수가 모두 유효할 때만 `EXIT_OBLIGATION_RETRY` 의도를 만듭니다. 수량이 바뀌면 `SUPERSEDED`,
-보유가 0이면 `VOIDED`, 체결로 해소되면 `RESOLVED` 입니다.
+보유가 0이면 `VOIDED`, 체결로 해소되면 `RESOLVED` 입니다. `required_qty` 는 생성 후 바꿀 수 없고(DB 트리거),
+의무의 체결 수량은 `order_intents.obligation_id` 로 연결된 `trade_fills` 합계입니다(같은 트랜잭션에서 갱신).
+대체는 항상 기존 `UPDATE`(SUPERSEDED) → 새 `INSERT`(OPEN) → 기존 `superseded_by` 순서이며, 연결된 활성 주문이 있으면 대체하지 않습니다.
 
-## 비상 매도 재가격 (`next_emergency_price`)
+## 위험 축소 매도 가격 (`calculate_limit_price(reduce_only=True)`)
 
-최초 가격 = 유효 `Bid1`(호가 단위 내림). 재가격은 **정정 주문**으로 20초 간격·최대 5회, 새 `Bid1` 을 따라가되 직전 가격보다
-최소 1틱 낮추고(`down(p) = p − tick(p − 1)`), `iNAV × (1 − 2%)` 아래로 내려가야 하면 중단합니다. 시장가로 전환하지 않습니다.
+v3.7.5 에서 비상 재가격(정정 체인)을 삭제했습니다(2회차 정정부터 DB 부분 UNIQUE 인덱스와 충돌해 동작할 수 없었음).
+위험 축소 매도는 유효 `Bid1`(호가 단위 내림)으로 **1회만** 제출하며, `iNAV` 가 유효하고 `Bid1 < iNAV × (1 − 2%)` 이면
+`MarketAnomalyError`(이상 시장)로 당일 제출하지 않습니다. 미체결 잔량은 15:14:30 취소 후 `exit_obligations` 로 넘기고
+익일 09:10 검문소가 같은 방식으로 1회 재주문합니다. 시장가로 전환하지 않습니다.
 ETF 호가 단위: 2,000원 미만 1원, 이상 5원 `[UNVERIFIED]`.
 
 ## KIS 주문 계약

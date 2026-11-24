@@ -23,7 +23,7 @@ from src.order_manager import (
     resolve_pending_confirmation,
     allows_buy_submission,
     calculate_limit_price,
-    calculate_emergency_reprice,
+    MarketAnomalyError,
     RealOrderGateContext,
     transition_order_status,
     submit_recorded_limit_order,
@@ -131,36 +131,23 @@ class OrderManagerTests(unittest.TestCase):
             10000,
         )
 
-    def test_emergency_sell_floor_is_applied(self):
+    def test_reduce_only_sell_uses_bid1_once_and_refuses_market_anomaly(self):
+        """v3.7.5: 위험 축소 매도는 Bid1 1회(재가격 없음), iNAV 하한 아래면 당일 미제출입니다."""
         quote = Quote(bid=10000, ask=10010, nav=10050.0)
-
         self.assertEqual(
-            calculate_limit_price(quote, OrderSide.SELL, emergency_sell=True, tick=10),
-            10000,
-        )
+            calculate_limit_price(quote, OrderSide.SELL, reduce_only=True, tick=10), 10000)
+        # iNAV 가 없거나 무효여도 위험 축소 매도 자체는 막지 않는다.
         self.assertEqual(
-            calculate_emergency_reprice(quote, reprice_count=1, tick=10),
-            9990,
-        )
-        self.assertIsNone(
-            calculate_emergency_reprice(
-                quote,
-                reprice_count=1,
-                tick=10,
-                canceled_confirmed=False,
-            )
-        )
-        self.assertIsNone(
-            calculate_emergency_reprice(
-                quote,
-                reprice_count=1,
-                tick=10,
-                quote_fresh=False,
-            )
-        )
-        self.assertIsNone(
-            calculate_emergency_reprice(quote, reprice_count=5, tick=10)
-        )
+            calculate_limit_price(Quote(10000, 10010, None), OrderSide.SELL, reduce_only=True, tick=10),
+            10000)
+        # Bid1 이 iNAV×(1-2%) 보다 낮으면 이상 시장.
+        with self.assertRaises(MarketAnomalyError):
+            calculate_limit_price(Quote(9700, 9710, 10050.0), OrderSide.SELL, reduce_only=True, tick=10)
+        with self.assertRaises(ValueError):  # 매수에는 쓸 수 없다
+            calculate_limit_price(quote, OrderSide.BUY, reduce_only=True)
+        import src.order_manager as om
+        for removed in ("next_emergency_price", "calculate_emergency_reprice", "tick_down"):
+            self.assertFalse(hasattr(om, removed), removed)
 
     def test_limit_prices_round_down_to_tick(self):
         quote = Quote(bid=10009, ask=10019, nav=10010.0)
@@ -555,6 +542,67 @@ class OrderManagerTests(unittest.TestCase):
             ),
             3,
         )
+
+    def test_retry_intent_requires_a_linked_obligation_and_fills_resolve_it(self):
+        """v3.7.5: 의무 재주문은 obligation_id 로 연결되고 체결 합계가 의무를 RESOLVED 로 닫습니다."""
+        record_exit_obligation(
+            self.connection,
+            ExitObligation("exit-9", "123450", "risk-event-9", 5, "TRAILING_STOP"),
+            created_at=self.now,
+        )
+        with self.assertRaises(ValueError):
+            persist_order_intent(
+                self.connection,
+                OrderIntent("X-exit-9:2026-11-24", OrderIntentType.EXIT_OBLIGATION_RETRY,
+                            None, "123450", OrderSide.SELL, 5),
+                policy_payload={"limit_policy": "best_bid"}, created_at=self.now)
+        saved = persist_order_intent(
+            self.connection,
+            OrderIntent("X-exit-9:2026-11-24", OrderIntentType.EXIT_OBLIGATION_RETRY,
+                        None, "123450", OrderSide.SELL, 5, obligation_id="exit-9"),
+            policy_payload={"limit_policy": "best_bid"}, created_at=self.now)
+        record_order_attempt(
+            self.connection, order_id="o-x", parent_intent_id=saved.parent_intent_id,
+            attempt_id="a-x", order_price=1000, strategy_reason="exit",
+            submitted_at=self.now, request_payload_hash="h")
+        from src.order_manager import record_fill_from_cumulative
+        record_fill_from_cumulative(
+            self.connection, order_id="o-x", new_cumulative_qty=2, new_average_price=1000.0,
+            executed_at=self.now)
+        row = self.connection.execute(
+            "SELECT filled_qty, status FROM exit_obligations WHERE obligation_id = 'exit-9'").fetchone()
+        self.assertEqual(tuple(row), (2, "OPEN"))
+        record_fill_from_cumulative(
+            self.connection, order_id="o-x", new_cumulative_qty=5, new_average_price=1000.0,
+            executed_at=self.now)
+        row = self.connection.execute(
+            "SELECT filled_qty, status FROM exit_obligations WHERE obligation_id = 'exit-9'").fetchone()
+        self.assertEqual(tuple(row), (5, "RESOLVED"))
+
+    def test_obligation_is_voided_when_position_is_gone_and_supersede_order_is_fixed(self):
+        """보유 0 이면 VOIDED, 수량이 달라지면 SUPERSEDED + 새 OPEN(required 불변, filled 0)입니다."""
+        from src.order_manager import supersede_exit_obligation
+        record_exit_obligation(
+            self.connection,
+            ExitObligation("exit-a", "123450", "ev-a", 100, "TRAILING_STOP"),
+            created_at=self.now)
+        supersede_exit_obligation(
+            self.connection, obligation_id="exit-a", created_at=self.now,
+            new_obligation=ExitObligation("exit-b", "123450", "ev-b", 40, "TRAILING_STOP"))
+        rows = {r["obligation_id"]: tuple(r) for r in self.connection.execute(
+            "SELECT obligation_id, status, required_qty, filled_qty, superseded_by FROM exit_obligations")}
+        self.assertEqual(rows["exit-a"], ("exit-a", "SUPERSEDED", 100, 0, "exit-b"))
+        self.assertEqual(rows["exit-b"], ("exit-b", "OPEN", 40, 0, None))
+        with self.assertRaises(sqlite3.DatabaseError):  # required_qty 는 DB 트리거로도 불변
+            self.connection.execute("UPDATE exit_obligations SET required_qty = 1 WHERE obligation_id = 'exit-b'")
+        self.assertEqual(
+            recover_exit_obligation_quantity(
+                self.connection, obligation_id="exit-b", broker_position_qty=0,
+                reconciliation_ok=True, existing_order_terminal=True, account_data_fresh=True,
+                quote_and_adjustment_valid=True, checked_at=self.now),
+            0)
+        self.assertEqual(self.connection.execute(
+            "SELECT status FROM exit_obligations WHERE obligation_id = 'exit-b'").fetchone()[0], "VOIDED")
 
     def test_spread_and_nav_guards_reject_invalid_quote(self):
         self.assertFalse(

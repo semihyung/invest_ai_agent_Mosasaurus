@@ -520,7 +520,7 @@ class TelegramCommandHandler:
             return (
                 len(parts) == 3
                 and parts[1].isdigit()
-                and parts[2] in ("deposit", "withdrawal", "distribution")
+                and parts[2] in ("deposit", "withdrawal", "distribution", "adjustment", "dismiss")
             )
         if name == "/ca_confirm":
             return len(parts) == 2 and parts[1].isdigit()

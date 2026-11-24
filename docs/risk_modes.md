@@ -1,4 +1,4 @@
-# Risk Modes (명세 v3.7.4 0.5·0.6·6.2·6.3절)
+# Risk Modes (명세 v3.7.5 0.5·0.6·6.2·6.3절)
 
 운영 모드 우선순위는 `SAFE_HALT` > `EMERGENCY` > `PAUSED` > `TRAINING` > `NORMAL` 입니다.
 낙폭 단계(`NORMAL`/`CAUTION`/`WARNING`/`CRITICAL`)는 운영 모드가 아니라 **두 번째 입력**이며,
@@ -31,6 +31,7 @@
 | 모드 \ 종류 | 위험자산 매수 | 교체·리밸런싱 매도 | 파킹 매수 | 파킹 현금화 매도 | 위험 축소 매도 | 매도 의무 재주문 | 취소 | 스모크 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | SAFE_HALT | X | X | X | X | X | X | O | X |
+| SAFE_HALT (활성 원인 ⊆ 보호성 손절 허용 원인) | X | X | X | X | O(보호성 손절만) | O(스탑 의무만) | O | X |
 | EMERGENCY | X | X | X | X | O | O | O | X |
 | PAUSED | X | X | X | X | O | O | O | X |
 | TRAINING | X | X | O | X | O(−7%) | O | O | X |
@@ -39,6 +40,19 @@
 \* 낙폭 `CAUTION`: 신규 슬롯 진입은 허용, 기존 보유 종목 Drift 보충 매수는 금지. `WARNING`: 위험자산 매수 전면 금지(파킹만).
 `CRITICAL`: 운영 모드가 `EMERGENCY` 로 자동 전환됩니다. 상태가 모순(`CRITICAL` 인데 `EMERGENCY` 가 아님)이면 fail-closed 로 위험 축소 매도만 허용합니다.
 조회·대조·취소는 모든 모드에서 허용합니다.
+
+## SAFE_HALT 중 보호성 손절 (v3.7.5)
+
+운영자가 오래 연락이 안 되는 동안 보유 포지션이 손절 없이 방치되지 않도록 한 예외입니다.
+
+- **허용 조건:** 활성 원인이 모두 `DEPLOY_ROLLBACK`·`ACCOUNT_MISMATCH`·`UPS_LOW`·`CONFIG_INVALID` 중에 속할 때만. `PENDING_CONFIRMATION`·
+  `CREDENTIALS_UNAVAILABLE`·`DB_INTEGRITY`·`BOOT_RECOVERY_FAILED`·`CALENDAR_MISMATCH`·`CLOCK_UNSYNCED` 가 하나라도 있으면 전면 차단입니다.
+- **판정:** 트레일링 스탑만(120MA·교체·`/remove` 아님). 비율은 코드 상수(−10%, 훈련 −7%)이며 설정으로 바꿀 수 없습니다
+  (`risk.safe_halt.protective_exit` 에는 `enabled` 만 있고, 이 값으로 기능을 끌 수만 있습니다).
+- **주문:** 수량은 KIS 매도가능수량 이하, `Bid1` 지정가 1회. 미체결은 `exit_obligations`(사유 `PROTECTIVE_EXIT`)로 이월합니다.
+- **재경보:** 어떤 SAFE_HALT 원인이든 24시간 넘게 풀리지 않으면 24시간마다 `CRITICAL` 로 다시 알립니다(`due_unresolved_halt_alerts`).
+- **오탐 완화:** 계좌 대조 불일치는 주문·체결이 멈춘 상태에서 60초 이상 간격으로 2회 재현돼야 `ACCOUNT_MISMATCH` 가 됩니다.
+  첫 관측은 신규 매수만 기다리게 합니다. 대조 조회 자체의 실패는 불일치가 아닙니다.
 
 ## 낙폭 단계와 히스테리시스
 

@@ -238,9 +238,10 @@ class ApprovalWorkflowTests(unittest.TestCase):
         self.assertEqual((ready["operator_approval"], ready["backtest_calibrated"]), (True, True))
         self.assertFalse(ready["smoke_test_approved"])  # 스모크 세션은 별도 승인
 
-    def test_strategy_hash_covers_emergency_and_drawdown_but_not_unrelated_keys(self):
+    def test_strategy_hash_covers_fee_and_drawdown_but_not_unrelated_keys(self):
         base = strategy_params_hash(load_config(environ={}))
-        for path, value in ((("execution", "emergency", "max_reprices"), 3),
+        # v3.7.5: execution.emergency 블록이 삭제돼 수수료율·낙폭 임계값이 전략 해시에 남는다.
+        for path, value in ((("execution", "fee_rate"), 0.001),
                             (("risk", "portfolio_drawdown", "critical"), -0.2)):
             config = load_config(environ={})
             node = config
@@ -295,8 +296,8 @@ class OperatorActionTests(unittest.TestCase):
         for tx, amount in (("RECON:1", 500000), ("RECON:2", 300000)):
             self.connection.execute(
                 "INSERT INTO cash_flows (broker_transaction_id, flow_date, occurred_at, amount, flow_type,"
-                " classification_status, source, observed_at) VALUES (?, '2026-11-24', 't', ?,"
-                " 'UNCLASSIFIED', 'UNCLASSIFIED_CASH_FLOW', 'CASH_RECON', 't')", (tx, amount))
+                " classification_status, source, observed_at, first_observed_at) VALUES (?, '2026-11-24', 't', ?,"
+                " 'UNCLASSIFIED', 'UNCLASSIFIED_CASH_FLOW', 'CASH_RECON', 't', 't')", (tx, amount))
         raise_flag(self.connection, "BUY_BLOCK", "UNCLASSIFIED_CASH_FLOW", now=NOW)
         action = self._approved("CLASSIFY_FLOW")
         with self.assertRaises(ValueError):
@@ -307,6 +308,22 @@ class OperatorActionTests(unittest.TestCase):
         self.assertEqual(active_codes(self.connection, "BUY_BLOCK"), ())
         with self.assertRaises(ValueError):  # 이미 확정된 흐름은 다시 분류할 수 없음
             classify_cash_flow(self.connection, flow_id=1, flow_type="DEPOSIT", action_id=action, now=NOW)
+
+    def test_classify_supports_adjustment_and_dismiss_without_unit_change(self):
+        """v3.7.5: ADJUSTMENT(부호 무관)·DISMISS(오탐 무효화)로도 미분류를 해소합니다."""
+        for tx, amount in (("RECON:1", -15), ("RECON:2", 700)):
+            self.connection.execute(
+                "INSERT INTO cash_flows (broker_transaction_id, flow_date, occurred_at, amount, flow_type,"
+                " classification_status, source, observed_at, first_observed_at) VALUES (?, '2026-11-24',"
+                " 't', ?, 'UNCLASSIFIED', 'UNCLASSIFIED_CASH_FLOW', 'CASH_RECON', 't', 't')", (tx, amount))
+        raise_flag(self.connection, "BUY_BLOCK", "UNCLASSIFIED_CASH_FLOW", now=NOW)
+        action = self._approved("CLASSIFY_FLOW")
+        classify_cash_flow(self.connection, flow_id=1, flow_type="ADJUSTMENT", action_id=action, now=NOW)
+        classify_cash_flow(self.connection, flow_id=2, flow_type="DISMISS", action_id=action, now=NOW)
+        rows = [tuple(r) for r in self.connection.execute(
+            "SELECT flow_type, classification_status FROM cash_flows ORDER BY id")]
+        self.assertEqual(rows, [("ADJUSTMENT", "CONFIRMED"), ("UNCLASSIFIED", "DISMISSED")])
+        self.assertEqual(active_codes(self.connection, "BUY_BLOCK"), ())
 
     def test_corporate_action_confirmation_rebases_peak_and_releases_ticker(self):
         self.connection.execute(

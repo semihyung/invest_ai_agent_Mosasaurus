@@ -1,4 +1,4 @@
-# Price Conventions (명세 v3.7.4 4.2·5.1·6.1절)
+# Price Conventions (명세 v3.7.5 4.2·5.1·6.1절)
 
 ## 기준 분리
 

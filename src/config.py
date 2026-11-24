@@ -85,6 +85,7 @@ _DEPRECATED_KEYS = (
     "momentum.min_volatility_floor",
     "security.mount_token_file_read_only",
     "deployment.require_backtest_calibration_for_real",
+    "execution.emergency",  # v3.7.5: 비상 재가격(정정 체인) 삭제
 )
 # 알려진 최상위 섹션: 이 밖의 섹션은 오타로 보고 거부합니다.
 _KNOWN_SECTIONS = frozenset(
@@ -165,6 +166,17 @@ def validate_config(config: Mapping[str, Any]) -> None:
     classes = _lookup(config, "universe.allowed_risk_asset_classes")
     if classes != ["EQUITY"]:
         problems.append("universe.allowed_risk_asset_classes must be ['EQUITY'].")
+    # v3.7.5 D1: 보호성 손절은 끄기만 가능하고 허용 원인·스탑 비율은 설정으로 넓힐 수 없습니다.
+    protective = _lookup(config, "risk.safe_halt.protective_exit")
+    if not isinstance(protective, Mapping) or set(protective) != {"enabled"} or not isinstance(
+        protective.get("enabled"), bool
+    ):
+        problems.append("risk.safe_halt.protective_exit must contain only a boolean 'enabled'.")
+    # v3.7.5: 평가용 현금 필드는 대사 필드와 같아야 D+0/D+2 필드 혼용을 막을 수 있습니다.
+    if _lookup(config, "accounting.valuation_cash_field") != _lookup(
+        config, "accounting.cash_recon_field"
+    ):
+        problems.append("accounting.valuation_cash_field must equal accounting.cash_recon_field.")
 
     # 2) 값 범위 검사
     slots = _lookup(config, "portfolio.slot_weights")
@@ -225,7 +237,7 @@ def validate_config(config: Mapping[str, Any]) -> None:
 # 백테스트 승인에 묶이는 전략 설정 영역(7.1절): 이 값이 바뀌면 재승인이 필요합니다.
 _STRATEGY_HASH_PATHS = (
     "strategy", "momentum", "portfolio", "trailing_stop", "universe",
-    "execution.fee_rate", "execution.emergency", "risk.portfolio_drawdown",
+    "execution.fee_rate", "risk.portfolio_drawdown",
 )
 
 

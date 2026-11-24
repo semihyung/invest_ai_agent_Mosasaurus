@@ -1,6 +1,6 @@
-# 명세 v3.7.4 ↔ 코드 격차 보고서 (Stage S1, S0.1–S8 완료 시점)
+# 명세 v3.7.5 ↔ 코드 격차 보고서 (S0.1–S8 완료 후 v3.7.5 정렬 반영)
 
-작성 기준: 자동 테스트 395개 통과(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
+작성 기준: 자동 테스트 422개 통과(v3.7.5 정렬 후, 이전 395개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
 실계좌·실서버 호출, 운영 서버 배포, 쉘 스크립트의 실제 실행(`sh -n` 문법 검사만 수행)은 하지 않았습니다.
 
 ## 1. 단계별 변경 요약
@@ -25,7 +25,7 @@
 4. 기존 `boot_recovery` 의 `SAFE_HALT_ALREADY_LATCHED`(영구 정지)를 원인별 자동/수동 해제로 대체했습니다. 기존 테스트 일부를 이 동작에 맞게 다시 썼습니다.
 5. `CREATED → REJECTED`, `PARTIALLY_FILLED → CANCELED`, `CONFIRMED_NOT_ACCEPTED → SUBMITTING` 전이는 명세 7.3절 표에 없어 제거했습니다.
 6. 배포 금지 시간은 `08:50–15:25` 에서 `08:20–15:45`(+토·일 구간, 완료 신호)로 넓혔고, 기존 `safe_deploy.sh` 는 10단계 절차로 교체했습니다.
-7. 기존 `calculate_emergency_reprice`(구 방식)는 호환을 위해 남겨 두었고, 명세 7.2절 방식은 `next_emergency_price` 입니다. **호출부는 아직 어느 쪽도 연결되지 않았습니다.**
+7. (v3.7.5) 비상 재가격 함수(`next_emergency_price`·`calculate_emergency_reprice`·`tick_down`)는 **삭제**했습니다. 위험 축소 매도 가격은 `calculate_limit_price(..., reduce_only=True)`(Bid1 1회)입니다.
 
 ## 3. 아직 연결(배선)되지 않은 부분 — 구현 착수 전 반드시 알아야 할 것
 
@@ -37,7 +37,7 @@
 | 예수금 대사 **실행**(`cash_recon` 함수를 잔고 조회와 연결) | 미구현. 순수 함수만 있음. 필드명 `prvs_rcdl_excc_amt` 는 `[UNVERIFIED]` |
 | 티커별 상호배제 락·`SELL_ALREADY_ACTIVE` 정책 | 미구현(같은 의도의 활성 attempt 중복은 DB 가 막지만 서로 다른 의도의 동시 매도는 코드가 막지 않음) |
 | `idempotency_key` 의 `cycle_id` 포맷 헬퍼 | 미구현(형식은 명세·문서에만 존재) |
-| `execution.emergency.enabled: false` 분기, 비상 재가격 루프 실행 | 미구현(계산 함수만 존재) |
+| (v3.7.5) 비상 재가격 루프 | 명세·코드에서 삭제됨(해당 없음) |
 | 호출 우선순위 큐·REST 폴링 주기 자동 연장 | 토큰 버킷(`TokenBucket`)만 구현 |
 | `RealOrderGateContext` 가 `real_gate_inputs` 를 쓰도록 연결 | 계산 함수는 있으나 호출부 없음(게이트는 여전히 호출자가 넘긴 불리언을 신뢰) |
 | 실제 HTTP 전송·WebSocket·휴장일 API | `urllib_http_post` 는 작성만 했고 어디에서도 주입하지 않음. 실서버 호출 없음 |
@@ -67,7 +67,7 @@
 | 17 | ✅ | 기존 멱등성 테스트 + partial unique index |
 | 18 | 🟡 | 매도 선행 시한 규칙 문서화, 오케스트레이션 ⬜ |
 | 19 | 🟡 | 스프레드·iNAV 검증 함수 기존, 지역별 한도·위험 축소 완화 ⬜ |
-| 20 | ✅ | `TickAndRepriceTests` |
+| 20 | ✅ | `test_v374_pure_rules`·`test_v375_rules`(보호성 손절 게이트·스탑 상수·원인별 허용/차단) |
 | 21, 22 | 🟡 | 의무 저장·`SUPERSEDED`/`VOIDED` ✅, 15:14:30 일괄 취소·09:10 검문소 잡 ⬜ |
 | 23 | 🟡 | 단계·히스테리시스 ✅, 자동 `EMERGENCY` 전이 배선 ⬜ |
 | 24, 25 | ✅ | `OrderPolicyTruthTableTests`, `test_boot_recovery`, 기존 위험 모드 테스트 |
@@ -95,11 +95,28 @@
 | 49 | 🟡 | `release_emergency`·`rebase_hwm` ✅, `hwm_rebase_pending` 소비 ⬜ |
 | 50 | 🟡 | 타이머 구조·상태 파일 ✅, 실제 systemd 실행 ⬜ |
 | 51, 52 | ✅ | 슬롯 테스트·엔진 테스트 |
-| 53, 54, 55, 56, 57, 58 | 🟡/⬜ | 53·56 부분(`order_policy`·DB), 54(마감 타임라인은 설정 검증만), 55 ⬜, 57 부분(호가표·재가격), 58 ⬜ |
+| 53, 54, 55, 56, 57, 58 | 🟡/⬜ | 53·56 부분(`order_policy`·DB), 54(마감 타임라인은 설정 검증만), 55 ⬜, 57 부분(호가표·`RF_INVALID` 프리뷰), 58 ⬜ |
 | 59 | 🟡 | 승인 파일·DB 3중 잠금 ✅, 실전 TR 선택 연결 ⬜ |
 | 60 | ✅ | `ConfirmationSecurityTests` |
 | 61 | 🟡 | `epoch`·`V ≤ 0` 일부 ✅, 전 구간 가드 ⬜ |
 | 63–75 | ⬜ | Phase 2(LLM) 미착수 |
+
+## 4-1. v3.7.5 정렬 내역 (코드)
+
+| 명세 변경 | 코드 반영 | 아직 연결 안 된 부분 |
+| --- | --- | --- |
+| D2 비상 재가격 삭제 | 재가격 함수·`replaces_order_id`·정정 인덱스·`execution.emergency` 삭제, `ux_orders_one_active_attempt` 1개 | — |
+| V-B2 종결 트리거 | `trg_terminal_immutable`(체결 증가+잔량 0만), `LATE_FILL_CORRECTION` 잔량 0 고정 | — |
+| V-B3 의무 수량 불변 | `trg_obligation_required_immutable`, `order_intents.obligation_id`, 체결 집계 동기화, 보유 0 → `VOIDED`, 활성 주문 있으면 대체 거부 | 09:10 검문소 잡이 의무 의도를 만드는 호출부 |
+| D1 보호성 손절 | `PROTECTIVE_EXIT_REASONS`·`should_protective_stop`·`OrderKind/RiskAction.PROTECTIVE_EXIT_SELL`·게이트 `protective_exit`·미해결 재경보 | **스탑 감시 잡(위험 축소 매도 생성)과 재경보 잡 호출부**, 설정 `protective_exit.enabled` 를 `load_risk_flags` 에 전달하는 연결 |
+| V-B5 대사 오탐 | 정지 상태 판정(`reconciliation_allowed`), `PROVISIONAL` 2단계, 조회 실패≠불일치, 허용 오차 1,000원, 고아 주문 처리 | 대사 실행 잡(체결 대금·잔고 조회 연결) |
+| V-B6 회계 오염 | 오염 제거 단위가격, 늦은 분류 재계산 순수 함수(`restate_after_late_flow`), 악화 전이 비동결 | `daily_portfolio` 를 쓰는 마감 스냅샷 잡과 `/classify` 후 재계산 호출 |
+| V-B7 파킹 결함 | 주간 프리뷰가 파킹 결함 시 `RF_INVALID` 프리뷰를 저장하고 교체 생략 | 15:00 Step B 가 `RF_INVALID` 를 읽어 교체를 건너뛰는 처리 |
+| V-B8 현금 필드 | `accounting.valuation_cash_field` 설정·검사 | 평가액 교차 검증(`tot_evlu_amt`) 실행, PAPER 실측(runbook) |
+| V-B9 내구성 | `synchronous=FULL`, 연결 시 WAL·FULL 검증 | 디렉터리 `fsync` 를 쓰는 호스트 스크립트(`refresh_kis_token.py` 등) 점검 |
+
+마이그레이션 `004_spec_v375_schema.sql` 은 003 과 같은 테이블 재구성 방식으로 적용되며 `schema_migrations` 에 체크섬이 기록됩니다.
+감사 보고서의 **Major 20건은 이번 정렬 범위 밖**입니다(`docs/audit_v3.7.4_review.md`).
 
 ## 5. 권고 다음 순서
 

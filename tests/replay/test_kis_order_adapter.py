@@ -1,4 +1,4 @@
-"""KIS 주문 어댑터·체결 delta·비상 재가격 테스트(녹화 응답 재생, 실서버 호출 없음)."""
+"""KIS 주문 어댑터·체결 delta·늦은 체결 보정 테스트(녹화 응답 재생, 실서버 호출 없음)."""
 
 import re
 import tempfile
@@ -19,17 +19,14 @@ from src.order_manager import (
     OrderStatus,
     Quote,
     RealOrderGateContext,
-    RepriceDecision,
     apply_late_fill_correction,
     cancel_can_finalize,
     create_kis_order_transport,
     etf_tick_size,
     fill_delta,
-    next_emergency_price,
     record_fill_from_cumulative,
     round_down_to_tick,
     submit_recorded_limit_order,
-    tick_down,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -193,43 +190,13 @@ class AdapterContractTests(unittest.TestCase):
 
 
 class TickAndRepriceTests(unittest.TestCase):
-    """ETF 호가표와 비상 매도 재가격 의사코드입니다."""
+    """ETF 호가표와 취소 확정 규칙입니다(v3.7.5: 비상 재가격 삭제)."""
 
     def test_etf_tick_table_and_boundaries(self):
         self.assertEqual(etf_tick_size(1999), 1)
         self.assertEqual(etf_tick_size(2000), 5)
         self.assertEqual(round_down_to_tick(110503), 110500)
         self.assertEqual(round_down_to_tick(1999), 1999)
-        self.assertEqual(tick_down(2000), 1999)
-        self.assertEqual(tick_down(2005), 2000)
-        self.assertEqual(tick_down(110500), 110495)
-
-    def test_first_price_is_bid1_and_each_step_is_at_least_one_tick_lower(self):
-        quote = Quote(bid=100000, ask=100100, nav=100500.0)
-        first = next_emergency_price(quote, previous_price=None, reprice_count=0)
-        self.assertEqual(first, RepriceDecision(100000, "OK"))
-        same_bid = next_emergency_price(quote, previous_price=100000, reprice_count=1)
-        self.assertEqual(same_bid.price, 99995)
-        lower_bid = next_emergency_price(Quote(99000, 99100, 100500.0), previous_price=100000, reprice_count=1)
-        self.assertEqual(lower_bid.price, 99000)
-
-    def test_price_never_exceeds_bid1(self):
-        for previous in (None, 100000, 99990):
-            decision = next_emergency_price(
-                Quote(99900, 100000, 100000.0), previous_price=previous, reprice_count=0)
-            self.assertLessEqual(decision.price, 99900)
-
-    def test_stops_when_quote_stale_or_nav_floor_breached_or_max_reached(self):
-        quote = Quote(100000, 100100, 100500.0)
-        self.assertEqual(next_emergency_price(quote, previous_price=None, reprice_count=0,
-                                              quote_fresh=False).reason, "QUOTE_INVALID")
-        self.assertEqual(next_emergency_price(Quote(0, 0, None), previous_price=None,
-                                              reprice_count=0).reason, "QUOTE_INVALID")
-        far = Quote(90000, 90100, 100000.0)  # iNAV 하한 98,000 미만
-        self.assertEqual(next_emergency_price(far, previous_price=None, reprice_count=0).reason,
-                         "MARKET_ANOMALY")
-        self.assertEqual(next_emergency_price(quote, previous_price=100000, reprice_count=6).reason,
-                         "MAX_REPRICES")
 
     def test_cancel_finalization_needs_consecutive_matches_or_close(self):
         self.assertFalse(cancel_can_finalize(consecutive_matches=1, market_closed_full_query=False))
@@ -313,7 +280,7 @@ class FillDeltaTests(unittest.TestCase):
         self.assertTrue(apply_late_fill_correction(
             c, order_id="o1", new_cumulative_qty=3, new_average_price=1000.0, occurred_at=NOW))
         row = c.execute("SELECT status, filled_qty, remaining_qty FROM orders").fetchone()
-        self.assertEqual(tuple(row), ("CANCELED", 3, 7))
+        self.assertEqual(tuple(row), ("CANCELED", 3, 0))  # v3.7.5: 늦은 체결 보정 후 잔량은 0 으로 고정
         event = c.execute("SELECT event_type, old_status, new_status FROM order_events").fetchone()
         self.assertEqual(tuple(event), ("LATE_FILL_CORRECTION", "CANCELED", "CANCELED"))
         self.assertFalse(apply_late_fill_correction(

@@ -295,26 +295,45 @@ def classify_cash_flow(
     action_id: str,
     now: datetime,
 ) -> None:
-    """`/classify`: 미분류 현금흐름의 유형을 확정하고, 마지막 건이면 매수 차단을 해제합니다."""
+    """`/classify`: 미분류 현금흐름을 확정하거나(`DEPOSIT`·`WITHDRAWAL`·`DISTRIBUTION`·`ADJUSTMENT`)
+    오탐으로 무효화(`DISMISS`)하고, 마지막 건이면 매수 차단을 해제합니다.
+
+    `ADJUSTMENT`(부호 무관)·`DISMISS` 는 단위 수를 바꾸지 않습니다. 입출금은 단위 조정이 필요하므로
+    호출자가 `performance.restate_after_late_flow` 로 발생일 직전 단위가격 기준 재계산을 이어서 수행합니다.
+    """
     _require_approved_action(connection, action_id, "CLASSIFY_FLOW")
-    if flow_type not in ("DEPOSIT", "WITHDRAWAL", "DISTRIBUTION"):
-        raise ValueError("flow_type must be DEPOSIT, WITHDRAWAL or DISTRIBUTION.")
+    if flow_type not in ("DEPOSIT", "WITHDRAWAL", "DISTRIBUTION", "ADJUSTMENT", "DISMISS"):
+        raise ValueError(
+            "flow_type must be DEPOSIT, WITHDRAWAL, DISTRIBUTION, ADJUSTMENT or DISMISS."
+        )
     row = connection.execute(
         "SELECT amount, classification_status FROM cash_flows WHERE id = ?", (flow_id,)
     ).fetchone()
     if row is None or row["classification_status"] != "UNCLASSIFIED_CASH_FLOW":
         raise ValueError("Only an unclassified cash flow can be classified.")
-    if (flow_type == "WITHDRAWAL") != (row["amount"] < 0):
+    if flow_type in ("DEPOSIT", "WITHDRAWAL", "DISTRIBUTION") and (
+        (flow_type == "WITHDRAWAL") != (row["amount"] < 0)
+    ):
         raise ValueError("Cash-flow type contradicts the sign of the observed amount.")
     with connection:
-        connection.execute(
-            """
-            UPDATE cash_flows SET flow_type = ?, classification_status = 'CONFIRMED',
-                confirmed_at = ?, confirmed_via_action_id = ?
-            WHERE id = ?
-            """,
-            (flow_type, _iso(now), action_id, flow_id),
-        )
+        if flow_type == "DISMISS":
+            connection.execute(
+                """
+                UPDATE cash_flows SET classification_status = 'DISMISSED',
+                    confirmed_at = ?, confirmed_via_action_id = ?
+                WHERE id = ?
+                """,
+                (_iso(now), action_id, flow_id),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE cash_flows SET flow_type = ?, classification_status = 'CONFIRMED',
+                    confirmed_at = ?, confirmed_via_action_id = ?
+                WHERE id = ?
+                """,
+                (flow_type, _iso(now), action_id, flow_id),
+            )
         _audit(connection, actor="operator", action="CLASSIFY_FLOW", target=str(flow_id),
                detail={"flow_type": flow_type}, correlation_id=action_id, now=now)
     remaining = connection.execute(

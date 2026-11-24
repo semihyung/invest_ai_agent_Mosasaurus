@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _MIGRATIONS = {
     1: (
         "001_init_phase1",
@@ -24,9 +24,15 @@ _MIGRATIONS = {
         / "migrations"
         / "003_spec_v374_schema.sql",
     ),
+    4: (
+        "004_spec_v375_schema",
+        Path(__file__).resolve().parent.parent
+        / "migrations"
+        / "004_spec_v375_schema.sql",
+    ),
 }
 # 테이블을 재구성하는 마이그레이션은 FK 검사를 잠시 끄고(SQLite 표준 절차) 커밋 전에 재검증합니다.
-_REBUILD_MIGRATIONS = {3}
+_REBUILD_MIGRATIONS = {3, 4}
 _PHASE1_TABLES = {
     "system_state",
     "credentials_state",
@@ -70,7 +76,19 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    # 명세 9.2절(v3.7.5): WAL + NORMAL 은 정전 시 마지막 커밋(write-ahead 주문 기록)이 사라질 수 있어 FULL 을 강제한다.
+    connection.execute("PRAGMA synchronous = FULL")
     return connection
+
+
+def _validate_durability(connection: sqlite3.Connection) -> None:
+    """연결이 기대한 내구성 설정(WAL·FULL)인지 확인하고 아니면 DB_INTEGRITY 원인으로 처리하게 합니다."""
+    journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+    synchronous = connection.execute("PRAGMA synchronous").fetchone()[0]
+    if journal_mode.lower() != "wal":
+        raise RuntimeError(f"SQLite WAL mode required, found: {journal_mode}.")
+    if synchronous != 2:  # 2 = FULL
+        raise RuntimeError(f"SQLite synchronous=FULL required, found: {synchronous}.")
 
 
 def _validate_schema(connection: sqlite3.Connection) -> None:
@@ -247,7 +265,7 @@ def initialize_database(db_path: str | Path) -> sqlite3.Connection:
 
         if version == 1:
             _record_initial_migration(connection)
-        # 현재 버전보다 높은 마이그레이션을 순서대로 적용합니다(1→2→3).
+        # 현재 버전보다 높은 마이그레이션을 순서대로 적용합니다(1→2→3→4).
         for next_version in range(version + 1, _SCHEMA_VERSION + 1):
             _apply_migration(connection, version=next_version)
 
@@ -268,9 +286,7 @@ def connect_database(db_path: str | Path) -> sqlite3.Connection:
 
     connection = _connect(path)
     try:
-        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
-        if journal_mode.lower() != "wal":
-            raise RuntimeError(f"SQLite WAL mode required, found: {journal_mode}.")
+        _validate_durability(connection)
         _validate_schema(connection)
         return connection
     except (sqlite3.Error, RuntimeError):

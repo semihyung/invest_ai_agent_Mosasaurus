@@ -1,4 +1,4 @@
-# Operations Runbook (명세 v3.7.4)
+# Operations Runbook (명세 v3.7.5)
 
 KIS·네트워크·전원·DB·Telegram 장애의 공통 원칙: 신규 주문을 멈추고, `PENDING_CONFIRMATION` 과 `exit_obligations` 를 보존하며,
 KIS 와 SQLite 를 대조한 뒤, **원인별 해제 규칙**(`docs/risk_modes.md`)에 따라 복구합니다.
@@ -10,6 +10,19 @@ KIS 와 SQLite 를 대조한 뒤, **원인별 해제 규칙**(`docs/risk_modes.m
 - 수동 해제 원인(`ACCOUNT_MISMATCH`·`DB_INTEGRITY`·`DEPLOY_ROLLBACK`)은 `/reconcile` 일치 확인 후 `/clear_halt <원인>` + `/confirm <코드>` 입니다.
   KIS 상태를 원본으로 채택해야 하면 `/reconcile adopt`(차이를 확인 메시지로 보고 2단계 확인).
 - 휴대폰을 분실하면 SSH 로 접속해 `ALLOWED_USER_ID` 를 무효화합니다(같은 채널의 2단계 확인은 분실 시 보호가 되지 않음).
+
+## 구현 착수 전 실측 (v3.7.5 Stage 2 완료 조건)
+
+PAPER 계좌에서 매도·매수 체결 후 D+0/D+1/D+2 시점의 `dnca_tot_amt`·`prvs_rcdl_excc_amt`·`nrcvb_buy_amt`·`tot_evlu_amt` 가
+어떻게 변하는지 기록하고 이 문서에 남깁니다. 평가액·매수가능금액·예수금 대사는 모두 `prvs_rcdl_excc_amt`(D+2 정산 예수금)
+하나로 계산한다는 명세 2.2절 정의가 실측과 다르면 Stage 3 착수 전에 명세를 개정합니다.
+
+| 항목 | 확인할 것 | 결과 |
+| --- | --- | --- |
+| `prvs_rcdl_excc_amt` | 체결 즉시 D+2 값에 반영되는가, 결제일에 반영되는가 | (미실측) |
+| `nrcvb_buy_amt` | 당일 매도대금 재사용분을 포함하는가 | (미실측) |
+| `tot_evlu_amt` | D+2 정산분을 포함하는가(교차 검증 필드) | (미실측) |
+| 수수료·유관기관비 | 체결 건별 절사 방식(대사 허용 오차 1,000원이 충분한지) | (미실측) |
 
 ## 토큰
 

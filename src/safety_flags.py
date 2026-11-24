@@ -272,7 +272,55 @@ def sync_host_state_flags(
     )
 
 
-def load_risk_flags(connection: sqlite3.Connection, *, drawdown_mode=None) -> RiskFlags:
+def due_unresolved_halt_alerts(
+    connection: sqlite3.Connection,
+    *,
+    now: datetime,
+    interval_hours: int = 24,
+) -> tuple[str, ...]:
+    """오래 풀리지 않은 `SAFE_HALT` 원인 중 재경보 시각이 된 코드를 반환하고 경보 이벤트를 기록합니다.
+
+    명세 6.3절(v3.7.5): 어떤 원인이든 활성 후 `interval_hours`(24h)가 지나면 `CRITICAL` 로 알리고,
+    이후 같은 간격마다 반복합니다. 마지막 경보 시각은 `system_state`(`halt_alert:{code}`)에 둡니다.
+    군 복무 중 운영자가 수동 해제를 놓친 채 보유 포지션이 방치되는 일을 줄이려는 장치입니다.
+    """
+    if isinstance(interval_hours, bool) or not isinstance(interval_hours, int) or interval_hours < 1:
+        raise ValueError("interval_hours must be a positive integer.")
+    stamp = _iso(now)
+    due = []
+    rows = connection.execute(
+        "SELECT code, created_at FROM safety_flags WHERE flag_type = 'HALT' AND cleared_at IS NULL"
+    ).fetchall()
+    for row in rows:
+        key = f"halt_alert:{row['code']}"
+        last = connection.execute('SELECT value FROM system_state WHERE "key" = ?', (key,)).fetchone()
+        reference = datetime.fromisoformat(last[0] if last else row["created_at"])
+        if (now - reference).total_seconds() < interval_hours * 3600:
+            continue
+        elapsed_hours = int((now - datetime.fromisoformat(row["created_at"])).total_seconds() // 3600)
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO system_state ("key", value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT("key") DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, stamp, stamp),
+            )
+            connection.execute(
+                "INSERT INTO system_events (component, event_type, severity, message, created_at) "
+                "VALUES ('safety_flags', 'HALT_UNRESOLVED', 'CRITICAL', ?, ?)",
+                (f"{row['code']} 미해결 {elapsed_hours}시간 경과", stamp),
+            )
+        due.append(row["code"])
+    return tuple(sorted(due))
+
+
+def load_risk_flags(
+    connection: sqlite3.Connection,
+    *,
+    drawdown_mode=None,
+    protective_exit_enabled: bool = True,
+) -> RiskFlags:
     """DB 의 독립 플래그와 활성 HALT 원인으로 `RiskFlags` 를 구성합니다."""
     def flag(key: str) -> bool:
         row = connection.execute(
@@ -288,5 +336,7 @@ def load_risk_flags(connection: sqlite3.Connection, *, drawdown_mode=None) -> Ri
         emergency_mode=flag("emergency_mode"),
         is_paused=flag("is_paused"),
         training_mode=flag("training_mode"),
+        halt_reasons=frozenset(active_halt_reasons(connection)),
+        protective_exit_enabled=protective_exit_enabled,
         **kwargs,
     )

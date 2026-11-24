@@ -52,8 +52,48 @@ class OrderPolicyTruthTableTests(unittest.TestCase):
         for mode, stage in itertools.product(M, D):
             self.assertTrue(is_allowed(mode, stage, OrderKind.CANCEL))
 
+    def test_safe_halt_protective_exit_only_for_allowed_reasons(self):
+        """v3.7.5 D1: 활성 원인이 모두 허용 원인일 때만 보호성 손절 1종이 열립니다."""
+        allowed_sets = (
+            {"DEPLOY_ROLLBACK"}, {"ACCOUNT_MISMATCH"}, {"UPS_LOW"}, {"CONFIG_INVALID"},
+            {"DEPLOY_ROLLBACK", "UPS_LOW"},
+        )
+        for reasons in allowed_sets:
+            for stage in D:
+                for kind in OrderKind:
+                    expected = kind in (OrderKind.CANCEL, OrderKind.PROTECTIVE_EXIT_SELL)
+                    self.assertEqual(
+                        is_allowed(M.SAFE_HALT, stage, kind, halt_reasons=reasons), expected,
+                        (reasons, stage, kind))
+        blocked_sets = (
+            {"PENDING_CONFIRMATION"}, {"CREDENTIALS_UNAVAILABLE"}, {"DB_INTEGRITY"},
+            {"BOOT_RECOVERY_FAILED"}, {"CALENDAR_MISMATCH"}, {"CLOCK_UNSYNCED"},
+            {"ACCOUNT_MISMATCH", "DB_INTEGRITY"},  # 허용 원인에 금지 원인이 섞이면 전면 차단
+            set(),
+        )
+        for reasons in blocked_sets:
+            self.assertFalse(
+                is_allowed(M.SAFE_HALT, D.NORMAL, OrderKind.PROTECTIVE_EXIT_SELL, halt_reasons=reasons),
+                reasons)
+        self.assertFalse(is_allowed(
+            M.SAFE_HALT, D.NORMAL, OrderKind.PROTECTIVE_EXIT_SELL,
+            halt_reasons={"UPS_LOW"}, protective_exit_enabled=False))
+        # 보호성 손절 말고는 어떤 매수·매도도 열리지 않는다(재주문 포함).
+        self.assertFalse(is_allowed(
+            M.SAFE_HALT, D.NORMAL, OrderKind.REDUCE_ONLY_SELL, halt_reasons={"UPS_LOW"}))
+
+    def test_protective_stop_uses_code_constants_not_config(self):
+        from src.risk_manager import should_protective_stop
+        self.assertTrue(should_protective_stop(90.0, 100.0))
+        self.assertFalse(should_protective_stop(90.1, 100.0))
+        self.assertTrue(should_protective_stop(93.0, 100.0, training_mode=True))
+        self.assertFalse(should_protective_stop(93.1, 100.0, training_mode=True))
+
     def test_emergency_and_paused_allow_only_reduce_only_and_retry(self):
-        allowed = {OrderKind.REDUCE_ONLY_SELL, OrderKind.EXIT_OBLIGATION_RETRY, OrderKind.CANCEL}
+        allowed = {
+            OrderKind.REDUCE_ONLY_SELL, OrderKind.PROTECTIVE_EXIT_SELL,
+            OrderKind.EXIT_OBLIGATION_RETRY, OrderKind.CANCEL,
+        }
         for mode, stage, kind in itertools.product((M.EMERGENCY, M.PAUSED), D, OrderKind):
             self.assertEqual(is_allowed(mode, stage, kind), kind in allowed)
 
@@ -235,9 +275,13 @@ class DrawdownHysteresisTests(unittest.TestCase):
         self.assertEqual(next_drawdown_stage(D.WARNING, -0.079), D.CAUTION)
         self.assertEqual(next_drawdown_stage(D.CAUTION, -0.04), D.NORMAL)
 
-    def test_worsening_is_immediate_unless_frozen(self):
+    def test_worsening_is_always_immediate_and_freeze_only_blocks_recovery(self):
+        """v3.7.5: 미분류 현금흐름 중에도 악화는 즉시, 동결은 회복 방향만 막습니다."""
         self.assertEqual(next_drawdown_stage(D.NORMAL, -0.12), D.WARNING)
-        self.assertEqual(next_drawdown_stage(D.NORMAL, -0.12, frozen=True), D.NORMAL)
+        self.assertEqual(next_drawdown_stage(D.NORMAL, -0.12, frozen=True), D.WARNING)
+        self.assertEqual(next_drawdown_stage(D.NORMAL, -0.16, frozen=True), D.CRITICAL)
+        self.assertEqual(next_drawdown_stage(D.WARNING, -0.01, frozen=True), D.WARNING)
+        self.assertEqual(next_drawdown_stage(D.WARNING, -0.01), D.NORMAL)
 
     def test_floor_stage_after_emergency_release(self):
         self.assertEqual(next_drawdown_stage(D.NORMAL, 0.0, floor_stage=D.WARNING), D.WARNING)

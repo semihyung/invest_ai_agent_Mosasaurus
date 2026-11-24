@@ -98,11 +98,44 @@ class BootRecoveryTests(unittest.TestCase):
         self.assertTrue(recovered.recovery_ok)
         self.assertEqual(active_halt_reasons(self.connection), ())
 
-    def test_account_mismatch_is_raised_from_failed_reconciliation(self):
-        """대조 실패는 수동 해제 원인 ACCOUNT_MISMATCH 를 만듭니다."""
-        result = self._boot(reconcile=lambda: ReconciliationResult(False, ("X",), (), ("POSITION_MISMATCH",)))
+    def test_account_mismatch_needs_two_observations_before_manual_halt(self):
+        """v3.7.5: 첫 관측은 매수 대기만, 간격 뒤 같은 불일치가 재현돼야 수동 해제 원인이 됩니다."""
+        mismatch = lambda: ReconciliationResult(False, ("X",), (), ("POSITION_MISMATCH",))  # noqa: E731
 
-        self.assertIn("ACCOUNT_MISMATCH", result.failure_codes)
+        first = self._boot(reconcile=mismatch)
+        self.assertNotIn("ACCOUNT_MISMATCH", first.failure_codes)
+        self.assertEqual(active_codes(self.connection, "BUY_BLOCK"), ("ACCOUNT_DATA_STALE",))
+
+        self.now += timedelta(seconds=61)
+        second = self._boot(reconcile=mismatch)
+        self.assertIn("ACCOUNT_MISMATCH", second.failure_codes)
+
+    def test_reconciliation_query_failure_is_not_an_account_mismatch(self):
+        """조회 자체의 실패는 자동 해제 원인(BOOT_RECOVERY_FAILED)이며 수동 원인으로 격상되지 않습니다."""
+        def broken():
+            raise RuntimeError("KIS 5xx")
+
+        result = self._boot(reconcile=broken)
+
+        self.assertIn("BOOT_RECOVERY_FAILED", result.failure_codes)
+        self.assertNotIn("ACCOUNT_MISMATCH", result.failure_codes)
+
+    def test_orphan_order_blocks_orders_cancels_and_never_resubmits(self):
+        """DB 에 없는 KIS 당일 주문은 PENDING_CONFIRMATION 으로 계좌를 막고 취소만 요청합니다."""
+        cancelled = []
+        orphan = lambda: ReconciliationResult(  # noqa: E731
+            False, (), (), ("ORPHAN_ORDER",), orphan_orders=("KIS-777",)
+        )
+
+        result = self._boot(reconcile=orphan, cancel_order=cancelled.append)
+
+        self.assertEqual(cancelled, ["KIS-777"])
+        self.assertIn("PENDING_CONFIRMATION", result.failure_codes)
+        self.assertNotIn("ACCOUNT_MISMATCH", result.failure_codes)
+        self.assertEqual(self.connection.execute(
+            "SELECT COUNT(*) FROM system_events WHERE event_type = 'ORPHAN_ORDER' "
+            "AND severity = 'CRITICAL'").fetchone()[0], 1)
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM order_intents").fetchone()[0], 0)
 
     def test_submitting_orders_become_pending_confirmation_and_created_expire(self):
         """크래시로 남은 SUBMITTING 은 PENDING_CONFIRMATION, CREATED 는 EXPIRED 가 됩니다."""
@@ -134,8 +167,8 @@ class BootRecoveryTests(unittest.TestCase):
         """미분류 현금흐름은 SAFE_HALT 가 아니라 매수 차단 플래그만 만듭니다."""
         self.connection.execute(
             "INSERT INTO cash_flows (broker_transaction_id, flow_date, occurred_at, amount, flow_type,"
-            " classification_status, source, observed_at)"
-            " VALUES ('RECON:1','2026-11-23','t',100000,'UNCLASSIFIED','UNCLASSIFIED_CASH_FLOW','CASH_RECON','t')")
+            " classification_status, source, observed_at, first_observed_at)"
+            " VALUES ('RECON:1','2026-11-23','t',100000,'UNCLASSIFIED','UNCLASSIFIED_CASH_FLOW','CASH_RECON','t','t')")
 
         result = self._boot()
 

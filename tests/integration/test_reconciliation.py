@@ -1,7 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.reconciliation import (
@@ -166,12 +166,25 @@ class ReconciliationTests(unittest.TestCase):
             account_data_fresh=True,
         )
         now = datetime(2026, 11, 23, 6, 0, tzinfo=UTC)
-        persist_reconciliation_result(
-            self.connection,
-            mismatch,
-            checked_at=now,
-        )
+        # v3.7.5: 첫 관측은 매수 대기(PROVISIONAL)만 만들고 SAFE_HALT 는 만들지 않는다.
+        self.assertEqual(
+            persist_reconciliation_result(self.connection, mismatch, checked_at=now), "PROVISIONAL")
+        self.assertEqual(active_halt_reasons(self.connection), ())
+        # 체결이 진행 중이면(quiescent=False) 판정을 건너뛴다.
+        self.assertEqual(
+            persist_reconciliation_result(
+                self.connection, mismatch, checked_at=now + timedelta(seconds=120), quiescent=False),
+            "SKIPPED")
+        self.assertEqual(active_halt_reasons(self.connection), ())
+        # 간격(60초) 안의 재관측은 그대로 PROVISIONAL, 간격 뒤 같은 불일치가 재현돼야 확정된다.
+        self.assertEqual(
+            persist_reconciliation_result(
+                self.connection, mismatch, checked_at=now + timedelta(seconds=30)), "PROVISIONAL")
+        self.assertEqual(
+            persist_reconciliation_result(
+                self.connection, mismatch, checked_at=now + timedelta(seconds=61)), "CONFIRMED")
         self.assertEqual(active_halt_reasons(self.connection), ("ACCOUNT_MISMATCH",))
+        now = now + timedelta(seconds=61)
 
         matching = reconcile_account_state(
             broker_positions=[],
