@@ -139,6 +139,11 @@ def sync_orders(connection: sqlite3.Connection, broker: SyncBroker, *, now: date
                                           "ORDER BY cumulative_qty DESC LIMIT 1", (o["order_id"],)).fetchone()
                 apply_fill_to_position(connection, ticker=o["ticker"], side=o["side"], qty=fill["qty"],
                                        price=fill["price"], now=now)
+                if o["side"] == "SELL" and o["intent_type"] == "RISK_REDUCTION":
+                    with connection:  # 손절 체결: 다음 주간 교체까지 재진입 차단(5.2절 6번)
+                        connection.execute(
+                            "UPDATE universe_assets SET blocked_until_next_rotation = 1, blocked_since = ? "
+                            "WHERE ticker = ?", (now.astimezone(KST).date().isoformat(), o["ticker"]))
                 filled_count += 1
         if snap.remaining_qty == 0 and snap.filled_qty >= o["requested_qty"]:
             _move(connection, o, OrderStatus.FILLED, now, "BROKER_FILLED")

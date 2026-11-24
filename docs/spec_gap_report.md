@@ -1,6 +1,6 @@
 # 명세 v3.7.5 ↔ 코드 격차 보고서 (S0.1–S8 완료 후 v3.7.5 정렬 반영)
 
-작성 기준: 자동 테스트 483개 통과(Phase 1 마무리 3차 후, 이전 422개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
+작성 기준: 자동 테스트 501개 통과(Phase 1 마무리 4차 후, 이전 422개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
 실계좌·실서버 호출, 운영 서버 배포, 쉘 스크립트의 실제 실행(`sh -n` 문법 검사만 수행)은 하지 않았습니다.
 
 ## 1. 단계별 변경 요약
@@ -149,9 +149,8 @@
 ### 의도적으로 남겨 둔 것 (fail-closed 로 막혀 있음)
 
 - **신규 매수는 실제로는 아직 나가지 않습니다:** `KisBroker.buyable_cash`(`nrcvb_buy_amt` 조회 TR 미확정 `[UNVERIFIED]`)가 예외를 올리고, iNAV 는 WebSocket 연동 전이라 `None` → 스프레드·iNAV 검증이 매수를 거부합니다. 매도(스탑·120MA·교체·의무 재주문)는 동작합니다.
-- 리밸런싱 초과분(Drift) 매도, 파킹 현금화 매도, 슬롯 상관계수 검사(상관 함수 미주입), 5.2절 필터 전체의 15:00 재평가(현재는 120MA·검증·격리·데이터 상태만).
-- `morning_prep` 의 XKRX 달력 ↔ KIS 휴장일 이중 검증(`exchange_calendars` 의존성 추가 필요 → 사용자 결정), 허용 일정 기반 분배락 자동 검증(`ALLOWLIST_SCHEDULE`)은 `/ca_confirm` 수동 경로만.
-- `/approve_backtest` 는 산출물(커밋·전략 해시·기간) 연결 전이라 승인하지 않고 안내만 합니다. 2단계 확인 이력은 소비 표시가 없어 같은 명령을 다시 입력하면 같은 승인을 재사용할 수 있습니다(5분 만료 전 한정, 보강 대상).
+- `morning_prep` 의 XKRX 달력 ↔ KIS 휴장일 이중 검증은 `exchange_calendars` 의존성 추가가 필요해 사용자 결정 대기 중입니다(현재는 KIS 휴장일 조회만 사용).
+- 5.2절 필터 중 모멘텀 점수·절대수익 필터는 토요일 프리뷰에서만 평가하고, 15:00 에는 거래 이력·20일 거래대금·재진입 차단·120MA·검증·격리·데이터 상태를 재확인합니다.
 - 아직 실행해 보지 않은 것: `main()` 의 Telegram 폴링(메인 스레드)+에이전트(작업 스레드) 구성은 실제 봇 토큰으로 검증하지 못했습니다(라즈베리파이·모의투자 단계에서 확인).
 
 ### 4-4. Telegram 명령 연결 (마무리 3차)
@@ -165,6 +164,26 @@
 | `hwm_rebase_pending` 소비 + 해제 후 `WARNING` 하한, 훈련 종료일 자동 해제, `/remove` 보유 종목 퇴출 | ✅ | `src/job_handlers.py`, `src/daily_pipeline.py` |
 - 주간 교체 승계(misfire 후 다음 개장일 1회) 전용 로직: 현재는 "미소비 프리뷰가 있으면 다음 개장일에 같은 로직 재실행"으로 자연 승계됩니다(부분 실행되면 `CONSUMED`).
 - 호스트(Raspberry Pi) 전용: systemd·워치독·CPU/온도 측정·UPS 안전 종료·실제 KIS 응답 필드 확정.
+
+### 4-5. Phase 1 마무리 4차 (규칙 보강)
+
+| 항목 | 구현 | 파일 |
+| --- | --- | --- |
+| 리밸런싱 초과분(Drift ≥ 5%p AND 최소 주문 금액) 매도 — 내림 수량 | ✅ | `src/daily_pipeline.py` |
+| 파킹 현금화 매도 — 매수 재원 부족분 N 만큼 올림 수량 | ✅ | `src/daily_pipeline.py` |
+| 슬롯 상관계수 검사(최근 60거래일 수익률 피어슨, 데이터 부족이면 건너뜀) | ✅ | `src/daily_pipeline.py` |
+| 15:00 신규 진입 재평가: 거래 이력·20일 평균 거래대금·재진입 차단 | ✅ | `src/daily_pipeline.py` |
+| 손절 체결 → 재진입 차단, 기준일 이후 교체가 소비되면 해제(5.2절 6번) | ✅ | `src/order_sync.py`, `src/daily_pipeline.py` |
+| 15:00 시작 시 예수금 대사(기준 예수금은 옮기지 않음) | ✅ | `src/job_handlers.py`(`reconcile_cash`) |
+| 허용 일정 기반 분배락 자동 검증(`ALLOWLIST_SCHEDULE`, 계수 0.95~1.0 + 등록 ex_date 일치) + PeakPrice 재기준화 | ✅ | `src/morning_prep.py`, `src/universe.py` |
+| 승인 파일 선택 필드 `distribution_schedule`(ex_date + https 출처) 형식 검증 | ✅ | `src/universe.py` |
+| 2단계 승인 1회용(성공 시 소진)·확인 후 10분 이내만 유효 | ✅ | `src/telegram_actions.py` |
+| `/approve_backtest`: 보고서 정규화 해시 일치 + 현재 전략 해시 일치 + 기간 기록 | ✅ | `src/telegram_actions.py`, `backtest/report.py`(`data_range`) |
+| 티커별 매도 상호배제(`SELL_ALREADY_ACTIVE`) | ✅ | `src/order_executor.py` |
+| DB `busy_timeout=5000` 강제와 연결 시 검증 | ✅ | `src/db.py` |
+
+남은 Phase 1 항목(파이 없이 가능하지만 이번에 하지 않음): 감사 보고서 Major 20건, 명세 11.2절 🟡 시나리오의 통합 테스트 보강,
+호출 우선순위 큐·REST 폴링 주기 자동 연장, DB 단일 writer 스레드(현재는 `busy_timeout` 로 경합 대기).
 
 ## 5. 권고 다음 순서
 

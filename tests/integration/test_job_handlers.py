@@ -300,6 +300,15 @@ class OrderSyncTests(HandlerTestCase):
         self.assertEqual(self.count("SELECT COUNT(*) FROM trade_fills"), 1)
         self.assertEqual(self.conn.execute("SELECT status FROM order_intents").fetchone()[0], "COMPLETED")
 
+    def test_stop_loss_fill_blocks_reentry_until_next_rotation(self):
+        broker = self.stop_order()
+        broker._orders = [OrderSnapshot("0000001", "069500", "SELL", 10, 10, 0, "FILLED")]
+        broker.prices = {"0000001": 85.0}
+        self.poll(broker)
+        row = self.conn.execute("SELECT blocked_until_next_rotation, blocked_since FROM universe_assets "
+                                "WHERE ticker = '069500'").fetchone()
+        self.assertEqual((row[0], row[1]), (1, "2026-11-25"))
+
     def test_partial_fill_is_incremental_and_idempotent(self):
         broker = self.stop_order()
         broker._orders = [OrderSnapshot("0000001", "069500", "SELL", 10, 4, 6, "PARTIALLY_FILLED")]
@@ -335,6 +344,22 @@ class OrderSyncTests(HandlerTestCase):
         self.poll(broker)
         row = self.conn.execute("SELECT status, kis_order_no FROM orders").fetchone()
         self.assertEqual((row[0], row[1]), ("ACCEPTED", "0000009"))
+
+
+class PipelineCashReconTests(HandlerTestCase):
+    """15:00 파이프라인 시작 대사: 판정만 하고 기준 예수금을 옮기지 않는다."""
+
+    def test_judges_without_moving_the_baseline(self):
+        from src.job_handlers import reconcile_cash
+        reconcile_cash(self.conn, current_cash=1_000_000, now=CLOSE, trade_day=date(2026, 11, 25),
+                       advance_baseline=True, first_run_date=date(2026, 1, 1))
+        decision = reconcile_cash(self.conn, current_cash=3_000_000, now=CLOSE + timedelta(days=1),
+                                  trade_day=date(2026, 11, 26), advance_baseline=False,
+                                  first_run_date=date(2026, 1, 1))
+        self.assertEqual(decision.value, "PROVISIONAL")
+        baseline = self.conn.execute("SELECT value FROM system_state WHERE \"key\" = 'last_d2_cash'").fetchone()[0]
+        self.assertEqual(baseline, "1000000")
+        self.assertEqual(self.count("SELECT COUNT(*) FROM cash_flows WHERE classification_status='PROVISIONAL'"), 1)
 
 
 class SafetyMaintenanceTests(HandlerTestCase):

@@ -82,6 +82,31 @@ class HandlerTests(unittest.TestCase):
         self.run_prep(lambda t: series(adj_factor=0.98))  # 같은 상태 재실행은 후보를 늘리지 않는다
         self.assertEqual(self.count("SELECT COUNT(*) FROM corporate_actions"), 1)
 
+    def run_prep_scheduled(self, source, dates):
+        create_morning_prep_handler(lambda: connect_database(self.path), source, clock=lambda: NOW,
+                                    scheduled_ex_dates=lambda ticker: dates)()
+
+    def test_cash_distribution_on_a_registered_schedule_is_auto_verified_and_rebased(self):
+        self.conn.execute("INSERT INTO positions (ticker, tracking_status, quantity, avg_buy_price, market_value,"
+                          " peak_price_adj, last_synced_at) VALUES ('069500','MANAGED',10,100,1000,100.0,'t')")
+        self.conn.commit()
+        self.run_prep(lambda t: series())
+        fresh = series(adj_factor=0.98)
+        self.run_prep_scheduled(lambda t: fresh, {fresh[-1].trade_date})
+        row = self.conn.execute("SELECT verified, verification_source, adjustment_factor FROM corporate_actions"
+                                ).fetchone()
+        self.assertEqual((row[0], row[1]), (1, "ALLOWLIST_SCHEDULE"))
+        self.assertAlmostEqual(self.conn.execute("SELECT peak_price_adj FROM positions").fetchone()[0], 98.0)
+        self.assertEqual(active_codes(self.conn, "TICKER_BLOCK", ticker="069500"), ())
+        self.assertEqual(self.conn.execute("SELECT data_status FROM universe_assets").fetchone()[0], "VALID")
+
+    def test_unscheduled_or_out_of_range_factor_is_not_auto_verified(self):
+        self.run_prep(lambda t: series())
+        fresh = series(adj_factor=0.90)  # 0.95 미만: 일정이 있어도 수동 확인 대상
+        self.run_prep_scheduled(lambda t: fresh, {fresh[-1].trade_date})
+        self.assertEqual(self.conn.execute("SELECT verified FROM corporate_actions").fetchone()[0], 0)
+        self.assertIn("CORPORATE_ACTION_UNVERIFIED", active_codes(self.conn, "TICKER_BLOCK", ticker="069500"))
+
     def test_short_history_or_fetch_failure_isolates_ticker(self):
         self.run_prep(lambda t: series(n=100))
         self.assertIn("PRICE_SERIES_INVALID", active_codes(self.conn, "TICKER_BLOCK", ticker="069500"))

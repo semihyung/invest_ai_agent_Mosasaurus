@@ -200,7 +200,8 @@ def _telegram_settings(environ: Mapping[str, str]) -> dict | None:
         return None
     user = environ.get("ALLOWED_USER_ID", "").strip()
     return {"token": token, "chat_ids": {chat}, "user_ids": {user} if user else None,
-            "approvals_dir": environ.get("APPROVALS_DIR", "/run/approvals")}
+            "approvals_dir": environ.get("APPROVALS_DIR", "/run/approvals"),
+            "backtest_dir": environ.get("BACKTEST_DIR", "/run/backtests")}
 
 
 def _run_telegram(database_path: str | Path, settings: dict) -> None:
@@ -212,7 +213,8 @@ def _run_telegram(database_path: str | Path, settings: dict) -> None:
     run_telegram_polling(
         token=settings["token"], allowed_chat_ids=settings["chat_ids"],
         pending_store=PendingActionStore(connection_factory),
-        command_actions=build_command_actions(connection_factory, approvals_dir=settings["approvals_dir"]),
+        command_actions=build_command_actions(
+            connection_factory, approvals_dir=settings["approvals_dir"], backtest_dir=settings["backtest_dir"]),
         connection_factory=connection_factory, allowed_user_ids=settings["user_ids"])
 
 

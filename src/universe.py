@@ -3,7 +3,7 @@
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import sqlite3
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -152,6 +152,27 @@ def _parse_aware_timestamp(value: Any) -> str:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
+def _validate_distribution_schedule(schedule: Any) -> None:
+    """운영자가 등록한 분배 일정(`ex_date` ISO 날짜 + https 출처 URL)의 형식을 검사한다."""
+    if not isinstance(schedule, list):
+        raise ValueError("distribution_schedule 은 목록이어야 합니다.")
+    for entry in schedule:
+        if (not isinstance(entry, dict) or set(entry) != {"ex_date", "source_url"}
+                or not isinstance(entry["source_url"], str) or not entry["source_url"].startswith("https://")):
+            raise ValueError("분배 일정 항목은 ex_date 와 https source_url 만 가져야 합니다.")
+        try:
+            parsed = date.fromisoformat(str(entry["ex_date"]))
+        except ValueError as exc:
+            raise ValueError("분배 일정의 ex_date 는 ISO 날짜여야 합니다.") from exc
+        if parsed.isoformat() != str(entry["ex_date"]):
+            raise ValueError("분배 일정의 ex_date 는 ISO 날짜여야 합니다.")
+
+
+def scheduled_ex_dates(assets: Sequence[dict[str, Any]]) -> dict[str, set[str]]:
+    """승인 파일 종목별 등록 분배 일정의 ex_date 집합(자동 검증 근거)."""
+    return {a["ticker"]: {str(e["ex_date"]) for e in a.get("distribution_schedule", [])} for a in assets}
+
+
 def load_universe_allowlist(
     path: str | Path,
     *,
@@ -176,8 +197,10 @@ def load_universe_allowlist(
     normalized_assets = []
     seen_tickers = set()
     for item in payload["assets"]:
-        if not isinstance(item, dict) or set(item) != _CLASSIFICATION_FIELDS:
+        if (not isinstance(item, dict)
+                or set(item) not in (_CLASSIFICATION_FIELDS, _CLASSIFICATION_FIELDS | {"distribution_schedule"})):
             raise ValueError("승인 파일의 종목 항목 필드가 예상 형식과 다릅니다.")
+        _validate_distribution_schedule(item.get("distribution_schedule", []))
         if item["ticker"] in seen_tickers:
             raise ValueError("승인 파일에 중복 티커가 있습니다.")
         seen_tickers.add(item["ticker"])

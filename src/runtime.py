@@ -30,6 +30,7 @@ from src.ops_jobs import build_notifier, create_daily_briefing_handler, create_w
 from src.order_manager import create_paper_order_transport
 from src.reconciliation import OrderSnapshot, Position, ReconciliationResult, reconcile_account_state
 from src.scheduler import KST, ScheduleJob
+from src.universe import load_universe_allowlist, scheduled_ex_dates
 from src.scheduler_jobs import create_weekly_preview_handler
 
 NOT_IMPLEMENTED_JOBS: tuple = ()  # 모든 필수 잡이 구현되어 자리표시 핸들러가 필요 없다
@@ -120,6 +121,19 @@ def build_dependencies(
             connection.close()
 
     notify = build_notifier(env)
+    def scheduled_dates(ticker: str) -> set[str]:
+        """운영자 승인 파일에 등록된 분배 일정(매 호출 시 다시 읽어 변경을 반영, 읽기 실패 시 빈 집합 = 자동 검증 안 함)."""
+        try:
+            universe = cfg["universe"]  # type: ignore[index]
+            path = Path(universe["allowlist_file"]).expanduser()  # type: ignore[index]
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parent.parent / path
+            assets = load_universe_allowlist(
+                path, allowed_synthetic_parking_tickers=universe["allowlisted_synthetic_parking_tickers"])  # type: ignore[index]
+            return scheduled_ex_dates(assets).get(ticker, set())
+        except (ValueError, KeyError, OSError):
+            return set()
+
     guard = create_intraday_guard_handler(connection_factory, broker, notify=notify, protective_enabled=protective)
     safety = create_safety_maintenance_handler(connection_factory, run_dir=env.get("HOST_RUN_DIR"), notify=notify)
     ticks = {"n": 0}
@@ -145,7 +159,8 @@ def build_dependencies(
         ScheduleJob.MORNING_PREP: create_morning_prep_handler(
             connection_factory, lambda ticker: broker.candles(ticker, datetime.now(KST).date()),
             ratio_change_tolerance=float(cfg["corporate_action"]["ratio_change_tolerance"]),  # type: ignore[index]
-            min_cash_factor=float(cfg["corporate_action"]["min_cash_factor"])),  # type: ignore[index]
+            min_cash_factor=float(cfg["corporate_action"]["min_cash_factor"]),
+            scheduled_ex_dates=scheduled_dates),  # type: ignore[index]
         ScheduleJob.PENDING_CONFIRMATION_POLLER: create_pending_confirmation_poller(connection_factory, broker),
         ScheduleJob.WEEKLY_RANKING_PREVIEW: create_weekly_preview_handler(
             connection_factory, cfg),  # type: ignore[arg-type]

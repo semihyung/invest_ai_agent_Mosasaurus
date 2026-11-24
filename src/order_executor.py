@@ -56,6 +56,7 @@ _STRATEGY_KINDS = {
     OrderKind.PARKING_SELL: (OrderIntentType.PARKING_ALLOCATION, OrderSide.SELL),
 }
 _REDUCE_ONLY_KINDS = frozenset(_SELL_KINDS)
+SELL_ALREADY_ACTIVE = "BLOCKED:SELL_ALREADY_ACTIVE"
 
 
 class BrokerPort(Protocol):
@@ -160,6 +161,13 @@ def submit_order(
     quantity = min(request.quantity, sellable)
     if quantity <= 0:
         return "BLOCKED:NO_SELLABLE_QTY"
+
+    # 티커별 상호배제: 같은 종목에 활성 매도 주문이 있으면 서로 다른 의도의 동시 매도를 막는다(중복 매도·과매도 방지).
+    if side is OrderSide.SELL and connection.execute(
+            "SELECT 1 FROM orders WHERE ticker = ? AND side = 'SELL' AND status IN ('CREATED','SUBMITTING',"
+            "'PENDING_CONFIRMATION','ACCEPTED','PARTIALLY_FILLED','CANCEL_PENDING') LIMIT 1",
+            (request.ticker,)).fetchone():
+        return SELL_ALREADY_ACTIVE
 
     intent = OrderIntent(
         cycle_id=request.cycle_id, intent_type=intent_type, slot_id=None,

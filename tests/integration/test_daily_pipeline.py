@@ -58,10 +58,10 @@ class PipelineTestCase(unittest.TestCase):
                 " classification_source, verified_by, verified_at, underlying_index_family) VALUES (?,?,?,?,?,"
                 "'SPOT_ETF','PHYSICAL','ACTIVE','VALID','t',?,1,'s','op','t',?)",
                 (ticker, ticker, cat, region, "IDX" + ticker, asset, "FAM" + ticker))
-            for i in range(130):
+            for i in range(210):
                 self.conn.execute(
                     "INSERT INTO daily_candles (ticker, trade_date, raw_close, adjusted_close, volume, source,"
-                    " source_timestamp) VALUES (?,?,100,100,1000,'KIS','t')",
+                    " source_timestamp) VALUES (?,?,100,100,100000000,'KIS','t')",
                     (ticker, f"2026-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}"))
         self.conn.execute(
             "INSERT INTO daily_portfolio (snapshot_date, total_equity, cash_balance, parking_value, risk_asset_value,"
@@ -108,6 +108,28 @@ class QuantityTests(unittest.TestCase):
         self.assertEqual(buy_quantity(target=4_500_000, buyable=1_000_000, **common), 5_000)  # (1M-500k)/100
         self.assertEqual(buy_quantity(target=4_500_000, buyable=400_000, **common), 0)       # 버퍼 아래
         self.assertEqual(buy_quantity(target=100, buyable=9_000_000, **{**common, "held_value": 500}), 0)
+
+
+class CorrelationTests(PipelineTestCase):
+    def set_closes(self, ticker, fn):
+        rows = self.conn.execute("SELECT trade_date FROM daily_candles WHERE ticker = ? ORDER BY trade_date",
+                                 (ticker,)).fetchall()
+        for index, row in enumerate(rows):
+            self.conn.execute("UPDATE daily_candles SET adjusted_close = ? WHERE ticker = ? AND trade_date = ?",
+                              (fn(index), ticker, row[0]))
+        self.conn.commit()
+
+    def test_identical_series_correlate_and_independent_series_do_not(self):
+        from src.daily_pipeline import db_correlation
+        self.set_closes("069500", lambda i: 100 + (i % 5))
+        self.set_closes("360750", lambda i: 100 + (i % 5))
+        self.assertAlmostEqual(db_correlation(self.conn)("069500", "360750"), 1.0)
+        self.set_closes("360750", lambda i: 100 + ((i * 7) % 11))
+        self.assertLess(abs(db_correlation(self.conn)("069500", "360750")), 0.5)
+
+    def test_flat_or_short_history_returns_none(self):
+        from src.daily_pipeline import db_correlation
+        self.assertIsNone(db_correlation(self.conn)("069500", "360750"))  # 상수 시계열(분산 0)
 
 
 class PipelineTests(PipelineTestCase):
@@ -167,6 +189,39 @@ class PipelineTests(PipelineTestCase):
         broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100})
         self.run_pipeline(broker)
         self.assertEqual(broker.transport.calls, [])
+
+    def test_drift_overweight_is_trimmed_down_to_target_with_floor(self):
+        self.add_preview(["069500"])
+        broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100}, holdings={"069500": 100_000})
+        self.run_pipeline(broker)
+        sells = [c for c in self.calls(broker) if c[1] == "SELL"]
+        self.assertEqual(sells, [("069500", "SELL", 59_090)])  # floor((11,000,000 - 4,500,000) / 110)
+
+    def test_parking_is_liquidated_only_for_the_cash_shortfall(self):
+        self.add_preview(["069500"])
+        broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100}, holdings={"423160": 50_000},
+                                cash=100_000)
+        broker.buyable = 100_000
+        self.run_pipeline(broker)
+        self.assertEqual([c for c in self.calls(broker) if c[1] == "SELL"], [("423160", "SELL", 45_000)])
+
+    def test_stop_loss_reentry_block_is_released_by_the_next_consumed_rotation(self):
+        self.add_preview(["069500"])
+        self.conn.execute("UPDATE universe_assets SET blocked_until_next_rotation = 1, blocked_since = '2026-11-20' "
+                          "WHERE ticker = '360750'")
+        self.conn.commit()
+        self.run_pipeline(PipelineBroker({"069500": 110, "360750": 110, "423160": 100}))
+        self.assertEqual(self.conn.execute(
+            "SELECT blocked_until_next_rotation FROM universe_assets WHERE ticker = '360750'").fetchone()[0], 0)
+
+    def test_blocked_or_illiquid_candidates_fail_live_filters(self):
+        self.add_preview(["360750", "069500"])
+        self.conn.execute("UPDATE universe_assets SET blocked_until_next_rotation = 1 WHERE ticker = '360750'")
+        self.conn.commit()
+        broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100})
+        self.run_pipeline(broker)
+        self.assertNotIn("360750", [c[0] for c in self.calls(broker)])
+        self.assertIn("069500", [c[0] for c in self.calls(broker)])
 
     def test_missing_nav_blocks_strategy_orders(self):
         self.add_preview(["069500"])

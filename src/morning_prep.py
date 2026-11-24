@@ -77,6 +77,26 @@ def _candidate(connection: sqlite3.Connection, ticker: str, factor: float, ex_da
             (f"DETECT:{ticker}:{ex_date}", ticker, action, ex_date, factor))
 
 
+def auto_verify_scheduled(connection: sqlite3.Connection, ticker: str, ex_date: str, factor: float,
+                          now: datetime) -> None:
+    """운영자 등록 분배 일정과 일치하는 현금 분배를 자동 검증한다(`ALLOWLIST_SCHEDULE`, 4.2절 ①).
+
+    같은 트랜잭션에서 PeakPrice 를 계수로 재기준화한다. 남은 미검증 후보가 없으면 격리도 해제한다.
+    """
+    with connection:
+        cursor = connection.execute(
+            "UPDATE corporate_actions SET verified = 1, verification_source = 'ALLOWLIST_SCHEDULE', "
+            "adjustment_factor = ?, verified_at = ? WHERE provider_event_id = ? AND verified = 0",
+            (factor, now.isoformat(), f"DETECT:{ticker}:{ex_date}"))
+        if cursor.rowcount == 1:
+            connection.execute("UPDATE positions SET peak_price_adj = peak_price_adj * ? "
+                               "WHERE ticker = ? AND peak_price_adj IS NOT NULL", (factor, ticker))
+    if connection.execute("SELECT 1 FROM corporate_actions WHERE ticker = ? AND verified = 0 LIMIT 1",
+                          (ticker,)).fetchone() is None:
+        clear_flag(connection, "TICKER_BLOCK", "CORPORATE_ACTION_UNVERIFIED", now=now,
+                   cleared_by="ALLOWLIST_SCHEDULE", ticker=ticker)
+
+
 def create_morning_prep_handler(
     connection_factory: Callable[[], sqlite3.Connection],
     candle_source: Callable[[str], list[DailyCandle]],
@@ -86,6 +106,7 @@ def create_morning_prep_handler(
     ratio_change_tolerance: float = 1e-6,
     min_cash_factor: float = 0.95,
     min_history: int = 200,
+    scheduled_ex_dates: Callable[[str], set[str]] = lambda ticker: set(),
 ) -> Callable[[], None]:
     """활성 종목마다 일봉을 받아 검사하고 갱신합니다. 한 종목의 실패가 다른 종목을 막지 않습니다."""
 
@@ -119,6 +140,16 @@ def create_morning_prep_handler(
                            ticker=ticker)
                 unverified = connection.execute(
                     "SELECT 1 FROM corporate_actions WHERE ticker = ? AND verified = 0 LIMIT 1", (ticker,)).fetchone()
+                if retro and min_cash_factor <= factor < 1.0 and ex_date in scheduled_ex_dates(ticker) \
+                        and not latest_a_off:
+                    _candidate(connection, ticker, factor, ex_date, min_cash_factor, now)
+                    auto_verify_scheduled(connection, ticker, ex_date, factor, now)
+                    if not connection.execute("SELECT 1 FROM corporate_actions WHERE ticker = ? AND verified = 0",
+                                              (ticker,)).fetchone():
+                        with connection:
+                            connection.execute("UPDATE universe_assets SET data_status = 'VALID' WHERE ticker = ?",
+                                               (ticker,))
+                    continue
                 if retro or latest_a_off:
                     if retro:
                         _candidate(connection, ticker, factor, ex_date, min_cash_factor, now)

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Mapping, Protocol
 
-from src.job_handlers import AccountBrokerPort, _log, _mark_stale, _safe_notify
+from src.job_handlers import AccountBrokerPort, _log, _mark_stale, _safe_notify, reconcile_cash
 from src.order_executor import KST, SellRequest, submit_order
 from src.order_manager import OrderSide, calculate_limit_price
 from src.order_policy import OrderKind
@@ -50,6 +50,8 @@ class PipelineConfig:
     fee_rate: float
     sell_first_deadline: time
     new_order_cutoff: time
+    min_history_sessions: int = 200
+    min_avg_turnover_20d: float = 0.0
 
     @classmethod
     def from_rules(cls, rules: Mapping) -> "PipelineConfig":
@@ -60,7 +62,9 @@ class PipelineConfig:
             int(p["min_trade_amount_krw"]), float(p["rebalance_drift_ratio"]), int(p["hold_rank_buffer"]),
             p["concentration"]["max_slots_per_region"], p["concentration"]["max_region_weight"],
             float(p["concentration"]["max_pairwise_correlation_60d"]), float(e["fee_rate"]),
-            hms(e["sell_first_deadline"]), hms(e["new_order_cutoff"]))
+            hms(e["sell_first_deadline"]), hms(e["new_order_cutoff"]),
+            int(rules["universe"]["min_history_sessions"]),
+            float(rules["universe"]["min_avg_turnover_20d_krw"]))
 
 
 def buy_quantity(*, target: int, held_value: int, active_buy_value: int, limit_price: int,
@@ -80,6 +84,45 @@ def _sma120(connection: sqlite3.Connection, ticker: str) -> float | None:
     rows = connection.execute("SELECT adjusted_close FROM daily_candles WHERE ticker = ? "
                               "ORDER BY trade_date DESC LIMIT 120", (ticker,)).fetchall()
     return sum(r[0] for r in rows) / 120 if len(rows) == 120 else None
+
+
+def db_correlation(connection: sqlite3.Connection) -> Callable[[str, str], float | None]:
+    """최근 60거래일 일간 수익률의 피어슨 상관계수(데이터 부족·일자 불일치면 None → 집중도 검사에서 건너뜀)."""
+
+    def series(ticker: str) -> dict[str, float]:
+        rows = connection.execute("SELECT trade_date, adjusted_close FROM daily_candles WHERE ticker = ? "
+                                  "ORDER BY trade_date DESC LIMIT 61", (ticker,)).fetchall()
+        rows.reverse()
+        return {rows[i]["trade_date"]: rows[i]["adjusted_close"] / rows[i - 1]["adjusted_close"] - 1
+                for i in range(1, len(rows))}
+
+    def correlation(a: str, b: str) -> float | None:
+        x, y = series(a), series(b)
+        if len(x) < 60 or x.keys() != y.keys():
+            return None
+        xs, ys = [x[d] for d in sorted(x)], [y[d] for d in sorted(x)]
+        mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+        cov = sum((p - mx) * (q - my) for p, q in zip(xs, ys))
+        var = math.sqrt(sum((p - mx) ** 2 for p in xs) * sum((q - my) ** 2 for q in ys))
+        return cov / var if var else None
+
+    return correlation
+
+
+def _passes_live_filters(connection: sqlite3.Connection, ticker: str, cfg: "PipelineConfig") -> bool:
+    """5.2절 신규 진입 재평가 중 DB 로 판정 가능한 항목: 거래 이력, 20일 평균 거래대금, 재진입 차단 해제."""
+    rows = connection.execute("SELECT raw_close, volume FROM daily_candles WHERE ticker = ? "
+                              "ORDER BY trade_date DESC LIMIT 200", (ticker,)).fetchall()
+    if len(rows) < cfg.min_history_sessions:
+        return False
+    recent = rows[:20]
+    if any(r["raw_close"] is None for r in recent):
+        return False
+    if sum(r["raw_close"] * r["volume"] for r in recent) / 20 < cfg.min_avg_turnover_20d:
+        return False
+    blocked = connection.execute("SELECT blocked_until_next_rotation FROM universe_assets WHERE ticker = ?",
+                                 (ticker,)).fetchone()
+    return blocked is not None and blocked[0] == 0
 
 
 def _load_preview(connection: sqlite3.Connection, now: datetime) -> sqlite3.Row | None:
@@ -107,7 +150,8 @@ def create_daily_pipeline_handler(
         now = clock()
         connection = connection_factory()
         try:
-            _run(connection, broker, config, now, clock, sleep, notify, correlation, protective_enabled)
+            _run(connection, broker, config, now, clock, sleep, notify,
+                 correlation or db_correlation(connection), protective_enabled)
         finally:
             connection.close()
 
@@ -129,6 +173,11 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
     except Exception as error:  # noqa: BLE001
         _mark_stale(connection, now, f"pipeline:{type(error).__name__}")
         return
+    # 5.4절: 매 개장일 15:00 시작 시에도 예수금 대사(정지 상태일 때만). 기준 예수금은 옮기지 않는다.
+    if connection.execute("SELECT 1 FROM orders WHERE status IN (%s) LIMIT 1" % ",".join("?" * len(_ACTIVE_SELL)),
+                          _ACTIVE_SELL).fetchone() is None:
+        reconcile_cash(connection, current_cash=cash, now=now, trade_day=now.astimezone(KST).date(),
+                       advance_baseline=False)
     if equity <= 0:
         _log(connection, "daily_pipeline", "SKIPPED_V_LE_0", "WARN", "총평가액 ≤ 0: 주문 생략", now)
         return
@@ -185,7 +234,7 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
             info = meta.get(t)
             if info is None or info["data_status"] != "VALID" or info["classification_verified"] != 1:
                 continue
-            if ticker_is_blocked(connection, t) or t in exited:
+            if ticker_is_blocked(connection, t) or t in exited or not _passes_live_filters(connection, t, cfg):
                 continue
             sma = _sma120(connection, t)
             try:
@@ -216,6 +265,51 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
                                   now=now, account_fresh=True, protective_enabled=protective_enabled)
             if result == "SUBMITTED":
                 submitted += 1
+
+        # 리밸런싱 초과분 매도: 유지 종목의 Drift ≥ 5%p AND 최소 주문 금액. 목표보다 많이 팔지 않도록 내림.
+        for a in final_risk:
+            qty = positions.get(a.ticker, 0)
+            if qty <= 0 or a.ticker in rotation_sells:
+                continue
+            try:
+                price = broker.last_price(a.ticker)
+                limit = calculate_limit_price(broker.quote(a.ticker), OrderSide.SELL)
+            except Exception:  # noqa: BLE001
+                continue
+            excess = qty * price - equity * a.target_weight
+            if excess >= cfg.min_trade_amount and excess / equity >= cfg.rebalance_drift:
+                sell_qty = min(math.floor(excess / limit), qty)
+                request = SellRequest(a.ticker, sell_qty, OrderKind.RISK_ROTATION_SELL, f"D{a.ticker}:{day}",
+                                      "WEEKLY_REBALANCE", region=meta[a.ticker]["region"])
+                if sell_qty > 0 and submit_order(connection, broker, request, now=now, account_fresh=True,
+                                                 protective_enabled=protective_enabled) == "SUBMITTED":
+                    submitted += 1
+        # 파킹 현금화 매도: 위험자산 매수에 필요한 현금이 부족하면 부족분 N 만큼 올림 수량으로 판다.
+        needed = 0
+        for a in final_risk:
+            try:
+                have = positions.get(a.ticker, 0) * broker.last_price(a.ticker)
+            except Exception:  # noqa: BLE001
+                continue
+            gap = equity * a.target_weight - have
+            if gap >= cfg.min_trade_amount and (have == 0 or gap / equity >= cfg.rebalance_drift):
+                needed += gap
+        parking_qty = positions.get(cfg.parking_ticker, 0)
+        if needed and parking_qty > 0:
+            try:
+                spare = max(0, min(broker.buyable_cash(), cash) - cfg.cash_buffer_ratio * equity)
+                shortfall = needed - spare
+                if shortfall > 0:
+                    bid = calculate_limit_price(broker.quote(cfg.parking_ticker), OrderSide.SELL)
+                    sell_qty = min(math.ceil(shortfall / bid), parking_qty)
+                    region = meta[cfg.parking_ticker]["region"] if cfg.parking_ticker in meta else "KR"
+                    request = SellRequest(cfg.parking_ticker, sell_qty, OrderKind.PARKING_SELL,
+                                          f"P{cfg.parking_ticker}:{day}", "PARKING_LIQUIDATION", region=region)
+                    if submit_order(connection, broker, request, now=now, account_fresh=True,
+                                    protective_enabled=protective_enabled) == "SUBMITTED":
+                        submitted += 1
+            except Exception as error:  # noqa: BLE001 - 자금 조회 불가: 현금화 보류(매수도 같은 이유로 막힘)
+                _log(connection, "daily_pipeline", "PARKING_SELL_SKIPPED", "WARN", type(error).__name__, now)
 
     # 3. 매도 선행: 이번 실행의 매도가 모두 종결돼야 매수 단계로 진행(시한 초과 시 매수 생략)
     deadline = datetime.combine(now.astimezone(KST).date(), cfg.sell_first_deadline, tzinfo=KST)
@@ -262,6 +356,10 @@ def _consume(connection: sqlite3.Connection, preview: sqlite3.Row, now: datetime
     with connection:
         connection.execute("UPDATE weekly_previews SET status = 'CONSUMED' WHERE preview_id = ? AND "
                            "preview_revision = ?", (preview["preview_id"], preview["preview_revision"]))
+        # 5.2절 6번: 이 프리뷰의 기준일이 손절일 이후이면 재진입 차단을 푼다.
+        connection.execute("UPDATE universe_assets SET blocked_until_next_rotation = 0 "
+                           "WHERE blocked_until_next_rotation = 1 AND blocked_since <= ?",
+                           (preview["base_candle_date"],))
 
 
 def _buy_phase(connection, broker, cfg, meta, final_risk, risk_weight, day, clock, notify) -> None:

@@ -7,17 +7,25 @@
 """
 
 import hashlib
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 
 from src import operator_actions as ops
+from src.config import load_config, strategy_params_hash
 from src.ops_jobs import compose_briefing
 from src.reconciliation import Position
 from src.safety_flags import active_halt_reasons, is_safe_halt
 
 KST = timezone(timedelta(hours=9), name="KST")
+
+
+class _Refused(Exception):
+    """실행하지 않고 사유만 안내할 때 쓴다(승인은 소진하지 않는다)."""
+
+
 FAIL = "처리하지 못했습니다. 상태와 인자를 확인하세요(자세한 원인은 로그에 기록됨)."
 
 
@@ -35,20 +43,37 @@ def _state(connection: sqlite3.Connection, key: str) -> str | None:
     return row[0] if row else None
 
 
-def _approved_action_id(connection: sqlite3.Connection, command: str) -> str:
-    """이 명령 문자열로 가장 최근에 `APPROVED` 된 2단계 확인의 ID(없으면 예외)."""
+APPROVAL_VALID_FOR = timedelta(minutes=10)  # 확인 직후 실행되는 것이 정상이므로 오래된 승인은 쓰지 않는다
+
+
+def _approved_action_id(connection: sqlite3.Connection, command: str, now: datetime | None = None) -> str:
+    """이 명령 문자열로 가장 최근에 `APPROVED` 된(그리고 아직 쓰이지 않은) 2단계 확인의 ID(없으면 예외)."""
     row = connection.execute(
-        "SELECT id FROM pending_actions WHERE approval_status = 'APPROVED' AND args_hash = ? "
+        "SELECT id, confirmed_at FROM pending_actions WHERE approval_status = 'APPROVED' AND args_hash = ? "
         "ORDER BY confirmed_at DESC LIMIT 1", (hashlib.sha256(command.encode("utf-8")).hexdigest(),)).fetchone()
     if row is None:
         raise ops.ApprovalError("No approved confirmation for this command.")
-    return row[0]
+    if now is not None and row["confirmed_at"]:
+        confirmed = datetime.fromisoformat(row["confirmed_at"])
+        confirmed = confirmed if confirmed.tzinfo else confirmed.replace(tzinfo=timezone.utc)
+        if now - confirmed > APPROVAL_VALID_FOR:
+            raise ops.ApprovalError("The approved confirmation is too old.")
+    return row["id"]
+
+
+def _consume_approval(connection: sqlite3.Connection, command: str) -> None:
+    """성공한 명령의 승인을 소진한다(`EXPIRED`): 같은 확인으로 명령을 다시 실행하지 못하게 한다(감사 행은 유지)."""
+    with connection:
+        connection.execute(
+            "UPDATE pending_actions SET approval_status = 'EXPIRED' WHERE approval_status = 'APPROVED' "
+            "AND args_hash = ?", (hashlib.sha256(command.encode("utf-8")).hexdigest(),))
 
 
 def build_command_actions(
     connection_factory: Callable[[], sqlite3.Connection],
     *,
     approvals_dir: str | Path,
+    backtest_dir: str | Path = "/run/backtests",
     broker_positions: Callable[[], list[Position]] | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> Mapping[str, Callable[[str, str], str]]:
@@ -60,7 +85,11 @@ def build_command_actions(
         def action(_chat_id: str, text: str) -> str:
             connection = connection_factory()
             try:
-                return fn(connection, text.split(), clock())
+                reply = fn(connection, text.split(), clock())
+                _consume_approval(connection, " ".join(text.split()))  # 승인이 없던 명령이면 아무 일도 없다
+                return reply
+            except _Refused as refusal:
+                return str(refusal)
             except (ops.ApprovalError, ValueError, KeyError, sqlite3.Error, OSError) as error:
                 with connection:
                     connection.execute(
@@ -117,10 +146,10 @@ def build_command_actions(
     def reconcile(c, args, now):
         if args[1:] == ["adopt"]:
             if broker_positions is None:
-                return "증권사 조회가 연결되지 않아 채택할 수 없습니다."
+                raise _Refused("증권사 조회가 연결되지 않아 채택할 수 없습니다.")
             diff = ops.adopt_broker_positions(
                 c, {p.ticker: p.quantity for p in broker_positions()},
-                action_id=_approved_action_id(c, " ".join(args)), now=now)
+                action_id=_approved_action_id(c, " ".join(args), now), now=now)
             return f"KIS 보유 수량을 채택했습니다(차이 {len(diff)}건). 대조는 다음 마감 후 잡에서 재확인됩니다."
         return (f"대조 상태: {_state(c, 'reconciliation_ok') or '미확인'} / 마지막 대조: "
                 f"{_state(c, 'last_reconciliation_at') or '없음'}\n수동 채택은 /reconcile adopt (2단계 확인)")
@@ -132,13 +161,13 @@ def build_command_actions(
 
     def resume(c, args, now):
         if is_safe_halt(c):
-            return "SAFE_HALT 중에는 /resume 으로 풀 수 없습니다. /clear_halt 로 원인을 해제하세요."
-        _approved_action_id(c, " ".join(args))
+            raise _Refused("SAFE_HALT 중에는 /resume 으로 풀 수 없습니다. /clear_halt 로 원인을 해제하세요.")
+        _approved_action_id(c, " ".join(args), now)
         _set_state(c, "is_paused", "false", now)
         return "일시정지를 해제했습니다."
 
     def training(c, args, now):
-        _approved_action_id(c, " ".join(args))
+        _approved_action_id(c, " ".join(args), now)
         if args[1] == "off":
             _set_state(c, "training_mode", "false", now)
             _set_state(c, "training_until", "", now)
@@ -149,10 +178,10 @@ def build_command_actions(
         return f"훈련 모드 활성화(스탑 -7%, 위험자산 매수 차단){' / 종료일 ' + until if until else ' / 무기한'}"
 
     def emergency(c, args, now):
-        _approved_action_id(c, " ".join(args))
+        _approved_action_id(c, " ".join(args), now)
         if len(args) == 2:  # off
             rebase = ops.release_emergency(
-                c, action_id=_approved_action_id(c, " ".join(args)),
+                c, action_id=_approved_action_id(c, " ".join(args), now),
                 floor_until_date=(now.astimezone(KST).date() + timedelta(days=7)).isoformat(), now=now)
             return "EMERGENCY 를 해제했습니다." + (" HWM 리베이스가 예약되었습니다." if rebase else "")
         _set_state(c, "emergency_mode", "true", now)
@@ -161,22 +190,24 @@ def build_command_actions(
 
     # ───── 운영자 승인·정정 ─────
     def clear_halt(c, args, now):
-        ok = ops.clear_halt(c, code=args[1].upper(), action_id=_approved_action_id(c, " ".join(args)),
+        ok = ops.clear_halt(c, code=args[1].upper(), action_id=_approved_action_id(c, " ".join(args), now),
                             reconciliation_ok=_state(c, "reconciliation_ok") == "true", now=now)
-        return f"{args[1].upper()} {'해제했습니다' if ok else '는 해제 조건(대조 성공·수동 해제 원인)을 만족하지 않아 유지됩니다'}."
+        if not ok:
+            raise _Refused(f"{args[1].upper()} 는 해제 조건(대조 성공·수동 해제 원인)을 만족하지 않아 유지됩니다.")
+        return f"{args[1].upper()} 해제했습니다."
 
     def classify(c, args, now):
         ops.classify_cash_flow(c, flow_id=int(args[1]), flow_type=args[2].upper(),
-                               action_id=_approved_action_id(c, " ".join(args)), now=now)
+                               action_id=_approved_action_id(c, " ".join(args), now), now=now)
         return f"현금흐름 {args[1]} 을(를) {args[2].upper()} 로 처리했습니다."
 
     def ca_confirm(c, args, now):
         factor = ops.confirm_corporate_action(c, corporate_action_id=int(args[1]),
-                                              action_id=_approved_action_id(c, " ".join(args)), now=now)
+                                              action_id=_approved_action_id(c, " ".join(args), now), now=now)
         return f"기업행위 {args[1]} 검증 완료(조정계수 {factor:.4f}), PeakPrice 재기준화·격리 해제."
 
     def remove(c, args, now):
-        _approved_action_id(c, " ".join(args))
+        _approved_action_id(c, " ".join(args), now)
         with c:
             cur = c.execute("UPDATE universe_assets SET status = 'REMOVED', removed_at = ? WHERE ticker = ? "
                             "AND status = 'ACTIVE'", (now.isoformat(), args[1]))
@@ -185,18 +216,32 @@ def build_command_actions(
         return f"{args[1]} 을(를) 유니버스에서 제거했습니다. 보유 중이면 다음 15:00 판정에서 퇴출 매도됩니다."
 
     def approve_real(c, args, now):
-        ops.approve_real_activation(c, approval_id=args[1], action_id=_approved_action_id(c, " ".join(args)),
+        ops.approve_real_activation(c, approval_id=args[1], action_id=_approved_action_id(c, " ".join(args), now),
                                     approvals_dir=approvals_dir, now=now)
         return "REAL 활성화 승인 레코드를 만들었습니다(호스트 승인 파일과 일치 확인). 실계좌 연결은 별도 단계입니다."
 
     def approve_smoke(c, args, now):
-        ops.approve_smoke_session(c, approval_id=args[1], action_id=_approved_action_id(c, " ".join(args)),
+        ops.approve_smoke_session(c, approval_id=args[1], action_id=_approved_action_id(c, " ".join(args), now),
                                   approvals_dir=approvals_dir, now=now)
         return "스모크 세션(최대 60분)을 승인했습니다."
 
     def approve_backtest(c, args, now):
-        _approved_action_id(c, " ".join(args))
-        return "백테스트 승인은 산출물(코드 커밋·전략 해시·기간) 연결 후 지원합니다. 지금은 처리하지 않습니다."
+        """`/approve_backtest [run_id] [report_sha256]`: 보고서 파일의 정규화 해시가 인자와 같고, 보고서의 전략 해시가
+        현재 설정과 같을 때만 승인한다(다른 전략의 백테스트로 승인되는 일을 막는다)."""
+        action_id = _approved_action_id(c, " ".join(args), now)
+        run_id, digest = args[1], args[2]
+        report_path = Path(backtest_dir) / f"{run_id}.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        canonical = json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != digest:
+            raise ValueError("Report hash does not match.")
+        if report["strategy_params_hash"] != strategy_params_hash(load_config()):
+            raise ValueError("Report was produced for a different strategy configuration.")
+        start, end = report["data_range"]
+        ops.approve_backtest(c, run_id=run_id, report_sha256=digest, code_commit_sha=report["code_commit_sha"],
+                             strategy_params_hash=report["strategy_params_hash"], data_range=(start, end),
+                             action_id=action_id, now=now)
+        return f"백테스트 {run_id} 승인 완료(전략 해시 일치, 기간 {start}~{end})."
 
     return {
         "/status": guarded(status), "/preview": guarded(preview), "/pool": guarded(pool),

@@ -51,6 +51,7 @@ def build_report(
         "code_commit_sha": code_commit_sha,
         "data_files_sha256": dict(sorted(data_files.items())),
         "universe_history_sha256": universe_history_sha256,
+        "data_range": [base.dates[0], base.dates[-1]],
         "assumptions": [
             "신호는 직전 거래일까지 완료된 수정 종가로만 계산(미래 참조 금지)",
             "주간 첫 개장일 15:00 체결을 당일 종가 ± 슬리피지로 근사",

@@ -17,7 +17,8 @@ from src.cash_recon import (
     reconciliation_allowed, record_discrepancy, unexplained_cash_delta,
 )
 from src.order_executor import (
-    KST, BrokerPort, SellRequest, obligation_cycle_id, open_exit_obligation, stop_cycle_id, submit_sell,
+    KST, SELL_ALREADY_ACTIVE, BrokerPort, SellRequest, obligation_cycle_id, open_exit_obligation, stop_cycle_id,
+    submit_sell,
 )
 from src.order_manager import OrderStatus, orders_due_for_cancel, persist_order_transition, void_exit_obligation
 from src.order_policy import OrderKind
@@ -139,6 +140,8 @@ def create_intraday_guard_handler(
                     connection, broker,
                     SellRequest(ticker, quantity, kind, stop_cycle_id(ticker, trade_date), "TRAILING_STOP"),
                     now=now, account_fresh=True, protective_enabled=protective_enabled)
+                if result == SELL_ALREADY_ACTIVE:
+                    continue  # 이미 나간 매도가 진행 중: 의무·경보를 만들지 않는다
                 if result.startswith("BLOCKED") or result == "ANOMALY":
                     # 못 낸 매도는 사라지지 않게 의무로 남긴다(익일 09:10 재시도).
                     open_exit_obligation(connection, ticker=ticker, quantity=quantity,
@@ -338,6 +341,50 @@ def _update_peaks(connection: sqlite3.Connection, now: datetime) -> None:
             """, (now.isoformat(),))
 
 
+def reconcile_cash(
+    connection: sqlite3.Connection,
+    *,
+    current_cash: int,
+    now: datetime,
+    trade_day: date,
+    advance_baseline: bool,
+    first_run_date: date | None = None,
+    tolerance_krw: int = 1000,
+    confirm_interval_seconds: int = 60,
+) -> DiscrepancyDecision | None:
+    """D+2 정산 예수금 대사(명세 2.2·5.4절): 직전 기준 예수금 + 당일 체결 현금 변동 = 기대 예수금 과 실제를 비교한다.
+
+    `advance_baseline=False`(15:00 파이프라인)는 판정만 하고 기준 예수금을 옮기지 않는다(마감 후 대사가 같은 날 체결을
+    다시 합산하므로 옮기면 이중 계산된다). 첫 관측·대기 중에는 어느 경우든 기준을 옮기지 않는다.
+    기준값이 없으면(첫 실행) 판정 없이 None 을 돌려주고, advance_baseline 이면 기준만 기록한다.
+    """
+    previous = connection.execute("SELECT value FROM system_state WHERE \"key\" = 'last_d2_cash'").fetchone()
+    decision = None
+    move = advance_baseline
+    if previous is not None:
+        trade_cash = connection.execute(
+            "SELECT COALESCE(SUM(CASE side WHEN 'SELL' THEN qty*price ELSE -qty*price END - fee - tax),0) "
+            "FROM trade_fills WHERE substr(executed_at,1,10) = ?", (trade_day.isoformat(),)).fetchone()[0]
+        delta = unexplained_cash_delta(int(previous[0]), int(round(trade_cash)), current_cash,
+                                       tolerance_krw=tolerance_krw)
+        first_row = connection.execute("SELECT MIN(snapshot_date) FROM daily_portfolio").fetchone()[0]
+        first = first_run_date or (date.fromisoformat(first_row) if first_row else trade_day)
+        decision = record_discrepancy(connection, delta, trade_date=trade_day, now=now,
+                                      confirm_interval_seconds=confirm_interval_seconds,
+                                      tolerance_krw=tolerance_krw,
+                                      learning_period=in_learning_period(first, trade_day))
+        # 확정 전(첫 관측·대기)에는 기준 예수금을 옮기지 않는다: 옮기면 다음 대사가 차이를 0 으로 보고
+        # 방금 관측한 변동을 스스로 무효화(DISMISSED)해 버린다.
+        move = move and decision not in (DiscrepancyDecision.PROVISIONAL, DiscrepancyDecision.WAIT)
+    if move:
+        with connection:
+            connection.execute(
+                "INSERT INTO system_state (\"key\", value, updated_at) VALUES ('last_d2_cash', ?, ?) "
+                "ON CONFLICT(\"key\") DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (str(current_cash), now.isoformat()))
+    return decision
+
+
 def create_post_close_reconcile_handler(
     connection_factory: Callable[[], sqlite3.Connection],
     broker: AccountBrokerPort,
@@ -396,30 +443,9 @@ def create_post_close_reconcile_handler(
                 _safe_notify(notify, "CRITICAL", "계좌 불일치 확정 → SAFE_HALT(ACCOUNT_MISMATCH)")
             if not quiescent:
                 return  # 진행 중인 주문이 있으면 예수금 대사·스냅샷도 다음 주기로 미룬다.
-            previous = connection.execute(
-                "SELECT value FROM system_state WHERE \"key\" = 'last_d2_cash'").fetchone()
-            advance_baseline = True
-            if previous is not None:
-                trade_cash = connection.execute(
-                    "SELECT COALESCE(SUM(CASE side WHEN 'SELL' THEN qty*price ELSE -qty*price END - fee - tax),0) "
-                    "FROM trade_fills WHERE substr(executed_at,1,10) = ?", (trade_day.isoformat(),)).fetchone()[0]
-                delta = unexplained_cash_delta(int(previous[0]), int(round(trade_cash)), current_cash,
-                                               tolerance_krw=cash_tolerance_krw)
-                first_row = connection.execute("SELECT MIN(snapshot_date) FROM daily_portfolio").fetchone()[0]
-                first = first_run_date or (date.fromisoformat(first_row) if first_row else trade_day)
-                decision = record_discrepancy(connection, delta, trade_date=trade_day, now=now,
-                                              confirm_interval_seconds=confirm_interval_seconds,
-                                              tolerance_krw=cash_tolerance_krw,
-                                              learning_period=in_learning_period(first, trade_day))
-                # 확정 전(첫 관측·대기)에는 기준 예수금을 옮기지 않는다: 옮기면 다음 대사가 차이를 0 으로 보고
-                # 방금 관측한 변동을 스스로 무효화(DISMISSED)해 버린다.
-                advance_baseline = decision not in (DiscrepancyDecision.PROVISIONAL, DiscrepancyDecision.WAIT)
-            if advance_baseline:
-                with connection:
-                    connection.execute(
-                        "INSERT INTO system_state (\"key\", value, updated_at) VALUES ('last_d2_cash', ?, ?) "
-                        "ON CONFLICT(\"key\") DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                        (str(current_cash), now.isoformat()))
+            reconcile_cash(connection, current_cash=current_cash, now=now, trade_day=trade_day,
+                           advance_baseline=True, first_run_date=first_run_date, tolerance_krw=cash_tolerance_krw,
+                           confirm_interval_seconds=confirm_interval_seconds)
             _update_peaks(connection, now)
             try:
                 save_daily_snapshot(connection, trade_date=trade_day.isoformat(), total_equity=equity,

@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 _SCHEMA_VERSION = 4
+_BUSY_TIMEOUT_MS = 5000
 _MIGRATIONS = {
     1: (
         "001_init_phase1",
@@ -78,6 +79,8 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     connection.execute("PRAGMA foreign_keys = ON")
     # 명세 9.2절(v3.7.5): WAL + NORMAL 은 정전 시 마지막 커밋(write-ahead 주문 기록)이 사라질 수 있어 FULL 을 강제한다.
     connection.execute("PRAGMA synchronous = FULL")
+    # 명세 9.2절: 여러 스레드(스케줄러·Telegram·감시)가 쓰기 경합할 때 즉시 실패하지 않고 5초까지 기다린다.
+    connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
     return connection
 
 
@@ -89,6 +92,9 @@ def _validate_durability(connection: sqlite3.Connection) -> None:
         raise RuntimeError(f"SQLite WAL mode required, found: {journal_mode}.")
     if synchronous != 2:  # 2 = FULL
         raise RuntimeError(f"SQLite synchronous=FULL required, found: {synchronous}.")
+    busy = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+    if busy != _BUSY_TIMEOUT_MS:
+        raise RuntimeError(f"SQLite busy_timeout={_BUSY_TIMEOUT_MS} required, found: {busy}.")
 
 
 def _validate_schema(connection: sqlite3.Connection) -> None:

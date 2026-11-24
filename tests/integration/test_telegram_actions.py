@@ -21,7 +21,7 @@ class TelegramActionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / "t.db"
         self.conn = initialize_database(self.path)
-        self.actions = build_command_actions(lambda: connect_database(self.path), approvals_dir=self.tmp.name,
+        self.actions = build_command_actions(lambda: connect_database(self.path), approvals_dir=self.tmp.name, backtest_dir=self.tmp.name,
                                              clock=lambda: NOW)
 
     def tearDown(self):
@@ -94,11 +94,45 @@ class TelegramActionTests(unittest.TestCase):
         self.assertIn("제거", self.run_cmd("/remove 069500"))
         self.assertEqual(self.conn.execute("SELECT status FROM universe_assets").fetchone()[0], "REMOVED")
 
-    def test_backtest_approval_is_not_silently_granted(self):
-        command = "/approve_backtest run-1 " + "a" * 64
+    def write_report(self, strategy_hash=None):
+        """승인 대상 백테스트 보고서를 만들고 (명령, 정규화 해시)를 돌려준다."""
+        import json
+        from src.config import load_config, strategy_params_hash
+        report = {"schema": "t", "strategy_params_hash": strategy_hash or strategy_params_hash(load_config()),
+                  "code_commit_sha": "abc123", "data_range": ["2020-01-02", "2026-11-20"]}
+        (Path(self.tmp.name) / "run-1.json").write_text(json.dumps(report), encoding="utf-8")
+        canonical = json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return "/approve_backtest run-1 " + hashlib.sha256(canonical.encode()).hexdigest()
+
+    def test_backtest_approval_requires_matching_report_and_current_strategy(self):
+        command = self.write_report()
         self.approve(command, "APPROVE_BACKTEST")
-        self.assertIn("지원합니다", self.run_cmd(command))
+        self.assertIn("승인 완료", self.run_cmd(command))
+        self.assertEqual(self.conn.execute("SELECT status FROM backtest_approvals").fetchone()[0], "APPROVED")
+
+    def test_backtest_approval_rejects_wrong_hash_and_other_strategy(self):
+        command = self.write_report()
+        bad = command[:-4] + "0000"
+        self.approve(bad, "APPROVE_BACKTEST")
+        self.assertEqual(self.run_cmd(bad), FAIL)
+        other = self.write_report(strategy_hash="b" * 64)
+        self.approve(other, "APPROVE_BACKTEST")
+        self.assertEqual(self.run_cmd(other), FAIL)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM backtest_approvals").fetchone()[0], 0)
+
+    def test_approval_is_single_use(self):
+        self.approve("/resume", "RESUME")
+        self.assertNotEqual(self.run_cmd("/resume"), FAIL)
+        self.assertEqual(self.run_cmd("/resume"), FAIL)  # 같은 확인으로 재실행 불가
+
+    def test_stale_approval_is_rejected(self):
+        digest = hashlib.sha256(b"/resume").hexdigest()
+        self.conn.execute(
+            "INSERT INTO pending_actions (id, action_type, args_hash, code_hash, reason, approval_status, created_at,"
+            " expires_at, confirmed_at) VALUES ('old','RESUME',?,?,'t','APPROVED','t','t','2026-11-25T00:00:00+00:00')",
+            (digest, digest))
+        self.conn.commit()
+        self.assertEqual(self.run_cmd("/resume"), FAIL)  # 확인 후 10분 초과
 
     def test_failure_reply_hides_exception_details(self):
         self.assertEqual(self.run_cmd("/classify 999 deposit"), FAIL)

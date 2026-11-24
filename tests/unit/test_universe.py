@@ -162,3 +162,19 @@ class UniverseClassificationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DistributionScheduleTests(unittest.TestCase):
+    """승인 파일의 선택 필드 `distribution_schedule` 형식 검증."""
+
+    def test_valid_schedule_and_dates_are_accepted(self):
+        from src.universe import _validate_distribution_schedule
+        _validate_distribution_schedule([{"ex_date": "2026-12-15", "source_url": "https://example.com/a"}])
+        _validate_distribution_schedule([])
+
+    def test_bad_entries_are_rejected(self):
+        from src.universe import _validate_distribution_schedule
+        for bad in ([{"ex_date": "2026-12-15", "source_url": "http://x"}], [{"ex_date": "12/15"}],
+                    [{"ex_date": "2026-13-40", "source_url": "https://x"}], "x"):
+            with self.assertRaises(ValueError):
+                _validate_distribution_schedule(bad)
