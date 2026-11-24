@@ -25,7 +25,7 @@ class MainRuntimeTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         root = Path(self.temp_dir.name)
-        self.now = datetime(2026, 11, 23, 6, 0, tzinfo=UTC)
+        self.now = datetime.now(UTC).replace(microsecond=0)
         self.cache = KisTokenCache(
             root / "external-secrets" / "token.json",
             project_root=root / "project",

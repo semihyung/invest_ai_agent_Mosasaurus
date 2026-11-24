@@ -1,3 +1,36 @@
 # Price Conventions
 
-Strategy and corporate-action calculations use adjusted closes. KIS quotes, fills, and account evaluations use raw prices. Adjusted live prices must be validated before comparing a trailing stop to adjusted peak price.
+명세 4.2절의 가격 기준 계약입니다.
+
+## 기준 분리
+
+| 용도 | 사용 가격 |
+| ----- | ----- |
+| 모멘텀·120MA·수익률·백테스트 신호 | 직전 거래일까지 완료된 수정 종가 (`adjusted_close`) |
+| 트레일링 스탑 고점 (`PeakPrice`) | 수정주가 기준 (`peak_price_adj`) |
+| 주문·호가·체결·계좌 평가 | KIS 원주가 (raw price) |
+
+진행 중인 당일 일봉은 주간 순위와 백테스트 신호에 포함하지 않습니다.
+`morning_prep` 에서 최근 200거래일 일봉을 일괄 Upsert 하여 소급 수정주가 변경에 대응합니다.
+
+## 변환 방향
+
+실시간 원주가를 수정주가 고점과 직접 비교하지 않습니다.
+
+```
+adjusted_live_price = raw_live_price * A
+```
+
+`A` 는 공급 데이터의 수정주가 계수이거나 `corporate_actions` 의 검증된
+(`verified = 1`) 누적 조정계수입니다. 비교 후 손절이 발동하면 실제 주문 가격은
+반드시 원주가 기준으로 KRX 호가 단위에 맞춰 다시 산출합니다.
+
+## 기업행위 처리 계약
+
+- `PeakPrice` 와 실시간 가격에는 동일한 조정 기준을 적용합니다.
+- 수정/원주가 가격 차이만으로 기업행위 종류·발생일·조정계수를 추정하거나 `verified = 1` 로 기록하지 않습니다.
+- 조정계수가 검증되지 않았거나 변환을 확정할 수 없으면 해당 종목의 신규 매수와
+  가격 기반 자동 매도를 보류하고 `DATA_INVALID` 경보 및 `SAFE_HALT` 로 전환합니다.
+- 거래정지·상장폐지처럼 가격·호가가 검증되지 않은 상태에서는 자동 주문하지 않고
+  운영자 확인과 KIS 대조 절차로 처리합니다.
+- 일간 수익률 ±30% 초과 미검증 이상치와 수정주가 불연속은 데이터 품질 게이트 실패 사유입니다.

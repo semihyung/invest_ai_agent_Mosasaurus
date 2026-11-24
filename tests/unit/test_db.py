@@ -150,7 +150,7 @@ class DatabaseInitializationTests(unittest.TestCase):
 
     def test_upgrades_existing_v1_database_and_keeps_old_assets_unverified(self):
         self.db_path.parent.mkdir(parents=True)
-        migration = Path(__file__).resolve().parent.parent / "migrations" / "001_init_phase1.sql"
+        migration = Path(__file__).resolve().parents[2] / "migrations" / "001_init_phase1.sql"
         with closing(sqlite3.connect(self.db_path)) as connection:
             connection.executescript(migration.read_text(encoding="utf-8"))
             connection.execute(

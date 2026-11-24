@@ -44,7 +44,8 @@ src/scheduler.py               # KST 예약 작업·미스파이어 잠금
 src/scheduler_jobs.py          # 주간 프리뷰 콜백 (런타임 미연결)
 src/telegram_bot.py            # Phase 1 Telegram 접근·확인 제어
 src/health_monitor.py          # DB·heartbeat·워치독 헬스 게이트
-tests/                         # 자동화된 단위 테스트
+src/models.py                  # 공용 도메인 모델 재노출
+tests/                         # unit · integration · replay · fault_injection 자동화 테스트
 backtest/                      # 데이터 로더·백테스트·워크포워드 검증
 ```
 
@@ -53,7 +54,9 @@ backtest/                      # 데이터 로더·백테스트·워크포워드
 명세 기준 Python 3.12 이상을 사용합니다. 프로젝트 루트에서 전체 테스트를 실행하려면:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
+# 또는 (pytest 설치 시, 명세 3.4절 CI 방식)
+python -m pytest tests/unit tests/integration tests/replay tests/fault_injection
 ```
 
 테스트는 가짜 데이터와 임시 파일을 사용하며 KIS에 연결하거나 주문하지 않습니다.

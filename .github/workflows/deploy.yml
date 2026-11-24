@@ -13,8 +13,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run Phase 1 and alignment tests
-        run: python -m unittest discover -s tests -v
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Run unit, replay and fault-injection tests
+        run: python -m pytest tests/unit tests/replay tests/fault_injection
+      - name: Run integration tests
+        run: python -m pytest tests/integration
 
   deploy:
     if: github.repository == 'semihyung/invest_ai_agent_Mosasaurus' && github.ref == 'refs/heads/main'

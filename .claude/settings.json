@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest:*)",
+      "Bash(python -m src.main --help)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.production)",
+      "Read(**/*token*.json)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/*.db)",
+      "Read(**/.secrets/**)",
+      "Edit(./.env)",
+      "Edit(./.env.local)",
+      "Edit(./.env.production)",
+      "Bash(bash scripts/safe_deploy.sh:*)",
+      "Bash(./scripts/safe_deploy.sh:*)"
+    ]
+  }
+}
