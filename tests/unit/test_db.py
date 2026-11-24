@@ -31,6 +31,9 @@ PHASE1_TABLES = {
     "llm_logs",
     "risk_events",
     "pending_actions",
+    "safety_flags",
+    "backtest_approvals",
+    "operator_approvals",
 }
 
 
@@ -54,13 +57,13 @@ class DatabaseInitializationTests(unittest.TestCase):
 
         self.assertSetEqual(tables, PHASE1_TABLES)
         self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
         self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(
             connection.execute(
                 "SELECT COUNT(*) FROM schema_migrations WHERE length(checksum) = 64"
             ).fetchone()[0],
-            2,
+            3,
         )
 
     def test_reinitializing_a_valid_database_preserves_schema(self):
@@ -142,7 +145,7 @@ class DatabaseInitializationTests(unittest.TestCase):
     def test_refuses_unsupported_schema_version(self):
         self.db_path.parent.mkdir(parents=True)
         with closing(sqlite3.connect(self.db_path)) as connection:
-            connection.execute("PRAGMA user_version = 3")
+            connection.execute("PRAGMA user_version = 4")
             connection.commit()
 
         with self.assertRaisesRegex(RuntimeError, "Unsupported database schema version"):
@@ -177,8 +180,8 @@ class DatabaseInitializationTests(unittest.TestCase):
             FROM universe_assets WHERE ticker = '000001'
             """
         ).fetchone()
-        self.assertEqual(tuple(row), (0, 1.0, 0, 0, "UNVERIFIED"))
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(tuple(row), (0, 1.0, 0, 0, None))
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
 
     def test_database_rejects_non_one_leverage_and_derivative_flags(self):
         connection = initialize_database(self.db_path)

@@ -53,6 +53,12 @@ class PerformanceState:
     drawdown: float
     as_of: datetime
     twr_quality_status: TWRQualityStatus = TWRQualityStatus.VALID
+    # v3.7.4: 마감 스냅샷 단위가격, 성과 기간(epoch), 동결·리베이스 표식.
+    last_close_unit_nav: float | None = None
+    epoch: int = 1
+    epoch_closed: bool = False
+    hwm_frozen: bool = False
+    hwm_rebased: bool = False
 
     def __post_init__(self) -> None:
         """성과 지수와 HWM이 유한한 값이며 정상 범위인지 확인합니다."""
@@ -71,15 +77,21 @@ class PerformanceState:
                 raise ValueError("Performance state values must be finite numbers.")
         if (
             self.unit_nav < 0
-            or self.units <= 0
+            or self.units < 0
+            or (self.units == 0 and not self.epoch_closed)
             or self.hwm <= 0
-            or self.hwm < self.unit_nav
             or not -1 <= self.drawdown <= 0
+            or isinstance(self.epoch, bool)
+            or not isinstance(self.epoch, int)
+            or self.epoch < 1
         ):
             raise ValueError("Performance state values are outside valid ranges.")
         if not isinstance(self.twr_quality_status, TWRQualityStatus):
             raise ValueError("twr_quality_status is invalid.")
         object.__setattr__(self, "as_of", _utc_datetime(self.as_of))
+
+
+MIN_UNITS = 1e-6  # accounting.min_units: 이 값 이하의 보유 단위 수는 0 으로 봅니다.
 
 
 def _utc_datetime(value: datetime) -> datetime:
@@ -178,7 +190,7 @@ def apply_cash_flow(
         return _mark_data_invalid(state)
     if event_time < _utc_datetime(state.as_of):
         return _mark_data_invalid(state)
-    if state.unit_nav <= 0:
+    if state.unit_nav <= 0 or state.epoch_closed:
         return _mark_data_invalid(state)
 
     amount = float(cash_flow)
@@ -189,10 +201,16 @@ def apply_cash_flow(
     if classification.flow_type is CashFlowType.DISTRIBUTION and amount < 0:
         return _mark_data_invalid(state)
 
+    epoch_closed = False
     if classification.adjusts_units:
-        new_units = state.units + amount / state.unit_nav
-        if not math.isfinite(new_units) or new_units <= 0:
+        # 명세 6.2절: 입출금은 직전 마감 스냅샷의 단위가격으로 단위 수만 조정합니다.
+        reference_nav = state.last_close_unit_nav or state.unit_nav
+        new_units = state.units + amount / reference_nav
+        if not math.isfinite(new_units) or new_units < -MIN_UNITS:
             return _mark_data_invalid(state)
+        if new_units <= MIN_UNITS:
+            # 전액 출금: 0으로 나누기를 피하려고 단위가격 계산을 멈추고 성과 기간을 닫습니다.
+            new_units, epoch_closed = 0.0, True
     else:
         new_units = state.units
 
@@ -204,6 +222,10 @@ def apply_cash_flow(
         drawdown=state.drawdown,
         as_of=event_time,
         twr_quality_status=TWRQualityStatus.VALID,
+        last_close_unit_nav=state.last_close_unit_nav,
+        epoch=state.epoch,
+        epoch_closed=epoch_closed,
+        hwm_frozen=state.hwm_frozen,
     )
 
 
@@ -228,8 +250,16 @@ def update_flow_adjusted_performance(
     *,
     total_equity: float,
     as_of: datetime,
+    close_snapshot: bool = True,
+    freeze: bool = False,
 ) -> PerformanceState:
-    """평가 시점의 총자산으로 단위가격·TWR·HWM·낙폭을 갱신합니다."""
+    """평가 시점의 총자산으로 단위가격·TWR·낙폭을 갱신하고 HWM은 조건부로만 올립니다.
+
+    HWM은 마감 스냅샷(`close_snapshot=True`)이면서 동결(`freeze`: 미분류 현금흐름 등)이
+    아닐 때만 갱신합니다. 그렇지 않으면 HWM을 그대로 두고 낙폭만 계산해, 입금·출금
+    직후의 일시적 평가액 변화가 HWM을 오염시키는 것을 막습니다. 전액 출금으로 닫힌
+    성과 기간은 새 입금(평가액 > 0)이 확인되면 직전 단위가격에서 이어서 다시 엽니다.
+    """
     if not isinstance(state, PerformanceState):
         raise TypeError("state must be a PerformanceState value.")
     if state.twr_quality_status is TWRQualityStatus.DATA_INVALID:
@@ -241,6 +271,8 @@ def update_flow_adjusted_performance(
         or total_equity < 0
     ):
         raise ValueError("Total equity must be a finite non-negative amount.")
+    if not isinstance(close_snapshot, bool) or not isinstance(freeze, bool):
+        raise ValueError("close_snapshot and freeze must be booleans.")
     timestamp = _utc_datetime(as_of)
     if timestamp < _utc_datetime(state.as_of):
         raise ValueError("Performance valuation cannot precede the latest event.")
@@ -252,24 +284,59 @@ def update_flow_adjusted_performance(
         or not math.isfinite(state.unit_nav)
         or not math.isfinite(state.units)
         or state.unit_nav <= 0
-        or state.units <= 0
         or not math.isfinite(state.hwm)
         or state.hwm <= 0
     ):
         raise ValueError("Performance state is invalid.")
 
-    unit_nav = total_equity / state.units
-    hwm = max(state.hwm, unit_nav)
+    units, epoch, epoch_closed = state.units, state.epoch, state.epoch_closed
+    if epoch_closed:
+        if total_equity <= 0:
+            # 아직 입금이 없으므로 단위가격을 계산하지 않고(0으로 나누기 방지) 상태를 유지합니다.
+            return PerformanceState(
+                unit_nav=state.unit_nav, units=0.0, hwm=state.hwm,
+                twr_cumulative=state.twr_cumulative, drawdown=state.drawdown,
+                as_of=timestamp, last_close_unit_nav=state.last_close_unit_nav,
+                epoch=epoch, epoch_closed=True, hwm_frozen=freeze,
+            )
+        # 새 성과 기간: 직전 유효 단위가격에서 이어 시작하고 HWM도 이어받습니다.
+        units = total_equity / state.unit_nav
+        epoch, epoch_closed = epoch + 1, False
+    elif units <= MIN_UNITS:
+        raise ValueError("Performance state is invalid.")
+
+    unit_nav = total_equity / units
+    update_hwm = close_snapshot and not freeze
+    hwm = max(state.hwm, unit_nav) if update_hwm else state.hwm
     twr_cumulative = unit_nav / 100.0 - 1.0
-    drawdown = unit_nav / hwm - 1.0
+    drawdown = min(0.0, unit_nav / hwm - 1.0)
     if not all(math.isfinite(value) for value in (unit_nav, hwm, twr_cumulative, drawdown)):
         raise ValueError("Performance calculation returned a non-finite value.")
     return PerformanceState(
         unit_nav=unit_nav,
-        units=state.units,
+        units=units,
         hwm=hwm,
         twr_cumulative=twr_cumulative,
         drawdown=drawdown,
         as_of=timestamp,
         twr_quality_status=TWRQualityStatus.VALID,
+        last_close_unit_nav=unit_nav if close_snapshot else state.last_close_unit_nav,
+        epoch=epoch,
+        epoch_closed=epoch_closed,
+        hwm_frozen=freeze,
+    )
+
+
+def rebase_hwm(state: PerformanceState) -> PerformanceState:
+    """EMERGENCY 해제 시 HWM만 현재 단위가격으로 리베이스합니다(TWR 누적은 불변)."""
+    if not isinstance(state, PerformanceState):
+        raise TypeError("state must be a PerformanceState value.")
+    if state.epoch_closed or state.unit_nav <= 0:
+        raise ValueError("Cannot rebase the HWM without a valid unit price.")
+    return PerformanceState(
+        unit_nav=state.unit_nav, units=state.units, hwm=state.unit_nav,
+        twr_cumulative=state.twr_cumulative, drawdown=0.0, as_of=state.as_of,
+        twr_quality_status=state.twr_quality_status,
+        last_close_unit_nav=state.last_close_unit_nav, epoch=state.epoch,
+        hwm_frozen=state.hwm_frozen, hwm_rebased=True,
     )

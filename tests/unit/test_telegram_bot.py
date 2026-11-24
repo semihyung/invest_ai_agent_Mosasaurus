@@ -46,7 +46,7 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIsNotNone(action)
         confirm_result, confirmed_action = self.handler.handle(
             "123456",
-            f"/confirm {action.action_id}",
+            f"/confirm {action.confirm_code}",
             self.now + timedelta(minutes=1),
         )
         self.assertEqual(confirm_result, "CONFIRMED")
@@ -57,7 +57,7 @@ class TelegramBotTests(unittest.TestCase):
 
         result, confirmed = self.handler.handle(
             "123456",
-            f"/confirm {action.action_id}",
+            f"/confirm {action.confirm_code}",
             self.now + timedelta(minutes=5),
         )
 
@@ -142,7 +142,7 @@ class TelegramBotTests(unittest.TestCase):
             status, action = handler.handle("123456", "/add 654321", self.now)
             confirmed, _ = handler.handle(
                 "123456",
-                f"/confirm {action.action_id}",
+                f"/confirm {action.confirm_code}",
                 self.now + timedelta(minutes=1),
             )
             connection = connection_factory()

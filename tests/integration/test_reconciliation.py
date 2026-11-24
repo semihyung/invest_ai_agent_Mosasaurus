@@ -16,6 +16,8 @@ from src.reconciliation import (
 from src.db import initialize_database
 
 
+from src.safety_flags import active_halt_reasons
+
 UTC = timezone.utc
 
 
@@ -169,12 +171,7 @@ class ReconciliationTests(unittest.TestCase):
             mismatch,
             checked_at=now,
         )
-        self.assertEqual(
-            self.connection.execute(
-                "SELECT value FROM system_state WHERE key = 'is_safe_halt'"
-            ).fetchone()[0],
-            "true",
-        )
+        self.assertEqual(active_halt_reasons(self.connection), ("ACCOUNT_MISMATCH",))
 
         matching = reconcile_account_state(
             broker_positions=[],
@@ -188,12 +185,8 @@ class ReconciliationTests(unittest.TestCase):
             matching,
             checked_at=now,
         )
-        self.assertEqual(
-            self.connection.execute(
-                "SELECT value FROM system_state WHERE key = 'is_safe_halt'"
-            ).fetchone()[0],
-            "true",
-        )
+        # 수동 해제 원인이므로 대조가 일치해도 자동으로 풀리지 않습니다.
+        self.assertEqual(active_halt_reasons(self.connection), ("ACCOUNT_MISMATCH",))
 
 
 if __name__ == "__main__":

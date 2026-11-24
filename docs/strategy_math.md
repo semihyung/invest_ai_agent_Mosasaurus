@@ -1,45 +1,53 @@
-# Strategy Math
+# Strategy Math (명세 v3.7.4 5장)
 
-## Momentum score
+## 모멘텀 점수
 
-Only completed adjusted closes are accepted. For each day, calculate asset and
-parking returns from adjacent adjusted closes, then subtract the parking return
-from the asset return to get the daily excess return.
-
-For each lookback `k` in 20, 60, and 120 sessions:
+완료된 수정 종가만 사용합니다. 룩백 `k ∈ {20, 60, 120}` 에서 `k` 개 수익률에는 `k + 1` 개 종가가 필요하며, 종목과 파킹의 시계열은
+거래일 교집합으로 정렬합니다(결측은 보간하지 않고 종목 제외).
 
 ```text
-ER_k = product(1 + asset_return) - product(1 + parking_return)
-sigma_k = sample_std(daily_excess_returns, ddof=1)
-M_k = ER_k / max(sigma_k * sqrt(k), min_volatility_floor)
-score = 0.4 * M_20 + 0.4 * M_60 + 0.2 * M_120
+R_i,t   = P_adj[i,t] / P_adj[i,t-1] - 1          R_f,t = 파킹 수익률
+X_i,t   = R_i,t - R_f,t
+ER_i,k  = prod(1 + R_i,t) - prod(1 + R_f,t)
+sigma_k = sample_std(X, ddof=1)
+M_i,k   = ER_i,k / ( max(sigma_k, sigma_floor) * sqrt(k) )      # sigma_floor = 0.005 (일간)
+Score_i = 0.4*M_20 + 0.4*M_60 + 0.2*M_120
 ```
 
-The volatility floor protects the denominator; low or zero volatility does not
-silently remove a candidate. The configured floor defaults to `0.000001`.
-Candidate ties are resolved by descending score, descending `ER_120`,
-descending 20-session average turnover, and ascending ticker.
+v3.7.2 의 `max(sigma * sqrt(k), 1e-6)` 은 하한이 사실상 작동하지 않아, 변동성이 매우 낮은 자산의 점수를 폭주시킬 수 있었습니다.
+v3.7.4 는 하한을 **일간 σ 에 적용한 뒤** `sqrt(k)` 를 곱합니다. 대표 파킹 종목은 순위 경쟁 대상이 아니며(기준 수익률 `R_f` 와 잔여 비중 전용),
+`RISK_ASSET` 은 주식형(`EQUITY`)만 허용합니다.
 
-## Candidate eligibility
+동률은 `round(Score, 10)` 이 같을 때 `ER_120` 내림차순 → 20일 평균 거래대금 내림차순 → 티커 오름차순입니다.
 
-Risk candidates pass these checks in order: active and valid spot-ETF status;
-at least 200 quality-checked adjusted closes; positive momentum; latest
-completed adjusted close above the 120-session adjusted-close average; at
-least KRW 5 billion in average 20-session turnover and order size no greater
-than 1% of that turnover; and no `blocked_until_next_rotation` restriction.
-An existing holding remains rankable when it fails only the liquidity check,
-but additional buying is blocked.
+## 후보 적격성(6단계)
 
-## Weekly portfolio calculation
+1) 상품 분류 이중 잠금(`classification_verified = 1`, 자산군 `EQUITY`, 종목 격리 없음) 2) 200거래일 이상·품질 통과 3) `Score > 0`
+4) 최근 완료 종가 > 직전 120개 완료 종가 단순평균(실시간 가격도 같은 평균 초과) 5) 20일 평균 거래대금 ≥ 50억 원이고 주문금액 ≤ 1%
+(보유 종목은 이 조건만으로 강제 매도하지 않음) 6) 재진입 차단 해제.
+120MA 이탈 퇴출은 **매 개장일 15:00** 판정합니다.
 
-`build_weekly_preview` is a deterministic calculation over the completed
-candle date and ranked candidates. It applies the 45/30/20 slot weights and
-region/index concentration limits, fills unused risk slots with the configured
-parking ticker, and reports only ticker-level buys and sells. Live resolution
-skips candidates that fail the first-open-day safety gate and promotes the
-next eligible ranked candidates.
+## 슬롯 배정 (`select_final_slots`)
 
-Smart DCA subtracts pending buy value from the target deficit, preserves at
-least 5% of account equity as cash, applies the minimum KRW 150,000 trade
-threshold, and uses the broker's latest available-cash value without
-subtracting reserved orders a second time.
+1. 순위 `hold_rank_buffer`(5) 이내의 보유 종목을 먼저 담고, 남은 칸을 순위순으로 채웁니다.
+2. 지수 패밀리 중복(헤지/비헤지·TR/PR 포함), 60일 상관 ≥ 0.90(분산 0 이면 중복 아님), 지역 슬롯 수(KR 2·US 2·GLOBAL 1)를 위반하면 건너뜁니다.
+3. 최종 집합을 순위순으로 `S1`(45%)·`S2`(30%)·`S3`(20%) 에 **다시 배정**합니다(버퍼로 남은 약한 종목이 큰 비중을 차지하지 않도록).
+4. 지역 비중 합이 한도(KR 75%·US 65%·GLOBAL 30%)를 넘으면 그 지역의 최저 순위 종목을 제외하고 다시 채웁니다.
+5. 빈 슬롯의 비중은 대표 파킹에 합산합니다.
+
+## 집행 수량
+
+```text
+목표액 T_i = V * w_i            파킹 비중 = 0.95 - sum(위험 슬롯 비중)
+매수량 Q_i = max(0, min( floor((T_i - H_i - P_i) / P_limit),
+                         floor((C_avail - 0.05*V) / (P_limit * (1 + fee))) ))
+C_avail   = min(nrcvb_buy_amt, Cash_KIS - 활성 매수 주문 잔여 금액)
+```
+
+`V ≤ 0` 이면 비중·수량 계산을 모두 생략합니다(0 나누기 방지). 전량 매도는 `Qty - 활성 매도 잔량`, 초과분 매도는 내림, 파킹 현금화 매도는 올림입니다.
+재원 확인은 종목마다 `C_avail` 를 다시 조회합니다.
+
+## 트레일링 스탑
+
+`Drawdown = P_adj_live / Peak_adj - 1 ≤ -10%`(훈련 모드 `-7%`). 고점은 완료 수정 종가 최고치(마감 스냅샷에서만 갱신)이며 부분 추가 매수는 고점을 재설정하지 않습니다.
+`15:10` 이후 도달한 스탑은 주문 없이 `exit_obligations` 로 기록해 익일 `09:10` 에 처리합니다. 손절한 종목은 같은 주 교체에서 재진입할 수 없습니다.

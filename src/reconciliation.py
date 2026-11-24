@@ -5,6 +5,8 @@ from datetime import datetime
 import sqlite3
 from typing import Iterable
 
+from src.safety_flags import clear_flag, raise_flag
+
 
 @dataclass(frozen=True)
 class Position:
@@ -227,13 +229,35 @@ def persist_reconciliation_result(
             """,
             (timestamp, timestamp),
         )
-        if not result.reconciliation_ok:
-            connection.execute(
-                """
-                INSERT INTO system_state ("key", value, updated_at)
-                VALUES ('is_safe_halt', 'true', ?)
-                ON CONFLICT("key") DO UPDATE SET
-                    value = 'true', updated_at = excluded.updated_at
-                """,
-                (timestamp,),
-            )
+    _record_reconciliation_flags(connection, result, checked_at=checked_at)
+
+
+def _record_reconciliation_flags(
+    connection: sqlite3.Connection,
+    result: ReconciliationResult,
+    *,
+    checked_at: datetime,
+) -> None:
+    """대조 실패 코드를 명세 6.3절의 플래그로 나눠 기록합니다.
+
+    - 포지션·주문 불일치 → `ACCOUNT_MISMATCH`(SAFE_HALT, 수동 해제)
+    - 계좌 데이터 오래됨 → `ACCOUNT_DATA_STALE`(매수 차단만, 신선해지면 자동 해제)
+    - 미분류 현금흐름 → `UNCLASSIFIED_CASH_FLOW`(매수 차단만, `/classify` 로 해제)
+    """
+    codes = set(result.failure_codes)
+    buy_block_codes = {"STALE_ACCOUNT_DATA", "UNCLASSIFIED_CASH_FLOW"}
+    mismatch = (
+        bool(result.mismatches)
+        or bool(result.order_mismatches)
+        or bool(codes - buy_block_codes)
+    )
+    if mismatch:
+        raise_flag(connection, "HALT", "ACCOUNT_MISMATCH", now=checked_at,
+                   detail=",".join(sorted(codes)) or "POSITION_OR_ORDER_MISMATCH")
+    if "STALE_ACCOUNT_DATA" in codes:
+        raise_flag(connection, "BUY_BLOCK", "ACCOUNT_DATA_STALE", now=checked_at)
+    else:
+        clear_flag(connection, "BUY_BLOCK", "ACCOUNT_DATA_STALE",
+                   now=checked_at, cleared_by="SYSTEM")
+    if "UNCLASSIFIED_CASH_FLOW" in codes:
+        raise_flag(connection, "BUY_BLOCK", "UNCLASSIFIED_CASH_FLOW", now=checked_at)

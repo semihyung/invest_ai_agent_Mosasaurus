@@ -89,7 +89,7 @@ class SchedulerJobTests(unittest.TestCase):
                 "max_order_participation_rate": 0.01,
                 "concentration": {"max_slots_per_region": 2},
             },
-            "momentum": {"min_volatility_floor": 0.000001},
+            "momentum": {"min_daily_excess_volatility": 0.000001},
             "universe": {
                 "allowlist_file": str(self.allowlist_path),
                 "min_history_sessions": 200,

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from apscheduler.events import EVENT_JOB_MISSED
 
 from src.db import connect_database, initialize_database
+from src.safety_flags import raise_flag
 from src.scheduler import (
     KST,
     ScheduleJob,
@@ -130,8 +131,11 @@ class SchedulerTests(unittest.TestCase):
             connection.execute(
                 'INSERT INTO system_state ("key", value, updated_at) VALUES '
                 "('scheduler_order_lock', 'true', '2026-11-23T06:00:00+00:00'), "
-                "('reconciliation_ok', 'true', '2026-11-23T06:00:00+00:00'), "
-                "('is_safe_halt', 'true', '2026-11-23T06:00:00+00:00')"
+                "('reconciliation_ok', 'true', '2026-11-23T06:00:00+00:00')"
+            )
+            raise_flag(
+                connection, "HALT", "ACCOUNT_MISMATCH",
+                now=datetime(2026, 11, 23, 6, 0, tzinfo=UTC),
             )
             with self.assertRaises(PermissionError):
                 set_order_scheduler_lock(

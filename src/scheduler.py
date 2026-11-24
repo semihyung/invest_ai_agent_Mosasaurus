@@ -14,6 +14,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 KST = timezone(timedelta(hours=9), name="KST")
 
+from src.safety_flags import is_safe_halt
+
 
 class ScheduleJob(str, Enum):
     """명세서에 등록된 예약 작업의 식별자입니다."""
@@ -181,14 +183,10 @@ def set_order_scheduler_lock(
             'SELECT value FROM system_state WHERE "key" = ?',
             ("reconciliation_ok",),
         ).fetchone()
-        safe_halt = connection.execute(
-            'SELECT value FROM system_state WHERE "key" = ?',
-            ("is_safe_halt",),
-        ).fetchone()
         if (
             reconciliation is None
             or reconciliation[0] != "true"
-            or (safe_halt is not None and safe_halt[0] != "false")
+            or is_safe_halt(connection)
         ):
             raise PermissionError(
                 "Order scheduler lock requires successful reconciliation and no SAFE_HALT."

@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekday 08:25 KST token refresh
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:25:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

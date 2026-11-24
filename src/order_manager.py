@@ -9,6 +9,8 @@ import sqlite3
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
+from src._kis_order_adapter import KisOrderAdapter
+
 
 class OrderSide(str, Enum):
     """주문 방향입니다."""
@@ -23,6 +25,7 @@ class OrderIntentType(str, Enum):
     STRATEGY_REBALANCE = "STRATEGY_REBALANCE"
     RISK_REDUCTION = "RISK_REDUCTION"
     PARKING_ALLOCATION = "PARKING_ALLOCATION"
+    EXIT_OBLIGATION_RETRY = "EXIT_OBLIGATION_RETRY"
     SMOKE_TEST = "SMOKE_TEST"
 
 
@@ -43,11 +46,11 @@ class OrderStatus(str, Enum):
 
 
 _ALLOWED_TRANSITIONS = {
-    OrderStatus.CREATED: {OrderStatus.SUBMITTING, OrderStatus.EXPIRED, OrderStatus.REJECTED},
+    OrderStatus.CREATED: {OrderStatus.SUBMITTING, OrderStatus.EXPIRED},
     OrderStatus.SUBMITTING: {
-        OrderStatus.PENDING_CONFIRMATION,
         OrderStatus.ACCEPTED,
         OrderStatus.REJECTED,
+        OrderStatus.PENDING_CONFIRMATION,
     },
     OrderStatus.PENDING_CONFIRMATION: {
         OrderStatus.ACCEPTED,
@@ -55,27 +58,43 @@ _ALLOWED_TRANSITIONS = {
         OrderStatus.FILLED,
         OrderStatus.REJECTED,
         OrderStatus.CANCELED,
-        OrderStatus.CANCEL_PENDING,
         OrderStatus.CONFIRMED_NOT_ACCEPTED,
+        # 같은 상태로의 재확인은 전이가 아니라 "재조회 기록"이며 상태를 바꾸지 않습니다.
         OrderStatus.PENDING_CONFIRMATION,
     },
     OrderStatus.ACCEPTED: {
-        OrderStatus.CANCEL_PENDING,
         OrderStatus.PARTIALLY_FILLED,
         OrderStatus.FILLED,
+        OrderStatus.CANCEL_PENDING,
+        OrderStatus.REJECTED,
+        OrderStatus.EXPIRED,
     },
     OrderStatus.PARTIALLY_FILLED: {
         OrderStatus.FILLED,
         OrderStatus.CANCEL_PENDING,
-        OrderStatus.CANCELED,
+        OrderStatus.EXPIRED,
     },
     OrderStatus.CANCEL_PENDING: {
         OrderStatus.CANCELED,
-        OrderStatus.PARTIALLY_FILLED,
         OrderStatus.FILLED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.EXPIRED,
     },
-    OrderStatus.CONFIRMED_NOT_ACCEPTED: {OrderStatus.SUBMITTING},
 }
+
+# 활성(미해결) 상태 6종과 종결 상태 5종(명세 0.5절).
+ACTIVE_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.CREATED,
+        OrderStatus.SUBMITTING,
+        OrderStatus.PENDING_CONFIRMATION,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.CANCEL_PENDING,
+    }
+)
+TERMINAL_ORDER_STATUSES = frozenset(set(OrderStatus) - ACTIVE_ORDER_STATUSES)
 
 
 @dataclass(frozen=True)
@@ -441,7 +460,14 @@ def transition_order_status(
 
 @dataclass(frozen=True)
 class PendingConfirmationEvidence:
-    """브로커 조회가 충분히 완료됐는지 나타내는 권위 있는 복구 증거입니다."""
+    """브로커 조회가 충분히 완료됐는지 나타내는 권위 있는 복구 증거입니다.
+
+    명세 7.3절의 두 가지 확정 경로를 표현합니다.
+    ① 장 마감 후 완전 조회(`market_closed` + 두 조회 모두 완전·미발견)
+    ② 장중 확정: SELL 의도 중 전량 매도에 한하며 120초 대기·체결통보 WebSocket
+       연속 연결·접수 통보 없음·30초 이상 간격 연속 3회 미발견을 모두 만족해야 합니다.
+    BUY 의도는 장중 확정하지 않습니다(중복 매수는 브로커가 막아 주지 않기 때문).
+    """
 
     found_status: OrderStatus | None = None
     explicit_rejection: bool = False
@@ -449,7 +475,13 @@ class PendingConfirmationEvidence:
     authoritative_order_not_found: bool = False
     execution_query_complete: bool = False
     execution_not_found: bool = False
-    broker_processing_delay_elapsed: bool = False
+    market_closed: bool = False
+    side: OrderSide | None = None
+    full_quantity_sell: bool = False
+    min_wait_elapsed: bool = False
+    websocket_continuously_connected: bool = False
+    acceptance_notice_seen: bool = False
+    consecutive_empty_polls: int = 0
 
 
 def resolve_pending_confirmation(
@@ -466,16 +498,25 @@ def resolve_pending_confirmation(
             evidence.authoritative_order_not_found,
             evidence.execution_query_complete,
             evidence.execution_not_found,
-            evidence.broker_processing_delay_elapsed,
+            evidence.market_closed,
+            evidence.full_quantity_sell,
+            evidence.min_wait_elapsed,
+            evidence.websocket_continuously_connected,
+            evidence.acceptance_notice_seen,
         )
     ):
         raise ValueError("Recovery evidence flags must be booleans.")
+    if (
+        isinstance(evidence.consecutive_empty_polls, bool)
+        or not isinstance(evidence.consecutive_empty_polls, int)
+        or evidence.consecutive_empty_polls < 0
+    ):
+        raise ValueError("consecutive_empty_polls must be a non-negative integer.")
     if evidence.found_status is not None:
         if evidence.found_status not in {
             OrderStatus.ACCEPTED,
             OrderStatus.PARTIALLY_FILLED,
             OrderStatus.FILLED,
-            OrderStatus.CANCEL_PENDING,
             OrderStatus.CANCELED,
             OrderStatus.REJECTED,
         }:
@@ -483,12 +524,23 @@ def resolve_pending_confirmation(
         return evidence.found_status
     if evidence.explicit_rejection:
         return OrderStatus.REJECTED
-    if (
+
+    both_queries_empty = (
         evidence.authoritative_acceptance_query_complete
         and evidence.authoritative_order_not_found
         and evidence.execution_query_complete
         and evidence.execution_not_found
-        and evidence.broker_processing_delay_elapsed
+    )
+    if both_queries_empty and evidence.market_closed:
+        return OrderStatus.CONFIRMED_NOT_ACCEPTED
+    if (
+        both_queries_empty
+        and evidence.side is OrderSide.SELL
+        and evidence.full_quantity_sell
+        and evidence.min_wait_elapsed
+        and evidence.websocket_continuously_connected
+        and not evidence.acceptance_notice_seen
+        and evidence.consecutive_empty_polls >= 3
     ):
         return OrderStatus.CONFIRMED_NOT_ACCEPTED
     return OrderStatus.PENDING_CONFIRMATION
@@ -560,19 +612,348 @@ def persist_order_transition(
     return new_status
 
 
+# 명세 7.2절: KRX ETF 호가 단위 [UNVERIFIED: KRX 업무규정 현행값 구현 전 확인].
+ETF_TICK_TABLE = ((2000, 1), (None, 5))
+
+
+def etf_tick_size(price: int) -> int:
+    """가격 구간별 ETF 호가 단위(2,000원 미만 1원, 이상 5원)를 반환합니다."""
+    if isinstance(price, bool) or not isinstance(price, int) or price <= 0:
+        raise ValueError("price must be a positive integer.")
+    for upper, tick in ETF_TICK_TABLE:
+        if upper is None or price < upper:
+            return tick
+    raise AssertionError("unreachable")
+
+
+def round_down_to_tick(price: int, tick: int | None = None) -> int:
+    """가격을 호가 단위 배수로 내림합니다(`tick` 생략 시 ETF 호가표)."""
+    size = etf_tick_size(price) if tick is None else tick
+    return price - price % size
+
+
+def tick_down(price: int) -> int:
+    """한 호가 아래 가격입니다: `down(p) = p - tick(p - 1)`(경계에서 단위가 바뀌어도 정확)."""
+    if isinstance(price, bool) or not isinstance(price, int) or price <= 1:
+        raise ValueError("price must be an integer above 1.")
+    return price - etf_tick_size(price - 1)
+
+
+def _ceil_to_tick(price: float) -> int:
+    """가격을 호가 단위 배수로 올림합니다(비상 하한선 계산용)."""
+    candidate = math.ceil(price)
+    size = etf_tick_size(max(candidate, 1))
+    return candidate if candidate % size == 0 else candidate + (size - candidate % size)
+
+
+@dataclass(frozen=True)
+class RepriceDecision:
+    """비상 매도 재가격 한 단계의 결과입니다(`price` 가 None 이면 재가격 중단)."""
+
+    price: int | None
+    reason: str  # OK | MAX_REPRICES | QUOTE_INVALID | MARKET_ANOMALY
+
+
+def next_emergency_price(
+    quote: Quote,
+    *,
+    previous_price: int | None,
+    reprice_count: int,
+    max_reprices: int = 5,
+    max_nav_deviation_ratio: float = 0.020,
+    quote_fresh: bool = True,
+) -> RepriceDecision:
+    """명세 7.2절 의사코드: 새 Bid1 을 따라가되 직전 가격보다 최소 1틱 낮추고 iNAV 하한을 지킵니다.
+
+    최초 가격(`previous_price=None`)은 유효 Bid1 그대로(오프셋 0틱)입니다. 호가가 무효·오래됐으면
+    중단하고, iNAV×(1-2%) 아래로 내려가야 하면 이상 시장으로 보고 중단합니다(시장가로 전환 금지).
+    """
+    if isinstance(reprice_count, bool) or not isinstance(reprice_count, int) or reprice_count < 0:
+        raise ValueError("reprice_count must be a non-negative integer.")
+    if reprice_count > max_reprices:
+        return RepriceDecision(None, "MAX_REPRICES")
+    if (
+        not quote_fresh
+        or not isinstance(quote, Quote)
+        or isinstance(quote.bid, bool)
+        or isinstance(quote.ask, bool)
+        or not isinstance(quote.bid, int)
+        or not isinstance(quote.ask, int)
+        or quote.bid <= 0
+        or quote.ask < quote.bid
+    ):
+        return RepriceDecision(None, "QUOTE_INVALID")
+    candidate = round_down_to_tick(quote.bid)
+    if previous_price is not None:
+        if previous_price <= 1:
+            return RepriceDecision(None, "MARKET_ANOMALY")
+        candidate = min(candidate, tick_down(previous_price))
+    nav = quote.nav
+    if (
+        nav is not None
+        and not isinstance(nav, bool)
+        and isinstance(nav, (int, float))
+        and math.isfinite(nav)
+        and nav > 0
+        and candidate < _ceil_to_tick(nav * (1 - max_nav_deviation_ratio))
+    ):
+        return RepriceDecision(None, "MARKET_ANOMALY")
+    if candidate <= 0:
+        return RepriceDecision(None, "MARKET_ANOMALY")
+    return RepriceDecision(candidate, "OK")
+
+
+def cancel_can_finalize(
+    *,
+    consecutive_matches: int,
+    market_closed_full_query: bool,
+    required_matches: int = 2,
+) -> bool:
+    """`CANCEL_PENDING → CANCELED` 확정 여부: 연속 일치 조회 또는 장 마감 후 완전 조회가 필요합니다.
+
+    취소·정정 응답 직후에는 체결조회가 늦게 반영될 수 있으므로, 즉시 종결하지 않고 잔량·누적 체결
+    수량이 연속 조회에서 같은 값으로 확인될 때만 종결합니다.
+    """
+    if isinstance(consecutive_matches, bool) or not isinstance(consecutive_matches, int):
+        raise ValueError("consecutive_matches must be an integer.")
+    return market_closed_full_query is True or consecutive_matches >= required_matches
+
+
+def fill_delta(
+    *,
+    previous_cumulative_qty: int,
+    previous_average_price: float,
+    new_cumulative_qty: int,
+    new_average_price: float,
+) -> tuple[int, float]:
+    """누적 체결(수량·평균가)의 증분(수량, 증분 평균가)을 계산합니다(명세 4.4절 fill 기록 규칙).
+
+    누적 수량이 줄었으면 브로커 상태와 DB 가 모순이므로 ValueError 를 올립니다(호출자가
+    `ACCOUNT_MISMATCH` 로 처리).
+    """
+    for name, value in (
+        ("previous_cumulative_qty", previous_cumulative_qty),
+        ("new_cumulative_qty", new_cumulative_qty),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer.")
+    if new_cumulative_qty < previous_cumulative_qty:
+        raise ValueError("Cumulative filled quantity decreased.")
+    quantity = new_cumulative_qty - previous_cumulative_qty
+    if quantity == 0:
+        raise ValueError("No new fill quantity.")
+    if (
+        not isinstance(new_average_price, (int, float))
+        or isinstance(new_average_price, bool)
+        or not math.isfinite(new_average_price)
+        or new_average_price <= 0
+    ):
+        raise ValueError("new_average_price must be a positive finite number.")
+    total = new_average_price * new_cumulative_qty - previous_average_price * previous_cumulative_qty
+    price = total / quantity
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError("Derived fill price is invalid.")
+    return quantity, price
+
+
+def record_fill_from_cumulative(
+    connection: sqlite3.Connection,
+    *,
+    order_id: str,
+    new_cumulative_qty: int,
+    new_average_price: float,
+    executed_at: datetime,
+    source: str = "REST_DELTA",
+    fee: int = 0,
+    tax: int = 0,
+) -> bool:
+    """누적 체결 증분으로 `trade_fills` 한 행을 기록하고 `orders` 수량을 갱신합니다.
+
+    같은 누적 수량이 이미 기록돼 있으면(WS 통보와 REST 조회가 같은 체결을 본 경우) 중복 없이
+    병합하고 False 를 반환합니다. 누적 수량이 감소하면 ValueError 입니다.
+    """
+    if source not in ("REST_DELTA", "WS_NOTICE"):
+        raise ValueError("source must be REST_DELTA or WS_NOTICE.")
+    if not isinstance(executed_at, datetime) or executed_at.tzinfo is None:
+        raise ValueError("executed_at must be timezone-aware.")
+    order = connection.execute(
+        "SELECT ticker, side, requested_qty, kis_order_no FROM orders WHERE order_id = ?",
+        (order_id,),
+    ).fetchone()
+    if order is None:
+        raise ValueError("Order does not exist.")
+    last = connection.execute(
+        """
+        SELECT cumulative_qty,
+               (SELECT SUM(qty * price) FROM trade_fills WHERE order_id = ?) AS notional
+        FROM trade_fills WHERE order_id = ? ORDER BY cumulative_qty DESC LIMIT 1
+        """,
+        (order_id, order_id),
+    ).fetchone()
+    previous_qty = last["cumulative_qty"] if last else 0
+    previous_avg = (last["notional"] / previous_qty) if last else 0.0
+    if new_cumulative_qty == previous_qty:
+        return False  # 이미 같은 누적 수량이 기록됨(병합)
+    quantity, price = fill_delta(
+        previous_cumulative_qty=previous_qty,
+        previous_average_price=previous_avg,
+        new_cumulative_qty=new_cumulative_qty,
+        new_average_price=new_average_price,
+    )
+    if new_cumulative_qty > order["requested_qty"]:
+        raise ValueError("Cumulative fill exceeds the requested quantity.")
+    execution_id = f"{order['kis_order_no'] or order_id}:{new_cumulative_qty}"
+    if source == "WS_NOTICE":
+        execution_id = f"{order['kis_order_no'] or order_id}:WS:{new_cumulative_qty}"
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO trade_fills (
+                order_id, kis_execution_id, ticker, side, qty, cumulative_qty,
+                price, price_source, fee, tax, executed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                order_id, execution_id, order["ticker"], order["side"], quantity,
+                new_cumulative_qty, price, source, fee, tax, executed_at.isoformat(),
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE orders SET filled_qty = ?, remaining_qty = requested_qty - ?, updated_at = ?
+            WHERE order_id = ? AND filled_qty < ?
+            """,
+            (new_cumulative_qty, new_cumulative_qty, executed_at.isoformat(),
+             order_id, new_cumulative_qty),
+        )
+    return True
+
+
+def apply_late_fill_correction(
+    connection: sqlite3.Connection,
+    *,
+    order_id: str,
+    new_cumulative_qty: int,
+    new_average_price: float,
+    occurred_at: datetime,
+) -> bool:
+    """종결된 주문에 늦게 반영된 체결을 `LATE_FILL_CORRECTION` 으로 보정합니다(status 불변).
+
+    체결 수량만 늘릴 수 있고(DB 트리거가 감소·상태 변경을 거부) 감사 이벤트를 남깁니다.
+    """
+    row = connection.execute(
+        "SELECT status, filled_qty FROM orders WHERE order_id = ?", (order_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError("Order does not exist.")
+    if row["status"] not in {s.value for s in TERMINAL_ORDER_STATUSES}:
+        raise ValueError("Late fill correction applies only to terminal orders.")
+    if new_cumulative_qty <= row["filled_qty"]:
+        return False
+    recorded = record_fill_from_cumulative(
+        connection,
+        order_id=order_id,
+        new_cumulative_qty=new_cumulative_qty,
+        new_average_price=new_average_price,
+        executed_at=occurred_at,
+    )
+    if recorded:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO order_events (
+                    order_id, event_type, old_status, new_status, actor,
+                    reason_code, correlation_id, created_at
+                ) VALUES (?, 'LATE_FILL_CORRECTION', ?, ?, 'order_manager',
+                          'LATE_FILL_CORRECTION', ?, ?)
+                """,
+                (order_id, row["status"], row["status"], f"late:{order_id}",
+                 occurred_at.isoformat()),
+            )
+    return recorded
+
+
+def void_exit_obligation(
+    connection: sqlite3.Connection,
+    *,
+    obligation_id: str,
+    resolved_at: datetime,
+) -> None:
+    """보유 수량이 0이 된 의무를 `VOIDED` 로 닫습니다(수동 매도 등, 감사 기록 대상)."""
+    with connection:
+        cursor = connection.execute(
+            """
+            UPDATE exit_obligations SET status = 'VOIDED', resolved_at = ?
+            WHERE obligation_id = ? AND status = 'OPEN'
+            """,
+            (resolved_at.isoformat(), obligation_id),
+        )
+    if cursor.rowcount != 1:
+        raise ValueError("Only an OPEN exit obligation can be voided.")
+
+
+def supersede_exit_obligation(
+    connection: sqlite3.Connection,
+    *,
+    obligation_id: str,
+    new_obligation: ExitObligation,
+    created_at: datetime,
+) -> None:
+    """필요 수량이 바뀌면 기존 의무를 `SUPERSEDED` 로 닫고 같은 트랜잭션에서 새 `OPEN` 을 만듭니다."""
+    with connection:
+        old = connection.execute(
+            "SELECT status FROM exit_obligations WHERE obligation_id = ?", (obligation_id,)
+        ).fetchone()
+        if old is None or old["status"] != "OPEN":
+            raise ValueError("Only an OPEN exit obligation can be superseded.")
+        connection.execute(
+            "UPDATE exit_obligations SET status = 'SUPERSEDED', resolved_at = ? WHERE obligation_id = ?",
+            (created_at.isoformat(), obligation_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO exit_obligations (
+                obligation_id, ticker, source_event_id, required_qty,
+                filled_qty, status, reason_code, created_at
+            ) VALUES (?, ?, ?, ?, 0, 'OPEN', ?, ?)
+            """,
+            (
+                new_obligation.obligation_id, new_obligation.ticker,
+                new_obligation.source_event_id, new_obligation.required_qty,
+                new_obligation.reason_code, created_at.isoformat(),
+            ),
+        )
+        connection.execute(
+            "UPDATE exit_obligations SET superseded_by = ? WHERE obligation_id = ?",
+            (new_obligation.obligation_id, obligation_id),
+        )
+
+
+def create_kis_order_transport(environment: str, **kwargs: Any) -> "KisOrderAdapter":
+    """주문 전송 어댑터를 만듭니다. 비공개 어댑터는 이 함수로만 노출됩니다.
+
+    `http_post` 는 호출자가 명시적으로 주입해야 하며(기본값 없음), 실계좌 연결을 활성화하는 별도
+    승인 전에는 어디에서도 주입하지 않습니다.
+    """
+    return KisOrderAdapter(environment, **kwargs)
+
+
 def calculate_limit_price(
     quote: Quote,
     side: OrderSide,
     *,
     emergency_sell: bool = False,
-    tick: int = 10,
+    tick: int | None = None,
 ) -> int:
-    """일반 최우선 호가 또는 검증된 비상 매도 가격을 LIMIT으로 산출합니다."""
+    """일반 최우선 호가 또는 검증된 비상 매도 가격을 LIMIT으로 산출합니다.
+
+    `tick` 을 생략하면 KRX ETF 호가표(2,000원 미만 1원, 이상 5원)로 가격마다 자동 선택합니다.
+    """
     if not isinstance(quote, Quote):
         raise TypeError("quote must be a Quote value.")
     if not isinstance(side, OrderSide):
         raise TypeError("side must be an OrderSide value.")
-    if (
+    if tick is not None and (
         isinstance(tick, bool)
         or not isinstance(tick, int)
         or tick <= 0
@@ -601,9 +982,9 @@ def calculate_limit_price(
             raise ValueError("Emergency sell requires NAV.")
         if abs((quote.bid - quote.nav) / quote.nav) > 0.020:
             raise ValueError("Emergency sell NAV deviation exceeds 2%.")
-        return quote.bid // tick * tick
+        return round_down_to_tick(quote.bid, tick)
     reference_price = quote.ask if side is OrderSide.BUY else quote.bid
-    return reference_price // tick * tick
+    return round_down_to_tick(reference_price, tick)
 
 
 def calculate_emergency_reprice(

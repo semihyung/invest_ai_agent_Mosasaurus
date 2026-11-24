@@ -1,8 +1,9 @@
 """주간 슬롯 배정과 현금 보존형 포트폴리오 수량 계산을 담당합니다."""
 
+import math
 from datetime import date
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 
 SLOT_WEIGHTS = {"S1": 0.45, "S2": 0.30, "S3": 0.20}
@@ -15,6 +16,8 @@ class SlotCandidate:
     ticker: str
     region: str
     underlying_index: str
+    # v3.7.4: 헤지/비헤지·TR/PR 버전을 같은 지수로 묶는 정규화 식별자(비어 있으면 underlying_index 사용).
+    underlying_index_family: str = ""
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,134 @@ def assign_risk_slots(
             )
         )
     return sorted(assignments, key=lambda assignment: assignment.slot_id)
+
+
+DEFAULT_MAX_SLOTS_PER_REGION = {"KR": 2, "US": 2, "GLOBAL": 1}
+DEFAULT_MAX_REGION_WEIGHT = {"KR": 0.75, "US": 0.65, "GLOBAL": 0.30}
+
+
+def _family(candidate: SlotCandidate) -> str:
+    """지수 패밀리가 없으면 기초지수 이름을 패밀리로 사용합니다."""
+    return candidate.underlying_index_family or candidate.underlying_index
+
+
+def _passes_concentration(
+    candidate: SlotCandidate,
+    selected: list[SlotCandidate],
+    *,
+    max_slots_per_region: Mapping[str, int],
+    max_pairwise_correlation: float,
+    correlation: Callable[[str, str], float | None] | None,
+) -> bool:
+    """지수 패밀리·지역 슬롯 수·60일 상관 중복 여부를 한 후보에 대해 검사합니다."""
+    region_limit = max_slots_per_region.get(candidate.region)
+    if region_limit is None:
+        return False
+    if sum(1 for item in selected if item.region == candidate.region) >= region_limit:
+        return False
+    for other in selected:
+        if _family(other) == _family(candidate):
+            return False
+        if correlation is not None:
+            value = correlation(candidate.ticker, other.ticker)
+            # 분산 0 등으로 상관을 계산할 수 없으면(NaN/None) 중복으로 보지 않습니다.
+            if (
+                value is not None
+                and math.isfinite(value)
+                and value >= max_pairwise_correlation
+            ):
+                return False
+    return True
+
+
+def select_final_slots(
+    ranked: Iterable[SlotCandidate],
+    *,
+    held_tickers: Iterable[str] = (),
+    hold_rank_buffer: int = 5,
+    max_slots_per_region: Mapping[str, int] | None = None,
+    max_region_weight: Mapping[str, float] | None = None,
+    max_pairwise_correlation: float = 0.90,
+    correlation: Callable[[str, str], float | None] | None = None,
+    slot_weights: Mapping[str, float] | None = None,
+) -> list[SlotAssignment]:
+    """명세 5.3절: 순위 버퍼·집중도 규칙으로 종목 집합을 정한 뒤 순위순으로 슬롯을 재배정합니다.
+
+    ① 순위 `hold_rank_buffer` 이내 보유 종목을 먼저 담고 ② 남은 칸을 순위순으로 채웁니다.
+    ③ 최종 집합은 순위순으로 S1~S3 에 다시 매겨 버퍼로 남은 약한 종목이 큰 비중을 차지하지
+    않게 합니다. ④ 지역 비중 합이 한도를 넘으면 그 지역에서 가장 낮은 순위 종목을 제외하고
+    다시 채웁니다(제외 목록이 늘어나므로 반드시 종료).
+    """
+    ordered = list(ranked)
+    if any(not isinstance(item, SlotCandidate) for item in ordered):
+        raise TypeError("Candidates must be SlotCandidate values.")
+    if (
+        isinstance(hold_rank_buffer, bool)
+        or not isinstance(hold_rank_buffer, int)
+        or hold_rank_buffer < 1
+    ):
+        raise ValueError("hold_rank_buffer must be a positive integer.")
+    region_limits = dict(max_slots_per_region or DEFAULT_MAX_SLOTS_PER_REGION)
+    region_weights = dict(max_region_weight or DEFAULT_MAX_REGION_WEIGHT)
+    weights = dict(slot_weights or SLOT_WEIGHTS)
+    slot_ids = ("S1", "S2", "S3")
+    held = set(held_tickers)
+    rank_of = {item.ticker: index + 1 for index, item in enumerate(ordered)}
+    excluded: set[str] = set()
+
+    for _ in range(len(ordered) + 1):
+        selected: list[SlotCandidate] = []
+        pool = [item for item in ordered if item.ticker not in excluded]
+        buffered = [
+            item for item in pool
+            if item.ticker in held and rank_of[item.ticker] <= hold_rank_buffer
+        ]
+        for item in buffered + [x for x in pool if x not in buffered]:
+            if len(selected) >= len(slot_ids):
+                break
+            if _passes_concentration(
+                item,
+                selected,
+                max_slots_per_region=region_limits,
+                max_pairwise_correlation=max_pairwise_correlation,
+                correlation=correlation,
+            ):
+                selected.append(item)
+        selected.sort(key=lambda item: rank_of[item.ticker])
+
+        # 지역 비중 합 검사: 위반 시 그 지역의 최저 순위 종목을 제외하고 다시 시도합니다.
+        violation = None
+        for region, limit in region_weights.items():
+            members = [
+                (slot_ids[index], item)
+                for index, item in enumerate(selected)
+                if item.region == region
+            ]
+            if sum(weights[slot] for slot, _ in members) > limit + 1e-9:
+                violation = members[-1][1]
+                break
+        if violation is None:
+            break
+        excluded.add(violation.ticker)
+
+    assignments = [
+        SlotAssignment(
+            slot_id=slot_ids[index],
+            ticker=item.ticker,
+            target_weight=weights[slot_ids[index]],
+            reason=(
+                "rank_buffer_hold"
+                if item.ticker in held and rank_of[item.ticker] > len(slot_ids)
+                else "ranked_candidate"
+            ),
+        )
+        for index, item in enumerate(selected)
+    ]
+    for slot_id in slot_ids[len(selected):]:
+        assignments.append(
+            SlotAssignment(slot_id, "", weights[slot_id], "parking_fallback")
+        )
+    return assignments
 
 
 def build_weekly_preview(

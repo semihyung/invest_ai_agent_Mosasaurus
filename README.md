@@ -1,6 +1,6 @@
 # 모사사우르스 (Mosasaurus)
 
-라즈베리파이 5 기반 자동 투자 에이전트 프로젝트입니다. 개발의 유일한 설계 기준은 [개발 명세 v3.7.3](mosasaurus_spec_v3.7.3.md)이며, 명세에 정한 안전 장치와 단계별 진행 순서를 우선합니다.
+라즈베리파이 5 기반 자동 투자 에이전트 프로젝트입니다. 개발의 유일한 설계 기준은 [개발 명세 v3.7.4](mosasaurus_spec_v3.7.4.md)이며, 명세에 정한 안전 장치와 단계별 진행 순서를 우선합니다.
 
 > 이 프로젝트는 아직 개발 중이며, 수익이나 원금 보전을 보장하지 않습니다. 현재 버전은 실계좌 주문이나 자동 운용에 사용할 수 없습니다.
 
@@ -26,7 +26,7 @@
 ## 프로젝트 구조
 
 ```text
-mosasaurus_spec_v3.7.3.md      # 유일한 설계 기준
+mosasaurus_spec_v3.7.4.md      # 유일한 설계 기준
 config/rules.yaml              # 전략 및 안전 정책 설정
 migrations/001_init_phase1.sql # Phase 1 기본 데이터베이스 스키마
 migrations/002_verified_universe_classification.sql # 검증된 상품 분류 필드

@@ -1,0 +1,9 @@
+[Unit]
+Description=Mosasaurus KIS token proactive refresh (rule A, weekdays 08:25 KST)
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/mosasaurus
+EnvironmentFile=/home/pi/.secrets/mosasaurus/host.env
+ExecStart=/usr/bin/python3 scripts/refresh_kis_token.py --trigger morning_prep

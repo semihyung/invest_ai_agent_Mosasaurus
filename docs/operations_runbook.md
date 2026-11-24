@@ -1,46 +1,60 @@
-# Operations Runbook
+# Operations Runbook (명세 v3.7.4)
 
-On KIS, network, UPS, or database failure: stop new orders, preserve PENDING_CONFIRMATION and exit obligations, reconcile KIS and SQLite, and require operator clearance before returning to NORMAL.
+KIS·네트워크·전원·DB·Telegram 장애의 공통 원칙: 신규 주문을 멈추고, `PENDING_CONFIRMATION` 과 `exit_obligations` 를 보존하며,
+KIS 와 SQLite 를 대조한 뒤, **원인별 해제 규칙**(`docs/risk_modes.md`)에 따라 복구합니다.
 
-## Scheduler Fail-Closed Behavior
+## 무인 복구 vs 수동 복구
 
-The scheduler registers the Phase 1 KST jobs with the grace periods defined in
-the specification. Order-related jobs do not run while the market is closed or
-while `scheduler_order_lock` is absent, true, or invalid. A missed or failed
-order-related job records a sanitized `system_events` row and latches that
-lock. Clear it only after a successful reconciliation and confirmation that
-`is_safe_halt` is not true; missed work is never replayed as a catch-up order.
+- `/status` 로 활성 `SAFE_HALT` 원인 목록·발생 시각·해제 방식을 확인합니다.
+- 자동 해제 원인(토큰·시각·캘린더·UPS·대기 주문·부팅 실패·설정)은 조건이 풀리면 스스로 해제됩니다. 10분 주기 `safety_flag_auto_clear` 와 부팅 복구가 평가합니다.
+- 수동 해제 원인(`ACCOUNT_MISMATCH`·`DB_INTEGRITY`·`DEPLOY_ROLLBACK`)은 `/reconcile` 일치 확인 후 `/clear_halt <원인>` + `/confirm <코드>` 입니다.
+  KIS 상태를 원본으로 채택해야 하면 `/reconcile adopt`(차이를 확인 메시지로 보고 2단계 확인).
+- 휴대폰을 분실하면 SSH 로 접속해 `ALLOWED_USER_ID` 를 무효화합니다(같은 채널의 2단계 확인은 분실 시 보호가 되지 않음).
 
-On startup, `boot_recovery` keeps order jobs locked until database integrity,
-token validity, and account reconciliation pass. A pre-existing `SAFE_HALT` is
-never cleared automatically. Telegram confirmation requests are written to
-`pending_actions`; requests from a prior process are expired rather than
-re-associated with a chat after restart. If a Telegram polling process crashes,
-verify that it is no longer running before clearing `telegram_polling_lock`.
+## 토큰
 
-Database backups are accompanied by SHA-256 files. `restore_test.sh` verifies
-the checksum and tests a temporary copy; it does not overwrite the live
-database. The GitHub `production` environment must be configured with required
-reviewers before enabling the self-hosted deploy runner. Shell scripts and
-hardware-dependent health/watchdog behavior still require Linux/Raspberry Pi
-validation.
+호스트 `systemd` 타이머가 **매시 정각·부팅 직후**(`--trigger recovery`, 만료 1시간 전 하드 가드)와 **평일 08:25**(`--trigger morning_prep`, 6시간 경과 시 선제 갱신)에
+`scripts/refresh_kis_token.py` 를 실행합니다. 65초 쿨다운과 원자적 교체는 그대로입니다. 연속 3회 실패는 `run/token_refresh_status.json` 의 `alert=true` 로 표시되고
+앱이 Telegram `CRITICAL` 경보를 보냅니다. 앱은 KIS 호출 전마다 `token.json` 의 mtime 을 확인해 재로드하며, 만료·파싱 실패는 `CREDENTIALS_UNAVAILABLE`(자동 해제)입니다.
+
+## 호스트 상태 파일 (UPS·NTP)
+
+`scripts/ups_monitor.py` 가 10초마다 `run/ups.json`, `run/clock.json` 을 원자적으로 기록합니다(UPS 읽기 명령은 `UPS_STATUS_COMMAND` 로 주입).
+파일이 120초보다 오래되면 **상태 불명 = fail-closed** 로 `UPS_LOW`·`CLOCK_UNSYNCED` 가 활성화됩니다. 배터리 ≤ 20% → `UPS_LOW`, ≤ 10% → 안전 종료(호스트 스크립트 책임).
+
+## 네트워크
+
+`scripts/net_watchdog.sh` 가 1분마다 DNS(1.1.1.1·8.8.8.8)와 KIS HTTPS 를 분리 점검합니다. 연속 5회 미만 실패는 지수 백오프로 인터페이스만 재시작하고,
+재부팅은 **장외·1시간 1회**일 때만 합니다(평일 08:50–15:45 에는 재부팅 금지, 판단은 `src/net_watchdog.decide_action`).
+
+## 배포
+
+1. GitHub Actions(`push` + `main` 만)가 클라우드 테스트 후 self-hosted Runner 에서 `sudo -n /usr/local/sbin/mosasaurus-deploy <SHA>` 하나만 실행합니다.
+   Runner 계정은 docker 그룹이 아니며 금고를 읽을 수 없습니다.
+2. 래퍼가 `origin/main` 조상 여부·운영자 서명(`git verify-commit`)을 확인하고 root 소유 승인본 `mosasaurus-safe-deploy` 를 실행합니다.
+3. 금지 시간(평일 08:20–15:45, 토 09:50–10:30, 일 02:50–03:30 + 마감 대조·백업 완료 신호 전)에는 SHA 를 `run/deploy_queue` 에 기록하고 정상 종료합니다.
+   `mosasaurus-deploy-queue.timer` 가 30분마다 최신 SHA 1건을 재시도합니다.
+4. 10단계 절차는 `scripts/safe_deploy.sh` 주석을 따릅니다. 롤백 시 `DEPLOY_ROLLBACK` 이 활성화되고 `/clear_halt DEPLOY_ROLLBACK` 전까지 신규 주문이 금지됩니다.
+5. 설치·권한: `scripts/systemd/README.md`. 이 환경(Windows)에서는 쉘·systemd·UPS 를 실행할 수 없으므로 **Raspberry Pi 5 에서 별도 검증이 필요**합니다.
+
+## REAL 활성화와 스모크 테스트
+
+실계좌는 세 가지가 모두 일치해야 열립니다: (1) `deployment.environment: REAL`, (2) 호스트 `approvals/real_activation.json`(`scripts/approve_real.sh`, 최대 30일),
+(3) DB `operator_approvals`(Telegram `/approve_real <id>` 2단계 확인, 승인 파일 SHA-256 대조). 스모크 세션은 `scripts/approve_smoke.sh` + `/approve_smoke <id>`(최대 60분)이며
+주문 1건이 종결되면 `CONSUMED` 로 닫힙니다. 전략 주문은 현재 전략 설정 해시와 일치하는 `/approve_backtest` 승인도 필요합니다. 승인 파일에는 계좌번호를 쓰지 마십시오(별칭만).
+
+## Scheduler Fail-Closed
+
+주문 관련 Job 은 `scheduler_order_lock` 이 없거나 true 일 때 실행되지 않습니다. misfire·실패는 `system_events` 에 기록하고 잠급니다.
+잠금은 대조 성공과 활성 `SAFE_HALT` 원인 0건일 때만 풀립니다(`set_order_scheduler_lock`). 놓친 주문 Job 은 따라잡지 않습니다.
+부팅 시 `boot_recovery`(Step 0–6)가 시각·DB·설정·토큰·크래시 주문·계좌 대조를 확인합니다.
 
 ## Universe Classification Gate
 
-`config/universe_allowlist.yaml` is the operator-reviewed seed list. The checked-in
-file is intentionally empty; do not add a ticker until its KRX/KIS structured
-product metadata and operator approval have been verified. Startup imports only
-approved entries and refuses to overwrite a database classification that differs
-from the file. Existing assets upgraded from schema v1 remain unverified and
-cannot enter previews or new-buy candidates.
+`config/universe_allowlist.yaml` 은 운영자가 검토한 시드 목록입니다(현재 비어 있음). 항목에는 기존 필드 외에 `asset_class`, `underlying_index_family`,
+`distribution_schedule`, 출처 URL·확인일을 기록합니다. 공식 상품정보 조회 계약이 명세에 추가되기 전까지 `/add` 는 확인 코드를 발급하지 않고 거부합니다.
+스키마 v1·v2 에서 올라온 자산은 모두 미검증으로 남아 프리뷰·신규 후보에서 제외됩니다.
 
-Each `assets` entry must provide `ticker`, `name`, `category`, `region`,
-`underlying_index`, `product_type`, `replication_method`, `leverage_multiplier`,
-`is_inverse`, `is_futures_based`, `classification_source`, `verified_by`, and
-timezone-aware `verified_at`. Use only the exact official source values accepted
-by the validator; placeholder records are not valid approvals.
+## 백업
 
-Telegram `/add` requires an injected official product-metadata lookup. When that
-provider is not configured, the command is rejected rather than relying on
-product-name keywords or approving an unverified ticker. After confirmation,
-the product metadata and masked operator identity are stored with the asset.
+DB 백업은 SHA-256 파일과 함께 만들고 `restore_test.sh` 가 임시 복사본에서 검증합니다(운영 DB 를 덮어쓰지 않음). 백업 암호화 키(`backup.key`)는 금고 밖으로 복제하지 않으며 오프라인 보관 절차를 별도로 둡니다.

@@ -15,16 +15,29 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pytest
-      - name: Run unit, replay and fault-injection tests
-        run: python -m pytest tests/unit tests/replay tests/fault_injection
-      - name: Run integration tests
-        run: python -m pytest tests/integration
+      - name: Run unit, integration, replay and fault-injection tests
+        run: python -m pytest tests/unit tests/integration tests/replay tests/fault_injection
 
   deploy:
-    if: github.repository == 'semihyung/invest_ai_agent_Mosasaurus' && github.ref == 'refs/heads/main'
+    # self-hosted Runner 는 pull_request 이벤트에서 절대 실행하지 않습니다(push + main 만).
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'semihyung/invest_ai_agent_Mosasaurus'
     needs: test
     environment: production
     runs-on: [self-hosted, linux, ARM64]
     steps:
-      - name: Safe deployment
-        run: /home/pi/mosasaurus/scripts/safe_deploy.sh
+      - name: Verify actor is allowed
+        env:
+          ACTOR: ${{ github.actor }}
+          ALLOWED: ${{ vars.DEPLOY_ALLOWED_ACTORS }}
+        run: |
+          case ",$ALLOWED," in
+            *",$ACTOR,"*) ;;
+            *) echo "actor is not allowed to deploy"; exit 1 ;;
+          esac
+      # Runner 계정은 docker 그룹이 아니며, 아래 래퍼 하나만 sudoers 로 실행할 수 있습니다.
+      # 래퍼가 origin/main 조상 여부·서명·CI 검증을 한 뒤 root 소유 승인본 safe_deploy 를 실행합니다.
+      - name: Request deployment
+        run: sudo -n /usr/local/sbin/mosasaurus-deploy "${{ github.sha }}"

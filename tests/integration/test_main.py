@@ -11,6 +11,7 @@ from src.health_monitor import HealthSnapshot
 from src.kis_client import CachedAccessToken, KisTokenCache
 from src.main import RuntimeDependencies, main, run_agent
 from src.reconciliation import ReconciliationResult
+from src.safety_flags import is_safe_halt
 from src.scheduler import ScheduleJob, is_order_scheduler_locked
 
 
@@ -49,13 +50,7 @@ class MainRuntimeTests(unittest.TestCase):
         connection = connect_database(Path(self.temp_dir.name) / "main.db")
         try:
             self.assertTrue(is_order_scheduler_locked(connection))
-            self.assertEqual(
-                connection.execute(
-                    'SELECT value FROM system_state WHERE "key" = ?',
-                    ("is_safe_halt",),
-                ).fetchone()[0],
-                "true",
-            )
+            self.assertTrue(is_safe_halt(connection))
         finally:
             connection.close()
 

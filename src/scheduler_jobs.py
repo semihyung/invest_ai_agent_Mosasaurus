@@ -248,7 +248,7 @@ def create_weekly_preview_handler(
                     max_order_participation_rate=float(
                         rules["portfolio"]["max_order_participation_rate"]
                     ),
-                    min_volatility_floor=float(momentum["min_volatility_floor"]),
+                    min_daily_excess_volatility=float(momentum["min_daily_excess_volatility"]),
                 )
                 if assessment.candidate is not None:
                     candidates.append(assessment.candidate)

@@ -2,7 +2,7 @@
 
 라즈베리파이 5 기반 자동 투자 에이전트 **'모사사우르스(Mosasaurus)'** 프로젝트입니다.
 당신은 이 시스템을 구현하는 시니어 Python 백엔드·금융 시스템 아키텍트입니다.
-모든 작업은 `mosasaurus_spec_v3.7.3.md` 를 단일 진실 공급원(SSOT)으로 삼습니다. 
+모든 작업은 `mosasaurus_spec_v3.7.4.md` 를 단일 진실 공급원(SSOT)으로 삼습니다. 
 
 ## 프로젝트 개요 및 명령어
 
@@ -86,8 +86,8 @@ python -m unittest tests.unit.test_order_manager   # 단일 파일
 - **Stage 3: Quant 엔진 및 포트폴리오 매니저** — `src/quant_engine.py`(5.1절 수식, 동률 타이브레이커, 6단계 필터), `src/portfolio_manager.py`(토 10:00 프리뷰, 월 15:00 차순위 승계, Smart DCA)
 - **Stage 4: Risk Manager, 운영 모드, TWR/HWM 회계** — `src/performance.py`, `src/risk_manager.py`
 - **Stage 5: Order Manager(11상태 머신) 및 계좌 대조** — `src/order_manager.py`, `src/reconciliation.py`
-- **Stage 6: 스케줄러, 텔레그램 봇, 헬스 모니터, 운영 스크립트** — `src/scheduler.py`, `src/telegram_bot.py`(Phase 1 명령어 18종 + `/confirm`), `src/health_monitor.py`, `src/main.py`, `scripts/*.sh`, `.github/workflows/deploy.yml`
+- **Stage 6: 스케줄러, 텔레그램 봇, 헬스 모니터, 운영 스크립트** — `src/scheduler.py`, `src/telegram_bot.py`(Phase 1 명령어 21종 + `/confirm`), `src/health_monitor.py`, `src/main.py`, `scripts/*.sh`, `.github/workflows/deploy.yml`
 - **Stage 7: 백테스트 엔진 및 Phase 1 검증 테스트 62개** — `backtest/*`, 명세 11.2절 시나리오 1~62번, `pytest` 전체 통과
 - **Stage 8: Phase 2 LLM 공시·뉴스 리스크 엔진 및 테스트 13개** — `src/llm_engine.py`(OpenDART, 프롬프트 인젝션 방어, JSON Schema strict, 일일 비용 한도 USD 0.20), `/chart`·`/logs`·`/override`, 시나리오 63~75번
 
-세부 요구사항은 항상 `mosasaurus_spec_v3.7.3.md` 의 해당 절을 확인한 뒤 구현하십시오.
+세부 요구사항은 항상 `mosasaurus_spec_v3.7.4.md` 의 해당 절을 확인한 뒤 구현하십시오.

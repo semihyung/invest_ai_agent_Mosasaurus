@@ -2,12 +2,19 @@ models:
   fast: ${OPENAI_MODEL_FAST}
   escalation: ${OPENAI_MODEL_ESCALATION}
 
+pricing:                          # 운영자 관리, USD per 1M tokens. 비어 있으면 Phase 2 부팅 거부(8.0절)
+  fast: { input: null, output: null }
+  escalation: { input: null, output: null }
+
 limits:
   max_daily_events: 15
-  max_daily_requests: 20
+  max_daily_requests: 40          # 15 × 2 + 재시도 여유 10 (재시도 포함 계산)
   max_daily_cost_usd: 0.20
+  daily_reset_time_kst: "00:00:00"
   timeout_seconds: 20
-  retry_limit: 2
+  retry_limit: 1
+  max_output_tokens: 800
+  result_ttl_hours: 72
 
 policy:
   default_call_mode: "single"
@@ -17,4 +24,18 @@ policy:
   fallback_on_error: "ANALYSIS_UNAVAILABLE"
   unavailable_action: "VETO_NEW_BUY"
   low_confidence_action: "REVIEW_REQUIRED"
-  schema_version: "1.1"
+  min_evidence_chars: 10
+  schema_version: "1.2"
+
+dart:
+  pblntf_types: ["B", "I"]
+  i_detail_types: ["I001", "I002", "I003"]
+  correction_link_days: 90
+  max_reanalysis_per_disclosure: 1
+
+news:
+  feeds: []                       # 운영자 승인 RSS URL allowlist
+  max_bytes: 1000000
+  timeout_seconds: 10
+  max_input_chars: 4000
+  dedup_jaccard: 0.5

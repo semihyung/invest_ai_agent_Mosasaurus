@@ -369,7 +369,7 @@ class OrderManagerTests(unittest.TestCase):
                 authoritative_order_not_found=True,
                 execution_query_complete=True,
                 execution_not_found=True,
-                broker_processing_delay_elapsed=True,
+                market_closed=True,
             )
         )
         found = resolve_pending_confirmation(

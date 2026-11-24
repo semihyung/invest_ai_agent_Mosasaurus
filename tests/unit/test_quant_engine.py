@@ -60,7 +60,7 @@ class CalculateMomentumScoreTests(unittest.TestCase):
         score = calculate_momentum_score(
             asset_prices,
             parking_prices,
-            min_volatility_floor=0.01,
+            min_daily_excess_volatility=0.01,
         )
 
         self.assertGreater(score, 0)

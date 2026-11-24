@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 
 _LOOKBACK_WEIGHTS = ((20, 0.4), (60, 0.4), (120, 0.2))
-_MIN_VOLATILITY = 1e-6
+_MIN_VOLATILITY = 0.005  # 일간 초과변동성 하한(명세 5.1절, 0.5%)
 _MIN_HISTORY_SESSIONS = 200
 _MAX_DAILY_RETURN = 0.30
 
@@ -108,7 +108,7 @@ def calculate_momentum_score(
     adjusted_closes: Sequence[float],
     parking_adjusted_closes: Sequence[float],
     *,
-    min_volatility_floor: float = _MIN_VOLATILITY,
+    min_daily_excess_volatility: float = _MIN_VOLATILITY,
 ) -> float:
     """복리 초과수익률과 ddof=1 초과변동성으로 최종 모멘텀 점수를 구합니다."""
     if len(adjusted_closes) != len(parking_adjusted_closes):
@@ -116,10 +116,10 @@ def calculate_momentum_score(
     if len(adjusted_closes) < 121:
         raise ValueError("At least 121 adjusted closes are required.")
     if (
-        isinstance(min_volatility_floor, bool)
-        or not isinstance(min_volatility_floor, (int, float))
-        or not math.isfinite(min_volatility_floor)
-        or min_volatility_floor <= 0
+        isinstance(min_daily_excess_volatility, bool)
+        or not isinstance(min_daily_excess_volatility, (int, float))
+        or not math.isfinite(min_daily_excess_volatility)
+        or min_daily_excess_volatility <= 0
     ):
         raise ValueError("Minimum volatility floor must be a positive number.")
 
@@ -144,9 +144,9 @@ def calculate_momentum_score(
         ) / (lookback - 1)
         volatility = math.sqrt(variance)
 
-        score = compounded_excess / max(
-            volatility * math.sqrt(lookback),
-            min_volatility_floor,
+        # v3.7.4: 하한은 일간 σ에 적용한 뒤 √k 를 곱합니다(저변동 자산 점수 폭주 방지).
+        score = compounded_excess / (
+            max(volatility, min_daily_excess_volatility) * math.sqrt(lookback)
         )
         if not math.isfinite(score):
             raise ValueError("Momentum score must be finite.")
@@ -245,7 +245,7 @@ def assess_risk_candidate(
     min_history_sessions: int = _MIN_HISTORY_SESSIONS,
     min_avg_turnover_20d: float = 5_000_000_000,
     max_order_participation_rate: float = 0.01,
-    min_volatility_floor: float = _MIN_VOLATILITY,
+    min_daily_excess_volatility: float = _MIN_VOLATILITY,
 ) -> CandidateAssessment:
     """명세서 순서대로 6단계 필터를 적용하고 신규 매수 가능 여부를 반환합니다."""
     if not isinstance(profile, CandidateProfile):
@@ -338,7 +338,7 @@ def assess_risk_candidate(
     score = calculate_momentum_score(
         profile.adjusted_closes,
         profile.parking_adjusted_closes,
-        min_volatility_floor=min_volatility_floor,
+        min_daily_excess_volatility=min_daily_excess_volatility,
     )
 
     # 3~4. 절대 모멘텀과 완료된 수정 종가 기준 SMA120을 확인합니다.

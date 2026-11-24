@@ -1,4 +1,4 @@
-"""부팅 복구 게이트의 정상·실패 경로를 테스트합니다."""
+"""부팅 복구 게이트(명세 3.3절 Step 0~6)의 정상·실패·무인 자동 복구 경로를 테스트합니다."""
 
 import tempfile
 import unittest
@@ -9,14 +9,15 @@ from src.boot_recovery import boot_recovery
 from src.db import initialize_database
 from src.kis_client import CachedAccessToken, KisTokenCache
 from src.reconciliation import ReconciliationResult
+from src.safety_flags import active_codes, active_halt_reasons, raise_flag
 from src.scheduler import is_order_scheduler_locked
 
-
 UTC = timezone.utc
+OK = lambda: ReconciliationResult(True, ())  # noqa: E731
 
 
 class BootRecoveryTests(unittest.TestCase):
-    """부팅 복구가 안전 잠금을 올바르게 유지하는지 확인합니다."""
+    """부팅 복구가 안전 잠금을 올바르게 유지하고, 풀린 원인은 스스로 해제하는지 확인합니다."""
 
     def setUp(self):
         """격리된 DB와 워크스페이스 외부 토큰 캐시를 준비합니다."""
@@ -30,94 +31,122 @@ class BootRecoveryTests(unittest.TestCase):
             project_root=root / "project",
         )
         self.now = datetime(2026, 11, 23, 6, 0, tzinfo=UTC)
+        self._save_token(valid=True)
+
+    def _save_token(self, *, valid: bool) -> None:
+        """유효 또는 만료 토큰을 캐시에 저장합니다."""
+        delta = timedelta(hours=23) if valid else timedelta(hours=-1)
         self.cache.save(
             CachedAccessToken(
                 access_token="dummy-token",
-                issued_at=self.now - timedelta(hours=1),
-                expires_at=self.now + timedelta(hours=23),
+                issued_at=self.now - timedelta(hours=1 if valid else 25),
+                expires_at=self.now + delta,
             )
+        )
+
+    def _boot(self, reconcile=OK, **kwargs):
+        """같은 시각 기준으로 부팅 복구를 실행합니다."""
+        return boot_recovery(
+            self.connection, self.cache, reconcile_account=reconcile, now=self.now, **kwargs
         )
 
     def test_successful_reconciliation_enables_order_jobs(self):
         """유효 DB·토큰·계좌 대조가 모두 성공해야만 주문 작업을 풉니다."""
-        """정상 부팅 검사 후 예약 잠금이 해제되는지 확인합니다."""
-        result = boot_recovery(
-            self.connection,
-            self.cache,
-            reconcile_account=lambda: ReconciliationResult(True, ()),
-            now=self.now,
-        )
+        result = self._boot()
 
         self.assertTrue(result.recovery_ok)
         self.assertTrue(result.order_jobs_enabled)
         self.assertFalse(is_order_scheduler_locked(self.connection))
+        self.assertEqual(active_halt_reasons(self.connection), ())
 
-    def test_missing_reconciliation_latches_safe_halt(self):
-        """계좌 대조 콜백이 없으면 자동으로 주문 잠금과 SAFE_HALT를 기록합니다."""
-        """대조 기능이 준비되지 않으면 SAFE_HALT가 걸리는지 확인합니다."""
-        result = boot_recovery(
-            self.connection,
-            self.cache,
-            reconcile_account=None,
-            now=self.now,
-        )
+    def test_missing_reconciliation_raises_boot_recovery_failed(self):
+        """계좌 대조 콜백이 없으면 BOOT_RECOVERY_FAILED 원인으로 주문을 잠급니다."""
+        result = self._boot(reconcile=None)
 
         self.assertFalse(result.recovery_ok)
         self.assertFalse(result.order_jobs_enabled)
-        self.assertIn("RECONCILIATION_UNAVAILABLE", result.failure_codes)
+        self.assertIn("BOOT_RECOVERY_FAILED", result.failure_codes)
         self.assertTrue(is_order_scheduler_locked(self.connection))
-        value =         """기존 안전 정지 상태가 부팅 후에도 유지되는지 확인합니다."""
-        value = self.connection.execute(
-            'SELECT value FROM system_state WHERE "key" = ?',
-            ("is_safe_halt",),
-        ).fetchone()[0]
-        self.assertEqual(value, "true")
 
-    def test_preexisting_safe_halt_is_not_automatically_cleared(self):
-        """기존 SAFE_HALT는 부팅 대조가 성공해도 자동으로 해제하지 않습니다."""
-        self.connection.execute(
-            'INSERT INTO system_state ("key", value, updated_at) '
-            "VALUES ('is_safe_halt', 'true', ?)",
-            (self.now.isoformat(),),
-        )
+    def test_boot_recovery_failure_clears_itself_on_next_successful_boot(self):
+        """자동 해제 원인은 사람 개입 없이 다음 부팅의 성공으로 풀립니다(무인 복구)."""
+        self._boot(reconcile=None)
+        result = self._boot()
 
-        result = boot_recovery(
-            self.connection,
-            self.cache,
-            reconcile_account=lambda: ReconciliationResult(True, ()),
-            now=self.now,
-        )
+        self.assertTrue(result.recovery_ok)
+        self.assertEqual(active_halt_reasons(self.connection), ())
+
+    def test_manual_halt_reason_survives_successful_boot(self):
+        """수동 해제 원인(계좌 불일치)은 대조가 성공해도 운영자 확인 전까지 유지됩니다."""
+        raise_flag(self.connection, "HALT", "ACCOUNT_MISMATCH", now=self.now)
+
+        result = self._boot()
 
         self.assertFalse(result.recovery_ok)
-        self.assertIn("SAFE_HALT_ALREADY_LATCHED", result.failure_codes)
-        self.assertEqual(
-            self.connection.execute(
-                'SELECT value FROM system_state WHERE "key" = ?',
-                ("is_safe_halt",),
-            ).fetchone()[0],
-            "true",
-        )
-
-    def test_expired_token_keeps_order_jobs_locked(self):
-        """만료 토큰으로는 부팅 복구를 통과하지 못합니다."""
-        """만료된 토큰으로는 예약 잠금이 해제되지 않는지 확인합니다."""
-        self.cache.save(
-            CachedAccessToken(
-                access_token="dummy-expired",
-                issued_at=self.now - timedelta(hours=25),
-                expires_at=self.now - timedelta(hours=1),
-            )
-        )
-
-        result = boot_recovery(
-            self.connection,
-            self.cache,
-            reconcile_account=lambda: ReconciliationResult(True, ()),
-            now=self.now,
-        )
-
-        self.assertIn("TOKEN_MISSING_OR_EXPIRED", result.failure_codes)
+        self.assertEqual(result.failure_codes, ("ACCOUNT_MISMATCH",))
         self.assertTrue(is_order_scheduler_locked(self.connection))
+
+    def test_expired_token_is_credentials_unavailable_and_auto_clears(self):
+        """만료 토큰은 CREDENTIALS_UNAVAILABLE 이고, 호스트가 갱신하면 자동 해제됩니다."""
+        self._save_token(valid=False)
+        result = self._boot()
+        self.assertEqual(result.failure_codes, ("CREDENTIALS_UNAVAILABLE",))
+        self.assertTrue(is_order_scheduler_locked(self.connection))
+
+        self._save_token(valid=True)
+        recovered = self._boot()
+        self.assertTrue(recovered.recovery_ok)
+        self.assertEqual(active_halt_reasons(self.connection), ())
+
+    def test_account_mismatch_is_raised_from_failed_reconciliation(self):
+        """대조 실패는 수동 해제 원인 ACCOUNT_MISMATCH 를 만듭니다."""
+        result = self._boot(reconcile=lambda: ReconciliationResult(False, ("X",), (), ("POSITION_MISMATCH",)))
+
+        self.assertIn("ACCOUNT_MISMATCH", result.failure_codes)
+
+    def test_submitting_orders_become_pending_confirmation_and_created_expire(self):
+        """크래시로 남은 SUBMITTING 은 PENDING_CONFIRMATION, CREATED 는 EXPIRED 가 됩니다."""
+        c = self.connection
+        c.execute(
+            "INSERT INTO universe_assets (ticker, name, category, region, underlying_index,"
+            " product_type, replication_method, status, data_status, added_at)"
+            " VALUES ('000001','E','RISK_ASSET','KR','K','SPOT_ETF','PHYSICAL','ACTIVE','VALID','t')")
+        for key, status in (("a", "SUBMITTING"), ("b", "CREATED")):
+            c.execute(
+                "INSERT INTO order_intents (parent_intent_id, idempotency_key, cycle_id, intent_type,"
+                " ticker, side, requested_qty, intent_payload_hash, status, created_at, updated_at)"
+                " VALUES (?,?,'c','RISK_REDUCTION','000001','SELL',5,'h','IN_PROGRESS','t','t')",
+                (f"p{key}", key))
+            c.execute(
+                "INSERT INTO orders (order_id, parent_intent_id, attempt_id, ticker, side, requested_qty,"
+                " remaining_qty, order_type, order_price, status, strategy_reason, updated_at)"
+                " VALUES (?,?,?,'000001','SELL',5,5,'LIMIT',1000,?,'r','t')",
+                (f"o{key}", f"p{key}", f"at{key}", status))
+
+        result = self._boot()
+
+        statuses = {r[0]: r[1] for r in c.execute("SELECT order_id, status FROM orders")}
+        self.assertEqual(statuses, {"oa": "PENDING_CONFIRMATION", "ob": "EXPIRED"})
+        self.assertIn("PENDING_CONFIRMATION", result.failure_codes)
+        self.assertFalse(result.recovery_ok)
+
+    def test_unclassified_cash_flow_blocks_buys_without_safe_halt(self):
+        """미분류 현금흐름은 SAFE_HALT 가 아니라 매수 차단 플래그만 만듭니다."""
+        self.connection.execute(
+            "INSERT INTO cash_flows (broker_transaction_id, flow_date, occurred_at, amount, flow_type,"
+            " classification_status, source, observed_at)"
+            " VALUES ('RECON:1','2026-11-23','t',100000,'UNCLASSIFIED','UNCLASSIFIED_CASH_FLOW','CASH_RECON','t')")
+
+        result = self._boot()
+
+        self.assertTrue(result.recovery_ok)
+        self.assertEqual(active_codes(self.connection, "BUY_BLOCK"), ("UNCLASSIFIED_CASH_FLOW",))
+
+    def test_invalid_config_raises_config_invalid_halt(self):
+        """설정 정합성 검사가 실패하면 CONFIG_INVALID 로 주문을 잠급니다."""
+        result = self._boot(config={"risk": {"safe_halt": {"allow_reduce_only_sell": True}}})
+
+        self.assertIn("CONFIG_INVALID", result.failure_codes)
 
 
 if __name__ == "__main__":

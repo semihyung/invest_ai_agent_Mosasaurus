@@ -172,6 +172,56 @@ def get_drawdown_mode(
     return DrawdownMode.NORMAL
 
 
+_STAGE_ORDER = (
+    DrawdownMode.NORMAL,
+    DrawdownMode.CAUTION,
+    DrawdownMode.WARNING,
+    DrawdownMode.CRITICAL,
+)
+# 각 단계에서 벗어나려면 넘어야 하는 경계(이 값 + recovery_buffer 보다 낙폭이 얕아져야 함).
+_STAGE_BOUNDARY = {
+    DrawdownMode.CAUTION: -0.07,
+    DrawdownMode.WARNING: -0.10,
+    DrawdownMode.CRITICAL: -0.15,
+}
+
+
+def next_drawdown_stage(
+    previous: DrawdownMode,
+    drawdown: float,
+    *,
+    recovery_buffer: float = 0.02,
+    frozen: bool = False,
+    floor_stage: DrawdownMode | None = None,
+) -> DrawdownMode:
+    """히스테리시스가 적용된 다음 낙폭 단계를 반환합니다(명세 6.2절).
+
+    - 악화 방향 전이는 즉시 일어나지만, `frozen`(미분류 현금흐름 등)이면 동결합니다.
+    - 회복 방향 전이는 낙폭이 경계보다 `recovery_buffer` 이상 회복됐을 때만 한 단계씩 풉니다.
+    - `floor_stage` 는 `EMERGENCY` 해제 직후 일정 기간 유지할 최소 단계입니다.
+    """
+    if not isinstance(previous, DrawdownMode):
+        raise TypeError("previous must be a DrawdownMode value.")
+    if (
+        isinstance(recovery_buffer, bool)
+        or not isinstance(recovery_buffer, (int, float))
+        or not math.isfinite(recovery_buffer)
+        or recovery_buffer < 0
+    ):
+        raise ValueError("recovery_buffer must be a finite non-negative ratio.")
+    raw = get_drawdown_mode(drawdown)
+    rank = {stage: index for index, stage in enumerate(_STAGE_ORDER)}
+    stage = previous
+    if rank[raw] > rank[previous]:
+        stage = previous if frozen else raw
+    else:
+        while rank[stage] > rank[raw] and drawdown > _STAGE_BOUNDARY[stage] + recovery_buffer:
+            stage = _STAGE_ORDER[rank[stage] - 1]
+    if floor_stage is not None and rank[stage] < rank[floor_stage]:
+        stage = floor_stage
+    return stage
+
+
 def resolve_operating_mode(flags: RiskFlags) -> OperatingMode:
     """SAFE_HALT, EMERGENCY, PAUSED, TRAINING, NORMAL 순으로 유효 모드를 고릅니다."""
     if not isinstance(flags, RiskFlags):

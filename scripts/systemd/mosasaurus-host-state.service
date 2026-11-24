@@ -1,0 +1,9 @@
+[Unit]
+Description=Mosasaurus UPS and NTP state writer
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/mosasaurus
+EnvironmentFile=/home/pi/.secrets/mosasaurus/host.env
+ExecStart=/usr/bin/python3 scripts/ups_monitor.py

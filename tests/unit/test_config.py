@@ -51,11 +51,11 @@ class ConfigLoaderTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "Invalid YAML"):
                 load_config(config_path, environ={})
 
-    def test_default_rules_require_v372_product_classification(self):
+    def test_default_rules_require_v374_product_classification(self):
         """기본 설정이 v3.7.2 분류 게이트와 Allowlist 경로를 강제합니다."""
         config = load_config(environ={})
 
-        self.assertEqual(config["version"], "3.7.2")
+        self.assertEqual(config["version"], "3.7.4")
         self.assertEqual(
             config["universe"]["allowlist_file"],
             "config/universe_allowlist.yaml",

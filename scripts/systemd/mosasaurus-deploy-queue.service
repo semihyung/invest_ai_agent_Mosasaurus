@@ -1,0 +1,8 @@
+[Unit]
+Description=Run the newest queued deployment when the freeze window is over
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/pi/mosasaurus
+ExecStart=/bin/sh -c 'f=/home/pi/mosasaurus/run/deploy_queue; [ -s "$f" ] && /usr/local/sbin/mosasaurus-deploy "$(cat "$f")" || true'

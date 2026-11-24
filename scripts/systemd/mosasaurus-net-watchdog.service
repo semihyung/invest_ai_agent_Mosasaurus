@@ -1,0 +1,8 @@
+[Unit]
+Description=Mosasaurus network watchdog
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/pi/mosasaurus
+ExecStart=/bin/sh scripts/net_watchdog.sh

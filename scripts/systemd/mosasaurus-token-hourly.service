@@ -1,0 +1,9 @@
+[Unit]
+Description=Mosasaurus KIS token refresh (rule B hard guard, hourly and on boot)
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/mosasaurus
+EnvironmentFile=/home/pi/.secrets/mosasaurus/host.env
+ExecStart=/usr/bin/python3 scripts/refresh_kis_token.py --trigger recovery

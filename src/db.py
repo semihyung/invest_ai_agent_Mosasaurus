@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _MIGRATIONS = {
     1: (
         "001_init_phase1",
@@ -18,7 +18,15 @@ _MIGRATIONS = {
         / "migrations"
         / "002_verified_universe_classification.sql",
     ),
+    3: (
+        "003_spec_v374_schema",
+        Path(__file__).resolve().parent.parent
+        / "migrations"
+        / "003_spec_v374_schema.sql",
+    ),
 }
+# 테이블을 재구성하는 마이그레이션은 FK 검사를 잠시 끄고(SQLite 표준 절차) 커밋 전에 재검증합니다.
+_REBUILD_MIGRATIONS = {3}
 _PHASE1_TABLES = {
     "system_state",
     "credentials_state",
@@ -43,6 +51,9 @@ _PHASE1_TABLES = {
     "llm_logs",
     "risk_events",
     "pending_actions",
+    "safety_flags",
+    "backtest_approvals",
+    "operator_approvals",
 }
 _CLASSIFICATION_COLUMNS = {
     "leverage_multiplier",
@@ -128,6 +139,12 @@ def _record_initial_migration(connection: sqlite3.Connection) -> None:
         raise RuntimeError(f"Initial migration checksum mismatch: {name}.")
 
 
+def _migration_backward_compatible(path: Path) -> int:
+    """파일 첫 줄의 `-- backward_compatible: true|false` 헤더를 읽습니다(없으면 0=false)."""
+    first_line = path.read_text(encoding="utf-8").splitlines()[0].strip().lower()
+    return 1 if first_line == "-- backward_compatible: true" else 0
+
+
 def _migration_statements(script: str) -> list[str]:
     """SQL 파일을 SQLite가 완성된 구문으로 인식하는 단위로 나눕니다."""
     statements = []
@@ -153,20 +170,47 @@ def _apply_migration(
     name, path = _MIGRATIONS[version]
     statements = _migration_statements(path.read_text(encoding="utf-8"))
     checksum = _migration_checksum(path)
-    connection.execute("BEGIN IMMEDIATE")
+    rebuild = version in _REBUILD_MIGRATIONS
+    if rebuild:
+        # 트랜잭션 밖에서만 바꿀 수 있는 PRAGMA 입니다.
+        connection.execute("PRAGMA foreign_keys = OFF")
     try:
-        for statement in statements:
-            connection.execute(statement)
-        connection.execute(
-            "INSERT INTO schema_migrations(version, applied_at, checksum) "
-            "VALUES (?, ?, ?)",
-            (name, datetime.now(timezone.utc).isoformat(), checksum),
-        )
-        connection.execute(f"PRAGMA user_version = {version}")
-        connection.commit()
-    except sqlite3.Error:
-        connection.rollback()
-        raise
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in statements:
+                connection.execute(statement)
+            if rebuild:
+                violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+                if violations:
+                    raise sqlite3.IntegrityError(
+                        "Foreign key violations after table rebuild."
+                    )
+            if version >= 3:
+                connection.execute(
+                    "INSERT INTO schema_migrations("
+                    "version, applied_at, checksum, backward_compatible) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        name,
+                        datetime.now(timezone.utc).isoformat(),
+                        checksum,
+                        _migration_backward_compatible(path),
+                    ),
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at, checksum) "
+                    "VALUES (?, ?, ?)",
+                    (name, datetime.now(timezone.utc).isoformat(), checksum),
+                )
+            connection.execute(f"PRAGMA user_version = {version}")
+            connection.commit()
+        except sqlite3.Error:
+            connection.rollback()
+            raise
+    finally:
+        if rebuild:
+            connection.execute("PRAGMA foreign_keys = ON")
 
 
 def initialize_database(db_path: str | Path) -> sqlite3.Connection:
@@ -203,7 +247,9 @@ def initialize_database(db_path: str | Path) -> sqlite3.Connection:
 
         if version == 1:
             _record_initial_migration(connection)
-            _apply_migration(connection, version=2)
+        # 현재 버전보다 높은 마이그레이션을 순서대로 적용합니다(1→2→3).
+        for next_version in range(version + 1, _SCHEMA_VERSION + 1):
+            _apply_migration(connection, version=next_version)
 
         _validate_schema(connection)
         return connection

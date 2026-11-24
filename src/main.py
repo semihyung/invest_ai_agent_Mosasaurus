@@ -95,6 +95,8 @@ def run_agent(
             connection,
             token_cache,
             reconcile_account=dependencies.reconcile_account,
+            config=load_config(),
+            run_dir=os.environ.get("HOST_RUN_DIR"),
         )
         if not recovery.recovery_ok:
             return recovery
@@ -154,6 +156,8 @@ def main(
                 connection,
                 cache,
                 reconcile_account=None,
+                config=load_config(),
+                run_dir=os.environ.get("HOST_RUN_DIR"),
             )
         finally:
             connection.close()

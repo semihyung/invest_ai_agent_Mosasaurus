@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import re
@@ -15,12 +18,24 @@ from src.universe import (
 )
 
 
+# 2단계 확인이 필요한 명령(명세 6.4절): 위험 노출을 늘리거나 상태를 해제·변경하는 명령은 모두 포함.
 CONFIRMATION_REQUIRED = {
     "/emergency",
     "/emergency off",
-    "/add",
-    "/remove",
+    "/resume",
+    "/training off",
+    "/reconcile adopt",
 }
+CONFIRMATION_PREFIXES = (
+    "/add ", "/remove ", "/training on", "/clear_halt ", "/classify ",
+    "/ca_confirm ", "/approve_real ", "/approve_smoke ", "/approve_backtest ",
+)
+CONFIRM_CODE_LENGTH = 8
+CONFIRM_MAX_FAILURES = 5
+CONFIRM_LOCKOUT = timedelta(seconds=1800)
+MAX_COMMANDS_PER_MINUTE = 10
+_CODE_PATTERN = re.compile(r"[a-z2-7]{8}")
+_ID_PATTERN = re.compile(r"[a-z0-9_-]{4,64}")
 
 ALLOWED_COMMANDS = {
     "/status",
@@ -37,6 +52,12 @@ ALLOWED_COMMANDS = {
     "/add",
     "/remove",
     "/confirm",
+    "/clear_halt",
+    "/classify",
+    "/ca_confirm",
+    "/approve_real",
+    "/approve_smoke",
+    "/approve_backtest",
 }
 
 _SECRET_ASSIGNMENT = re.compile(
@@ -96,6 +117,18 @@ class PendingAction:
     expires_at: datetime
     product_metadata: ProductMetadata | None = None
     confirmation_summary: str | None = None
+    confirm_code: str | None = None  # 사용자에게 한 번만 보여 주는 평문 코드(DB 에는 해시만 저장)
+    user_id: str | None = None
+
+
+def new_confirm_code() -> str:
+    """암호학적 난수로 8자 Base32 확인 코드를 만듭니다(혼동 문자 없는 A-Z, 2-7)."""
+    return base64.b32encode(secrets.token_bytes(5)).decode("ascii")[:CONFIRM_CODE_LENGTH]
+
+
+def hash_confirm_code(code: str) -> str:
+    """확인 코드를 대소문자 구분 없이 SHA-256 으로 해시합니다."""
+    return hashlib.sha256(code.upper().encode("ascii")).hexdigest()
 
 
 class PendingActionStore:
@@ -141,13 +174,15 @@ class PendingActionStore:
                 connection.execute(
                     """
                     INSERT INTO pending_actions (
-                        id, action_type, ticker, reason, approval_status,
-                        created_at, expires_at
-                    ) VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
+                        id, action_type, args_hash, code_hash, ticker, reason,
+                        approval_status, created_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
                     """,
                     (
                         action.action_id,
                         action_type,
+                        hashlib.sha256(action.command.encode("utf-8")).hexdigest(),
+                        hash_confirm_code(action.confirm_code or action.action_id),
                         stored_ticker,
                         reason,
                         action.created_at.isoformat(),
@@ -274,6 +309,21 @@ class PendingActionStore:
             return ("EMERGENCY_OFF" if len(parts) > 1 else "EMERGENCY_ON", None)
         if parts[0] in ("/add", "/remove") and len(parts) == 2:
             return ("UNIVERSE_ADD" if parts[0] == "/add" else "UNIVERSE_REMOVE", parts[1])
+        fixed = {
+            "/resume": "RESUME",
+            "/clear_halt": "CLEAR_HALT",
+            "/classify": "CLASSIFY_FLOW",
+            "/ca_confirm": "CA_CONFIRM",
+            "/approve_real": "APPROVE_REAL",
+            "/approve_smoke": "APPROVE_SMOKE",
+            "/approve_backtest": "APPROVE_BACKTEST",
+        }
+        if parts[0] in fixed:
+            return (fixed[parts[0]], None)
+        if parts[0] == "/training":
+            return ("TRAINING_OFF" if parts[1] == "off" else "TRAINING_ON", None)
+        if parts[0] == "/reconcile" and parts[1:] == ["adopt"]:
+            return ("RECONCILE_ADOPT", None)
         raise ValueError("Unsupported confirmation action.")
 
     @staticmethod
@@ -311,8 +361,9 @@ class TelegramCommandHandler:
         *,
         pending_store: PendingActionStore | None = None,
         product_metadata_lookup: Callable[[str], ProductMetadata] | None = None,
+        allowed_user_ids: set[str] | None = None,
     ) -> None:
-        """허용 채팅과 선택적 DB 확인 저장소를 구성합니다."""
+        """허용 채팅(과 선택적 허용 사용자)·DB 확인 저장소를 구성합니다."""
         if not allowed_chat_ids:
             raise ValueError("At least one allowed chat ID is required.")
         if any(not isinstance(chat_id, str) or not chat_id.isdigit() for chat_id in allowed_chat_ids):
@@ -322,48 +373,92 @@ class TelegramCommandHandler:
         if product_metadata_lookup is not None and not callable(product_metadata_lookup):
             raise TypeError("product_metadata_lookup must be callable.")
         self.product_metadata_lookup = product_metadata_lookup
-        self.pending: dict[str, PendingAction] = {}
+        if allowed_user_ids is not None and (
+            not allowed_user_ids
+            or any(not isinstance(item, str) or not item.isdigit() for item in allowed_user_ids)
+        ):
+            raise ValueError("Allowed user IDs must be non-empty numeric strings.")
+        self.allowed_user_ids = None if allowed_user_ids is None else set(allowed_user_ids)
+        self.pending: dict[str, PendingAction] = {}  # 키 = 확인 코드 해시
+        self._recent_commands: list[datetime] = []
+        self._failed_confirmations = 0
+        self._locked_until: datetime | None = None
 
-    def handle(self, chat_id: str, text: str, now: datetime) -> tuple[str, PendingAction | None]:
-        """화이트리스트·입력·확인 기한을 검사하고 수행 가능한 명령 상태를 반환합니다."""
+    def handle(
+        self,
+        chat_id: str,
+        text: str,
+        now: datetime,
+        *,
+        user_id: str | None = None,
+    ) -> tuple[str, PendingAction | None]:
+        """채팅·사용자 화이트리스트, 속도 제한, 입력, 확인 기한을 검사하고 명령 상태를 반환합니다."""
         if not isinstance(chat_id, str) or not isinstance(text, str):
             raise ValueError("chat_id and text must be strings.")
         if chat_id not in self.allowed_chat_ids:
             return "UNAUTHORIZED", None
+        if self.allowed_user_ids is not None and user_id not in self.allowed_user_ids:
+            return "UNAUTHORIZED", None
         if not isinstance(now, datetime) or now.tzinfo is None:
             raise ValueError("now must be timezone-aware.")
+        # 분당 명령 수 제한(슬라이딩 윈도우): 초과분은 무응답 취급이 아니라 명시적으로 거부합니다.
+        window_start = now.astimezone(timezone.utc) - timedelta(minutes=1)
+        self._recent_commands = [t for t in self._recent_commands if t > window_start]
+        if len(self._recent_commands) >= MAX_COMMANDS_PER_MINUTE:
+            return "RATE_LIMITED", None
+        self._recent_commands.append(now.astimezone(timezone.utc))
         normalized = " ".join(text.strip().lower().split())
         if not normalized:
             return "UNKNOWN_COMMAND", None
         command = normalized.split(" ", 1)[0]
         if command not in ALLOWED_COMMANDS:
             return "UNKNOWN_COMMAND", None
+        utc_now = now.astimezone(timezone.utc)
         if command == "/confirm":
-            action_id = normalized.split(" ", 1)[1] if " " in normalized else ""
-            if not re.fullmatch(r"[a-f0-9]{12}", action_id):
+            if self._locked_until is not None and utc_now < self._locked_until:
+                return "CONFIRMATIONS_LOCKED", None
+            code = normalized.split(" ", 1)[1] if " " in normalized else ""
+            action = (
+                self.pending.get(hash_confirm_code(code))
+                if _CODE_PATTERN.fullmatch(code)
+                else None
+            )
+            if (
+                action is None
+                or action.chat_id != chat_id
+                or (self.allowed_user_ids is not None and action.user_id != user_id)
+            ):
+                # 잘못된 코드가 연속 5회 쌓이면 모든 2단계 명령을 30분 잠급니다.
+                self._failed_confirmations += 1
+                if self._failed_confirmations >= CONFIRM_MAX_FAILURES:
+                    self._locked_until = utc_now + CONFIRM_LOCKOUT
+                    self._failed_confirmations = 0
                 return "CONFIRMATION_NOT_FOUND", None
-            action = self.pending.get(action_id)
-            if action is None or action.chat_id != chat_id:
-                return "CONFIRMATION_NOT_FOUND", None
-            if now.astimezone(timezone.utc) >= action.expires_at:
-                del self.pending[action_id]
+            key = hash_confirm_code(code)
+            if utc_now >= action.expires_at:
+                del self.pending[key]
                 if self.pending_store is not None:
-                    self.pending_store.confirm(action, now=now.astimezone(timezone.utc))
+                    self.pending_store.confirm(action, now=utc_now)
                 return "CONFIRMATION_EXPIRED", None
             if self.pending_store is not None and not self.pending_store.confirm(
                 action,
-                now=now.astimezone(timezone.utc),
+                now=utc_now,
             ):
-                del self.pending[action_id]
+                del self.pending[key]
                 return "CONFIRMATION_EXPIRED", None
-            del self.pending[action_id]
+            del self.pending[key]  # 단일 사용: 같은 코드는 다시 쓸 수 없습니다.
+            self._failed_confirmations = 0
             return "CONFIRMED", action
+        if self._locked_until is not None and utc_now < self._locked_until and (
+            normalized in CONFIRMATION_REQUIRED
+            or normalized.startswith(CONFIRMATION_PREFIXES)
+        ):
+            return "CONFIRMATIONS_LOCKED", None
         if not self._valid_arguments(normalized):
             return "INVALID_ARGUMENTS", None
         requires_confirmation = (
             normalized in CONFIRMATION_REQUIRED
-            or normalized.startswith("/add ")
-            or normalized.startswith("/remove ")
+            or normalized.startswith(CONFIRMATION_PREFIXES)
         )
         if requires_confirmation:
             metadata = None
@@ -392,7 +487,7 @@ class TelegramCommandHandler:
                     f"출처 {metadata.classification_source}"
                 )
             action_id = uuid4().hex[:12]
-            utc_now = now.astimezone(timezone.utc)
+            code = new_confirm_code()
             action = PendingAction(
                 action_id=action_id,
                 command=normalized,
@@ -401,10 +496,12 @@ class TelegramCommandHandler:
                 expires_at=utc_now + timedelta(minutes=5),
                 product_metadata=metadata,
                 confirmation_summary=summary,
+                confirm_code=code,
+                user_id=user_id,
             )
             if self.pending_store is not None:
                 self.pending_store.create(action)
-            self.pending[action_id] = action
+            self.pending[hash_confirm_code(code)] = action
             return "CONFIRMATION_REQUIRED", action
         return "EXECUTE", None
 
@@ -413,8 +510,28 @@ class TelegramCommandHandler:
         """Phase 1 명령마다 허용된 인자 형식만 통과시킵니다."""
         parts = command.split()
         name = parts[0]
-        if name in ("/status", "/preview", "/pool", "/health", "/pause", "/stop", "/resume", "/reconcile"):
+        if name == "/reconcile":
+            return len(parts) == 1 or parts[1:] == ["adopt"]
+        if name in ("/status", "/preview", "/pool", "/health", "/pause", "/stop", "/resume"):
             return len(parts) == 1
+        if name == "/clear_halt":
+            return len(parts) == 2 and re.fullmatch(r"[a-z_]{3,40}", parts[1]) is not None
+        if name == "/classify":
+            return (
+                len(parts) == 3
+                and parts[1].isdigit()
+                and parts[2] in ("deposit", "withdrawal", "distribution")
+            )
+        if name == "/ca_confirm":
+            return len(parts) == 2 and parts[1].isdigit()
+        if name in ("/approve_real", "/approve_smoke"):
+            return len(parts) == 2 and _ID_PATTERN.fullmatch(parts[1]) is not None
+        if name == "/approve_backtest":
+            return (
+                len(parts) == 3
+                and _ID_PATTERN.fullmatch(parts[1]) is not None
+                and re.fullmatch(r"[0-9a-f]{64}", parts[2]) is not None
+            )
         if name == "/trades":
             return len(parts) == 1 or (
                 len(parts) == 2 and parts[1].isdigit() and 1 <= int(parts[1]) <= 50
@@ -515,8 +632,9 @@ def run_telegram_polling(
     command_actions: Mapping[str, Callable[[str, str], str]],
     connection_factory: Callable[[], sqlite3.Connection],
     product_metadata_lookup: Callable[[str], ProductMetadata] | None = None,
+    allowed_user_ids: set[str] | None = None,
 ) -> None:
-    """Phase 1 Telegram polling을 시작하고 채팅·단일 프로세스 잠금을 강제합니다."""
+    """Phase 1 Telegram polling을 시작하고 채팅·사용자·단일 프로세스 잠금을 강제합니다."""
     if not isinstance(token, str) or not token.strip():
         raise ValueError("Telegram bot token is required.")
     if not callable(connection_factory):
@@ -530,6 +648,7 @@ def run_telegram_polling(
         allowed_chat_ids,
         pending_store=pending_store,
         product_metadata_lookup=product_metadata_lookup,
+        allowed_user_ids=allowed_user_ids,
     )
     owner_id = uuid4().hex
     _acquire_polling_lock(connection_factory, owner_id=owner_id)
@@ -543,10 +662,12 @@ def run_telegram_polling(
         if message is None or chat is None or not isinstance(message.text, str):
             return
         chat_id = str(chat.id)
+        user = update.effective_user
         status, action = handler.handle(
             chat_id,
             message.text,
             datetime.now(timezone.utc),
+            user_id=str(user.id) if user is not None else None,
         )
         if status == "UNAUTHORIZED":
             return
@@ -558,7 +679,7 @@ def run_telegram_polling(
             )
             await message.reply_text(
                 sanitize_telegram_reply(
-                    f"확인이 필요합니다. 5분 안에 /confirm {action.action_id} 를 입력하세요."
+                    f"확인이 필요합니다. 5분 안에 /confirm {action.confirm_code} 를 입력하세요."
                     f"{details}"
                 )
             )
@@ -582,6 +703,8 @@ def run_telegram_polling(
         else:
             reply = {
                 "CONFIRMATION_EXPIRED": "확인 시간이 만료되었습니다. 명령을 다시 요청하세요.",
+                "CONFIRMATIONS_LOCKED": "확인 코드를 연속으로 잘못 입력해 30분간 2단계 명령이 잠겼습니다.",
+                "RATE_LIMITED": "명령이 너무 잦습니다. 잠시 후 다시 시도하세요.",
                 "CLASSIFICATION_UNAVAILABLE": (
                     "공식 상품정보 조회 경로가 구성되지 않아 종목 추가를 차단했습니다."
                 ),

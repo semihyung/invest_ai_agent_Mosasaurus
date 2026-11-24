@@ -1,18 +1,34 @@
 services:
   mosasaurus-agent:
     build: .
+    image: mosasaurus-agent:latest
     container_name: mosasaurus-agent
     restart: unless-stopped
+    user: "10001:10001"          # 비root, 그룹 mosasecret(10001)
+    read_only: true              # 루트 파일시스템 읽기 전용
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m
+    mem_limit: 2g
+    pids_limit: 256
     env_file:
-      - ${SECRETS_DIR:-/home/pi/.secrets/mosasaurus}/.env
+      - ${SECRETS_DIR:-/home/pi/.secrets/mosasaurus}/app.env
+      # Phase 2 활성화 시에만 추가: ${SECRETS_DIR}/app.phase2.env
     environment:
       TZ: Asia/Seoul
       DB_PATH: /app/data/mosasaurus.db
       TOKEN_CACHE_PATH: /run/secrets/token.json
+      APPROVALS_DIR: /run/approvals
+      HOST_RUN_DIR: /app/run
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
+      - ./run:/app/run:ro        # 호스트가 기록하는 ups.json·clock.json 은 읽기만
       - ${SECRETS_DIR:-/home/pi/.secrets/mosasaurus}/token-cache:/run/secrets:ro
+      - ${SECRETS_DIR:-/home/pi/.secrets/mosasaurus}/approvals:/run/approvals:ro
     healthcheck:
       test:
         - CMD-SHELL
@@ -21,3 +37,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
