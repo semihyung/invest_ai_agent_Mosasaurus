@@ -30,6 +30,7 @@ class ScheduleJob(str, Enum):
     POST_CLOSE_RECONCILE = "post_close_reconcile"
     DAILY_BRIEFING = "daily_briefing"
     WEEKLY_MAINTENANCE = "weekly_maintenance"
+    PENDING_CONFIRMATION_POLLER = "pending_confirmation_poller"
 
 
 @dataclass(frozen=True)
@@ -71,8 +72,8 @@ SCHEDULE_TRIGGERS = (
     ),
     ScheduledTrigger(
         ScheduleJob.POST_CLOSE_RECONCILE,
-        run_time=time(15, 15, 10),
-        grace_seconds=120,
+        run_time=time(15, 40, 0),
+        grace_seconds=600,
     ),
     ScheduledTrigger(
         ScheduleJob.DAILY_BRIEFING,
@@ -94,6 +95,7 @@ ORDER_RELATED_JOBS = frozenset(
         ScheduleJob.DAILY_PIPELINE,
         ScheduleJob.ORDER_CANCEL_SWEEP,
         ScheduleJob.POST_CLOSE_RECONCILE,
+        ScheduleJob.PENDING_CONFIRMATION_POLLER,
     }
 )
 
@@ -316,7 +318,10 @@ def _guarded_job(
             return
         if job is ScheduleJob.INTRADAY_GUARD:
             now = datetime.now(KST).time()
-            if not time(9, 0) <= now <= time(15, 25):
+            if not time(9, 0) <= now <= time(15, 30):
+                return
+        if job is ScheduleJob.PENDING_CONFIRMATION_POLLER:
+            if not time(9, 0) <= datetime.now(KST).time() <= time(15, 40):
                 return
     handler()
 
@@ -386,11 +391,11 @@ def build_scheduler(
             CronTrigger(
                 day_of_week="mon-fri",
                 hour=15,
-                minute=15,
-                second=10,
+                minute=40,
+                second=0,
                 timezone=KST,
             ),
-            120,
+            600,
         ),
         (
             ScheduleJob.DAILY_BRIEFING,
@@ -403,6 +408,8 @@ def build_scheduler(
             3600,
         ),
     )
+    if ScheduleJob.PENDING_CONFIRMATION_POLLER in handlers:  # 선택 잡(없어도 부팅 가능)
+        schedules += ((ScheduleJob.PENDING_CONFIRMATION_POLLER, IntervalTrigger(seconds=15, timezone=KST), 15),)
     for job, trigger, grace_seconds in schedules:
         scheduler.add_job(
             _guarded_job,

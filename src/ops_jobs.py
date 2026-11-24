@@ -1,0 +1,138 @@
+"""운영 보조 잡: Telegram 알림 전송기, 18:05 일일 브리핑, 일요일 03:00 DB 백업(명세 9.1절).
+
+- 알림 전송기는 표준 라이브러리 HTTP 만 사용하고, 실패해도 매매 잡을 막지 않습니다(알림은 `system_events` 에도 남음).
+- 메시지는 `sanitize_telegram_reply` 로 계좌번호·토큰 형태를 가린 뒤에만 보냅니다.
+- 백업은 SQLite Online Backup API 로 일관된 사본을 만들고 `integrity_check` 로 검증합니다.
+  암호화·원격 복제는 호스트 스크립트(`scripts/backup_db.sh`)의 몫입니다.
+"""
+
+import json
+import sqlite3
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Callable, Mapping
+
+from src.safety_flags import raise_flag
+from src.telegram_bot import sanitize_telegram_reply
+
+KST = timezone(timedelta(hours=9), name="KST")
+PREFIX = "[모사사우르스]"
+
+
+def _urllib_post_json(url: str, payload: Mapping[str, str]) -> None:
+    """Telegram Bot API 로 JSON 을 한 번 POST 한다(타임아웃 10초)."""
+    request = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), headers={"content-type": "application/json"}, method="POST")
+    urllib.request.urlopen(request, timeout=10).close()  # noqa: S310 - 고정된 https Telegram 호스트
+
+
+def build_notifier(
+    environ: Mapping[str, str],
+    *,
+    post: Callable[[str, Mapping[str, str]], None] = _urllib_post_json,
+) -> Callable[[str, str], None]:
+    """`(심각도, 메시지)` → Telegram. 토큰·채팅 ID 가 없으면 아무것도 보내지 않는 함수를 돌려준다."""
+    token, chat_id = environ.get("TELEGRAM_BOT_TOKEN", "").strip(), environ.get("ALLOWED_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        return lambda severity, message: None
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    def notify(severity: str, message: str) -> None:
+        text = sanitize_telegram_reply(f"{PREFIX} [{severity}] {message}")
+        try:
+            post(url, {"chat_id": chat_id, "text": text})
+        except Exception:  # noqa: BLE001 - 전송 실패 세부(URL 의 토큰 포함)를 예외로 퍼뜨리지 않는다
+            pass
+
+    return notify
+
+
+def compose_briefing(connection: sqlite3.Connection, now: datetime) -> str:
+    """DB 상태를 한 장의 브리핑 문장으로 만든다(숫자·상태만, 계좌 식별자 없음)."""
+    snap = connection.execute("SELECT * FROM daily_portfolio ORDER BY snapshot_date DESC LIMIT 1").fetchone()
+    count = lambda sql: connection.execute(sql).fetchone()[0]
+    flags = connection.execute("SELECT flag_type, code, ticker FROM safety_flags WHERE cleared_at IS NULL "
+                               "ORDER BY flag_type, code").fetchall()
+    halts = [r["code"] for r in flags if r["flag_type"] == "HALT"]
+    blocks = [r["code"] + (f"({r['ticker']})" if r["ticker"] else "") for r in flags if r["flag_type"] != "HALT"]
+    lines = [f"일일 브리핑 {now.astimezone(KST).date().isoformat()}"]
+    if snap:
+        lines.append(f"총자산 {snap['total_equity']:,}원 / TWR {snap['twr_cumulative'] * 100:+.2f}% / "
+                     f"낙폭 단계 {snap['drawdown_stage']} / 스냅샷 {snap['snapshot_date']}")
+    else:
+        lines.append("일간 스냅샷 없음(성과 지수 미초기화)")
+    lines.append("SAFE_HALT 원인: " + (", ".join(halts) if halts else "없음"))
+    lines.append("매수 차단·종목 격리: " + (", ".join(blocks) if blocks else "없음"))
+    open_obligations = count("SELECT COUNT(*) FROM exit_obligations WHERE status = 'OPEN'")
+    unclassified = count("SELECT COUNT(*) FROM cash_flows WHERE classification_status IN "
+                         "('PROVISIONAL', 'UNCLASSIFIED_CASH_FLOW')")
+    unverified = count("SELECT COUNT(*) FROM corporate_actions WHERE verified = 0")
+    held = count("SELECT COUNT(*) FROM positions WHERE quantity > 0")
+    lines.append(f"보유 종목 {held}개 / 열린 매도 의무 {open_obligations}건")
+    lines.append(f"미분류 현금흐름 {unclassified}건 / 미검증 기업행위 {unverified}건")
+    return "\n".join(lines)
+
+
+def create_daily_briefing_handler(
+    connection_factory: Callable[[], sqlite3.Connection],
+    *,
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    notify: Callable[[str, str], None] = lambda severity, message: None,
+) -> Callable[[], None]:
+    """18:05 브리핑을 만들어 `system_events` 에 기록하고 Telegram 으로 보낸다."""
+
+    def handler() -> None:
+        now = clock()
+        connection = connection_factory()
+        try:
+            text = compose_briefing(connection, now)
+            with connection:
+                connection.execute(
+                    "INSERT INTO system_events (component, event_type, severity, message, created_at) "
+                    "VALUES ('ops_jobs', 'DAILY_BRIEFING', 'INFO', ?, ?)", (text, now.isoformat()))
+            notify("INFO", text)
+        finally:
+            connection.close()
+
+    return handler
+
+
+def create_weekly_maintenance_handler(
+    connection_factory: Callable[[], sqlite3.Connection],
+    backup_dir: str | Path,
+    *,
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    notify: Callable[[str, str], None] = lambda severity, message: None,
+    keep: int = 8,
+) -> Callable[[], None]:
+    """SQLite 일관 백업 → 무결성 검사 → 오래된 사본 정리. 검사 실패는 `DB_INTEGRITY` 정지 원인으로 올린다."""
+
+    def handler() -> None:
+        now = clock()
+        target_dir = Path(backup_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"mosasaurus-{now.astimezone(KST).strftime('%Y%m%d')}.db"
+        connection = connection_factory()
+        try:
+            destination = sqlite3.connect(target)
+            try:
+                connection.backup(destination)
+                verdict = destination.execute("PRAGMA integrity_check").fetchone()[0]
+            finally:
+                destination.close()
+            if verdict != "ok":
+                target.unlink(missing_ok=True)
+                raise_flag(connection, "HALT", "DB_INTEGRITY", now=now, detail="BACKUP_INTEGRITY_CHECK_FAILED")
+                notify("CRITICAL", "주간 백업 무결성 검사 실패: DB_INTEGRITY 정지")
+                return
+            for old in sorted(target_dir.glob("mosasaurus-*.db"))[:-keep]:
+                old.unlink()
+            with connection:
+                connection.execute(
+                    "INSERT INTO system_events (component, event_type, severity, message, created_at) "
+                    "VALUES ('ops_jobs', 'WEEKLY_BACKUP_OK', 'INFO', ?, ?)", (f"백업 완료: {target.name}", now.isoformat()))
+        finally:
+            connection.close()
+
+    return handler

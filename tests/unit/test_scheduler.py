@@ -41,7 +41,8 @@ class SchedulerTests(unittest.TestCase):
 
     def _handlers(self):
         """모든 명세서 작업에 대한 비활성 테스트 콜백을 반환합니다."""
-        return {job: lambda: None for job in ScheduleJob if job is not ScheduleJob.BOOT_RECOVERY}
+        return {job: lambda: None for job in ScheduleJob
+                if job not in (ScheduleJob.BOOT_RECOVERY, ScheduleJob.PENDING_CONFIRMATION_POLLER)}
 
     def test_weekly_preview_is_due_only_at_saturday_10(self):
         saturday = datetime(2026, 11, 28, 1, 0, tzinfo=UTC)

@@ -149,6 +149,14 @@ def main(
     database_path = db_path or os.environ.get("DB_PATH", "/app/data/mosasaurus.db")
     cache = token_cache or KisTokenCache()
     if dependencies is None:
+        try:
+            # 지연 import(순환 방지). 비밀·설정이 갖춰지지 않으면 아래 SAFE_HALT 경로로 안전하게 멈춘다.
+            from src.runtime import build_dependencies
+
+            dependencies = build_dependencies(database_path, cache)
+        except (ValueError, KeyError, OSError):
+            dependencies = None
+    if dependencies is None:
         connection = initialize_database(database_path)
         try:
             _sync_configured_allowlist(connection)
@@ -166,13 +174,46 @@ def main(
             file=sys.stderr,
         )
         return 2
-    result = run_agent(
-        database_path,
-        cache,
-        dependencies,
-        stop_event=stop_event or threading.Event(),
-    )
-    return 0 if result.recovery_ok else 2
+    stop = stop_event or threading.Event()
+    telegram = _telegram_settings(os.environ) if stop_event is None else None
+    if telegram is None:
+        result = run_agent(database_path, cache, dependencies, stop_event=stop)
+        return 0 if result.recovery_ok else 2
+    # Telegram 폴링은 메인 스레드(시그널 처리)에서, 에이전트(스케줄러·감시 루프)는 작업 스레드에서 실행한다.
+    outcome: list[BootRecoveryResult] = []
+    worker = threading.Thread(
+        target=lambda: outcome.append(run_agent(database_path, cache, dependencies, stop_event=stop)),
+        name="mosasaurus-agent", daemon=False)
+    worker.start()
+    try:
+        _run_telegram(database_path, telegram)
+    finally:
+        stop.set()
+        worker.join()
+    return 0 if outcome and outcome[0].recovery_ok else 2
+
+
+def _telegram_settings(environ: Mapping[str, str]) -> dict | None:
+    """토큰·허용 채팅이 모두 있을 때만 명령 수신을 켠다(없으면 알림·스케줄러만 동작)."""
+    token, chat = environ.get("TELEGRAM_BOT_TOKEN", "").strip(), environ.get("ALLOWED_CHAT_ID", "").strip()
+    if not token or not chat:
+        return None
+    user = environ.get("ALLOWED_USER_ID", "").strip()
+    return {"token": token, "chat_ids": {chat}, "user_ids": {user} if user else None,
+            "approvals_dir": environ.get("APPROVALS_DIR", "/run/approvals")}
+
+
+def _run_telegram(database_path: str | Path, settings: dict) -> None:
+    """명령 콜백을 연결해 Telegram 폴링을 시작한다(블로킹)."""
+    from src.telegram_actions import build_command_actions
+    from src.telegram_bot import PendingActionStore, run_telegram_polling
+
+    connection_factory = lambda: connect_database(database_path)
+    run_telegram_polling(
+        token=settings["token"], allowed_chat_ids=settings["chat_ids"],
+        pending_store=PendingActionStore(connection_factory),
+        command_actions=build_command_actions(connection_factory, approvals_dir=settings["approvals_dir"]),
+        connection_factory=connection_factory, allowed_user_ids=settings["user_ids"])
 
 
 if __name__ == "__main__":

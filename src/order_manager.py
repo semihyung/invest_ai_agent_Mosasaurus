@@ -948,6 +948,19 @@ def create_kis_order_transport(environment: str, **kwargs: Any) -> "KisOrderAdap
     return KisOrderAdapter(environment, **kwargs)
 
 
+def create_paper_order_transport(**kwargs: Any) -> "KisOrderAdapter":
+    """PAPER(모의투자) 전용 주문 전송기를 만듭니다. 실계좌(REAL)는 이 함수로 만들 수 없습니다.
+
+    표준 라이브러리 HTTP 전송 함수를 연결하므로 `runtime` 이 비공개 어댑터를 직접 import 하지 않아도 됩니다.
+    REAL 활성화는 3중 승인(7.1절) 구현 후 별도 경로로만 열립니다.
+    """
+    if kwargs.pop("environment", "PAPER") != "PAPER":
+        raise ValueError("Only PAPER transports can be created here.")
+    from src._kis_order_adapter import urllib_http_post
+
+    return KisOrderAdapter("PAPER", http_post=urllib_http_post, **kwargs)
+
+
 # 명세 7.2절: 위험 축소 매도는 iNAV 가 유효할 때 Bid1 이 iNAV×(1-2%) 아래면 이상 시장으로 보고 제출하지 않습니다.
 REDUCE_ONLY_NAV_FLOOR_RATIO = 0.020
 

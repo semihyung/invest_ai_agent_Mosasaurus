@@ -1,6 +1,6 @@
 # 명세 v3.7.5 ↔ 코드 격차 보고서 (S0.1–S8 완료 후 v3.7.5 정렬 반영)
 
-작성 기준: 자동 테스트 422개 통과(v3.7.5 정렬 후, 이전 395개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
+작성 기준: 자동 테스트 483개 통과(Phase 1 마무리 3차 후, 이전 422개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
 실계좌·실서버 호출, 운영 서버 배포, 쉘 스크립트의 실제 실행(`sh -n` 문법 검사만 수행)은 하지 않았습니다.
 
 ## 1. 단계별 변경 요약
@@ -117,6 +117,54 @@
 
 마이그레이션 `004_spec_v375_schema.sql` 은 003 과 같은 테이블 재구성 방식으로 적용되며 `schema_migrations` 에 체크섬이 기록됩니다.
 감사 보고서의 **Major 20건은 이번 정렬 범위 밖**입니다(`docs/audit_v3.7.4_review.md`).
+
+## 4-2. Phase 1 마무리 1차 (Raspberry Pi 없이 가능한 배선)
+
+| 항목 | 구현 | 파일 |
+| --- | --- | --- |
+| 위험 축소 매도 실행기(게이트→write-ahead→Bid1 1회→결과 기록, SAFE_HALT 보호성 손절 원인 판정) | ✅ | `src/order_executor.py` |
+| `intraday_guard`(스탑 감시·15:10 이후 의무 기록만·조회 실패=`ACCOUNT_DATA_STALE`) | ✅ | `src/job_handlers.py` |
+| `open_checkpoint`(의무 재매도·보유 0 → `VOIDED`) | ✅ | `src/job_handlers.py` |
+| `order_cancel_sweep`(15:14:30 취소 요청 + 미체결 매도 의무화) | ✅ | `src/job_handlers.py` |
+| `post_close_reconcile`(15:40: 정지 상태 대조·2회 재현 `ACCOUNT_MISMATCH`·예수금 대사·PeakPrice·일간 TWR/HWM 스냅샷) | ✅ | `src/job_handlers.py` |
+| 안전 점검(UPS·시각 플래그 동기화, 24h 미해결 HALT 재경보) | ✅ (인트라데이 잡에 10분 주기로 합침) | `src/job_handlers.py`, `src/runtime.py` |
+| KIS 응답 → 포트 변환(필드 누락 시 fail-closed) | ✅ (`prvs_rcdl_excc_amt`·`tot_evlu_amt` 는 `[UNVERIFIED]`) | `src/kis_broker.py` |
+| 운영 조립(PAPER 전용, REAL 거부, 비밀은 환경변수만) | ✅ | `src/runtime.py`, `src/main.py` |
+| PAPER 전용 주문 전송기 생성 경로(비공개 어댑터 경계 유지) | ✅ | `src/order_manager.py` |
+| 스케줄 시각을 명세 9.1절에 정렬(`post_close_reconcile` 15:15:10 → 15:40, 가드 종료 15:25 → 15:30) | ✅ | `src/scheduler.py` |
+
+버그 수정: 예수금 대사에서 첫 관측(`PROVISIONAL`) 직후 기준 예수금을 옮기면 다음 대사가 변동을 스스로 `DISMISSED` 시키는 문제를, 확정·해소 전에는 기준 예수금을 옮기지 않도록 처리했습니다.
+
+## 4-3. Phase 1 마무리 2차 (Raspberry Pi 없이 가능한 나머지 잡)
+
+| 항목 | 구현 | 파일 |
+| --- | --- | --- |
+| 주문·체결 동기화(체결 증분 기록·`positions` 반영·취소 확정·미접수 확정은 장 마감 후만·`PENDING_CONFIRMATION` 정지 원인 등록/해제) + 15초 `pending_confirmation_poller` | ✅ | `src/order_sync.py`, `src/job_handlers.py` |
+| `morning_prep`: 200거래일 일봉 Upsert, 소급 조정(분배락) 감지 → 종목 격리 + `verified=0` 후보, ±30% 이상치 격리 | ✅ | `src/morning_prep.py` |
+| `daily_pipeline`(15:00): 120MA·스탑·검증 상실 퇴출, 주간 첫 개장일 슬롯 확정·교체 매도, 매도 선행(시한 15:06)·매수(시한 15:10), 5.4절 수량식, 대표 파킹 배정, 슬롯·프리뷰 소비 | ✅ (제외 항목은 아래) | `src/daily_pipeline.py` |
+| 전략 주문(교체·매수·파킹) 실행: 스프레드·iNAV 검증 후 매수 Ask1 / 매도 Bid1 | ✅ | `src/order_executor.py` |
+| 18:05 일일 브리핑, 일요일 03:00 SQLite 백업+무결성 검사+8개 보관 | ✅ | `src/ops_jobs.py` |
+| Telegram **알림 전송기**(마스킹·실패 무시) → 모든 잡의 CRITICAL/WARN 알림 연결 | ✅ | `src/ops_jobs.py`, `src/runtime.py` |
+
+### 의도적으로 남겨 둔 것 (fail-closed 로 막혀 있음)
+
+- **신규 매수는 실제로는 아직 나가지 않습니다:** `KisBroker.buyable_cash`(`nrcvb_buy_amt` 조회 TR 미확정 `[UNVERIFIED]`)가 예외를 올리고, iNAV 는 WebSocket 연동 전이라 `None` → 스프레드·iNAV 검증이 매수를 거부합니다. 매도(스탑·120MA·교체·의무 재주문)는 동작합니다.
+- 리밸런싱 초과분(Drift) 매도, 파킹 현금화 매도, 슬롯 상관계수 검사(상관 함수 미주입), 5.2절 필터 전체의 15:00 재평가(현재는 120MA·검증·격리·데이터 상태만).
+- `morning_prep` 의 XKRX 달력 ↔ KIS 휴장일 이중 검증(`exchange_calendars` 의존성 추가 필요 → 사용자 결정), 허용 일정 기반 분배락 자동 검증(`ALLOWLIST_SCHEDULE`)은 `/ca_confirm` 수동 경로만.
+- `/approve_backtest` 는 산출물(커밋·전략 해시·기간) 연결 전이라 승인하지 않고 안내만 합니다. 2단계 확인 이력은 소비 표시가 없어 같은 명령을 다시 입력하면 같은 승인을 재사용할 수 있습니다(5분 만료 전 한정, 보강 대상).
+- 아직 실행해 보지 않은 것: `main()` 의 Telegram 폴링(메인 스레드)+에이전트(작업 스레드) 구성은 실제 봇 토큰으로 검증하지 못했습니다(라즈베리파이·모의투자 단계에서 확인).
+
+### 4-4. Telegram 명령 연결 (마무리 3차)
+
+| 항목 | 구현 | 파일 |
+| --- | --- | --- |
+| 명령 19종 콜백(`/status`·`/preview`·`/pool`·`/trades`·`/health`·`/reconcile [adopt]`·`/pause`·`/stop`·`/resume`·`/training`·`/emergency [off]`·`/remove`·`/clear_halt`·`/classify`·`/ca_confirm`·`/approve_real`·`/approve_smoke`·`/approve_backtest`·`/add`) | ✅ | `src/telegram_actions.py` |
+| 2단계 명령은 `pending_actions` 의 `APPROVED` 이력(명령 해시 일치)이 있어야만 실행 | ✅ | `src/telegram_actions.py` |
+| 실패 답장은 고정 문구(예외 내용 비노출) + `COMMAND_FAILED` 기록 | ✅ | `src/telegram_actions.py` |
+| `main()` 이 토큰·채팅 ID 가 있으면 폴링 시작(`allowed_user_ids` 주입 포함) | ✅(미실행 검증) | `src/main.py` |
+| `hwm_rebase_pending` 소비 + 해제 후 `WARNING` 하한, 훈련 종료일 자동 해제, `/remove` 보유 종목 퇴출 | ✅ | `src/job_handlers.py`, `src/daily_pipeline.py` |
+- 주간 교체 승계(misfire 후 다음 개장일 1회) 전용 로직: 현재는 "미소비 프리뷰가 있으면 다음 개장일에 같은 로직 재실행"으로 자연 승계됩니다(부분 실행되면 `CONSUMED`).
+- 호스트(Raspberry Pi) 전용: systemd·워치독·CPU/온도 측정·UPS 안전 종료·실제 KIS 응답 필드 확정.
 
 ## 5. 권고 다음 순서
 
