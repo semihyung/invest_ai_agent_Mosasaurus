@@ -144,3 +144,141 @@ class CancelFinalizationTests(AuditFixTestCase):
         broker = FakeBroker(orders=[OrderSnapshot("0000001", "069500", "BUY", 10, 0, 0, "CANCELED")])
         sync_orders(self.conn, broker, now=CLOSE, market_closed=True)
         self.assertEqual(self.status(order_id), "CANCELED")
+
+
+class ClassifyRestatesUnitsTests(AuditFixTestCase):
+    """감사 2번: 입출금을 분류하면 단위 수가 함께 조정돼 가짜 낙폭·가짜 수익이 생기지 않는다."""
+
+    def snapshot(self, day, equity):
+        """KST 15:40 마감 스냅샷을 저장하고 낙폭 단계를 돌려준다."""
+        from src.job_handlers import save_daily_snapshot
+
+        when = datetime(2026, 11, day, 15, 40, tzinfo=KST)
+        return save_daily_snapshot(self.conn, trade_date=f"2026-11-{day}", total_equity=equity, cash=0, now=when)
+
+    def flow(self, flow_date, amount):
+        """미분류 현금흐름 한 건을 만들고 승인된 `/classify` 확인 이력을 준비한다."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO cash_flows (broker_transaction_id, flow_date, occurred_at, amount, flow_type,"
+                " classification_status, source, observed_at, first_observed_at) VALUES ('RECON:1', ?, 't', ?,"
+                " 'UNCLASSIFIED', 'UNCLASSIFIED_CASH_FLOW', 'CASH_RECON', 't', 't')", (flow_date, amount))
+            self.conn.execute(
+                "INSERT INTO pending_actions (id, action_type, code_hash, reason, approval_status, created_at,"
+                " expires_at) VALUES ('act1', 'CLASSIFY_FLOW', 'h', 'r', 'APPROVED', 't', 't')")
+
+    def classify(self, flow_type):
+        from src.operator_actions import classify_cash_flow
+
+        classify_cash_flow(self.conn, flow_id=1, flow_type=flow_type, action_id="act1",
+                           now=datetime(2026, 11, 25, 9, 0, tzinfo=KST))
+
+    def nav_and_units(self, day):
+        row = self.conn.execute("SELECT flow_adjusted_unit_nav, units_outstanding FROM daily_portfolio "
+                                "WHERE snapshot_date = ?", (f"2026-11-{day}",)).fetchone()
+        return round(row[0], 6), round(row[1], 6)
+
+    def test_withdrawal_after_snapshot_keeps_unit_price(self):
+        self.snapshot(23, 4_000_000)
+        self.flow("2026-11-24", -1_000_000)
+        self.assertEqual(self.snapshot(24, 3_000_000), "NORMAL")  # 미분류 구간: 평가액에서 보정
+        self.classify("WITHDRAWAL")
+        self.assertEqual(self.nav_and_units(24), (100.0, 30_000.0))
+        self.assertEqual(self.snapshot(25, 3_000_000), "NORMAL")  # 예전 코드: 단위가격 75 → CRITICAL
+        self.assertEqual(self.nav_and_units(25), (100.0, 30_000.0))
+        recorded = self.conn.execute("SELECT units_delta, unit_price_applied FROM cash_flows").fetchone()
+        self.assertEqual((round(recorded[0], 6), round(recorded[1], 6)), (-10_000.0, 100.0))
+
+    def test_deposit_does_not_become_fake_profit(self):
+        self.snapshot(23, 4_000_000)
+        self.flow("2026-11-24", 1_000_000)
+        self.snapshot(24, 5_000_000)
+        self.classify("DEPOSIT")
+        self.snapshot(25, 5_000_000)
+        self.assertEqual(self.nav_and_units(25), (100.0, 50_000.0))  # 예전 코드: 125 와 고점 오염
+
+    def test_classifying_before_the_closing_snapshot_adjusts_the_latest_units(self):
+        self.snapshot(23, 4_000_000)
+        self.snapshot(24, 4_000_000)
+        self.flow("2026-11-25", -1_000_000)  # 오늘 흐름: 마감 스냅샷이 아직 없다
+        self.classify("WITHDRAWAL")
+        self.assertEqual(self.snapshot(25, 3_000_000), "NORMAL")
+        self.assertEqual(self.nav_and_units(25), (100.0, 30_000.0))
+
+
+class HostJobAlertTests(AuditFixTestCase):
+    """감사 3·6번: 토큰 갱신 실패와 오프사이트 백업 이상은 앱이 읽어 하루 한 번 알린다."""
+
+    def setUp(self):
+        super().setUp()
+        import tempfile
+        from pathlib import Path
+
+        self.run_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.run_dir, ignore_errors=True))
+
+    def write(self, name, **payload):
+        import json
+
+        payload.setdefault("updated_at", MORNING.isoformat())
+        (self.run_dir / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    def run_check(self, now=MORNING):
+        from src.job_handlers import check_host_job_alerts
+
+        check_host_job_alerts(self.conn, str(self.run_dir), now, self.notify)
+
+    def test_token_refresh_alert_is_sent_once_per_day(self):
+        self.write("token_refresh_status.json", consecutive_failures=3, alert=True)
+        self.write("offsite_status.json", ok=True, detail="COPIED_0")
+        self.run_check()
+        self.run_check(MORNING + timedelta(hours=1))
+        self.assertEqual([m for _, m in self.notes], ["KIS 토큰 갱신 이상: 연속 3회 실패"])
+        self.run_check(MORNING + timedelta(days=1))  # 다음 날에는 다시 알린다
+        self.assertEqual(len(self.notes), 2)
+
+    def test_missing_token_status_is_quiet_but_missing_offsite_status_is_not(self):
+        self.run_check()
+        self.assertEqual(len(self.notes), 1)
+        self.assertIn("오프사이트 백업", self.notes[0][1])
+
+    def test_failed_or_stale_offsite_backup_is_reported(self):
+        self.write("offsite_status.json", ok=False, detail="TARGET_UNAVAILABLE")
+        self.run_check()
+        self.assertIn("실패(TARGET_UNAVAILABLE)", self.notes[0][1])
+        self.write("offsite_status.json", ok=True, detail="COPIED_1", updated_at=(MORNING - timedelta(days=4)).isoformat())
+        self.run_check(MORNING + timedelta(days=1))
+        self.assertIn("72시간 넘게", self.notes[1][1])
+
+    def test_healthy_statuses_stay_silent(self):
+        self.write("token_refresh_status.json", consecutive_failures=0, alert=False)
+        self.write("offsite_status.json", ok=True, detail="COPIED_2")
+        self.run_check()
+        self.assertEqual(self.notes, [])
+
+
+class DeferredNoticeTests(AuditFixTestCase):
+    """감사 7번: 손절 알림은 모든 종목의 주문을 낸 뒤에 보낸다(느린 텔레그램이 다음 종목 손절을 늦추지 않게)."""
+
+    def test_notifications_wait_until_every_stop_order_is_sent(self):
+        from src.job_handlers import create_intraday_guard_handler
+
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO universe_assets (ticker, name, category, region, underlying_index, product_type,"
+                " replication_method, status, data_status, added_at, asset_class) VALUES ('229200','x',"
+                "'RISK_ASSET','KR','K2','SPOT_ETF','PHYSICAL','ACTIVE','VALID','t','EQUITY')")
+            self.conn.execute(
+                "INSERT INTO positions (ticker, tracking_status, quantity, avg_buy_price, market_value,"
+                " peak_price_adj, last_synced_at) VALUES ('229200','MANAGED',10,100,1000,100,'t')")
+            self.conn.execute(
+                "INSERT INTO daily_candles (ticker, trade_date, raw_close, adjusted_close, volume, source,"
+                " source_timestamp) VALUES ('229200','2026-11-24',100,100,1000,'KIS','t')")
+        broker = FakeBroker(price=85.0, positions=[Position("069500", 10), Position("229200", 10)])  # 두 종목 모두 고점 100 대비 -15%: 손절선(-10%) 도달
+        orders_sent_when_notified = []
+        handler = create_intraday_guard_handler(
+            self.factory, broker, clock=lambda: MORNING,
+            notify=lambda severity, message: orders_sent_when_notified.append(len(broker.transport.calls)))
+        handler()
+        self.assertEqual(len(broker.transport.calls), 2)
+        self.assertEqual(orders_sent_when_notified, [2, 2])  # 첫 알림도 두 주문이 모두 나간 뒤에 보낸다

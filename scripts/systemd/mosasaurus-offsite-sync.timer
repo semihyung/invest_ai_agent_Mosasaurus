@@ -1,0 +1,9 @@
+[Unit]
+Description=Offsite backup copy every day at 04:30 KST (after the Sunday 03:00 weekly backup)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

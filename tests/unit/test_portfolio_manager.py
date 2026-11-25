@@ -224,3 +224,17 @@ class PortfolioManagerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreviewUsesExecutionSlotRulesTests(unittest.TestCase):
+    """감사 1번: 주말 프리뷰는 월요일 실행과 같은 슬롯 규칙(지역 비중 한도 등)을 보여 준다."""
+
+    def test_global_candidate_over_region_weight_is_not_promised_a_slot(self):
+        from src.portfolio_manager import SlotCandidate, build_weekly_preview, select_final_slots
+
+        ranked = (SlotCandidate("G1", "GLOBAL", "IDX_G"), SlotCandidate("K1", "KR", "IDX_K"))
+        simple = build_weekly_preview("2026-11-27", ranked, parking_ticker="P")
+        self.assertEqual(simple.projected_slots[0].ticker, "G1")  # 단순 규칙은 GLOBAL 45% 를 약속한다
+        real = build_weekly_preview(
+            "2026-11-27", ranked, parking_ticker="P", slots=select_final_slots(ranked))
+        self.assertEqual(real.projected_slots[0].ticker, "K1")  # 실행 규칙: GLOBAL 합계 30% 한도로 제외

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Callable, Mapping, Sequence
 
+from backtest.run_backtest import calculate_cagr, calculate_mdd, calculate_turnover
 from src.portfolio_manager import SlotCandidate, select_final_slots
 from src.quant_engine import (
     CandidateProfile,
@@ -94,22 +95,18 @@ class BacktestRun:
     def cagr(self) -> float:
         """거래일 252일 기준 연복리 수익률입니다."""
         years = max(len(self.equity) - 1, 1) / 252
-        return (self.equity[-1] / self.equity[0]) ** (1 / years) - 1
+        return calculate_cagr(self.equity[0], self.equity[-1], years)
 
     @property
     def mdd(self) -> float:
         """최대 낙폭(음수)입니다."""
-        peak, worst = self.equity[0], 0.0
-        for value in self.equity:
-            peak = max(peak, value)
-            worst = min(worst, value / peak - 1)
-        return worst
+        return calculate_mdd(self.equity)
 
     @property
     def turnover(self) -> float:
         """평균 자산 대비 매매대금 비율의 연환산 값입니다."""
         years = max(len(self.equity) - 1, 1) / 252
-        return self.traded_notional / (sum(self.equity) / len(self.equity)) / years
+        return calculate_turnover(self.traded_notional, sum(self.equity) / len(self.equity)) / years
 
 
 def _iso_week(trade_date: str) -> str:

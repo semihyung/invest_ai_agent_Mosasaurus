@@ -5,6 +5,8 @@ from enum import Enum
 import math
 from typing import Any, Mapping, Sequence
 
+from src.order_manager import MAX_SPREAD_RATIO, nav_deviation_within_limit, spread_ratio
+
 
 def _utc(value: datetime, field_name: str) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
@@ -100,9 +102,9 @@ def validate_quote(
     now: datetime,
     *,
     ttl_seconds: float = 15,
-    max_spread_ratio: float = 0.003,
+    max_spread_ratio: float = MAX_SPREAD_RATIO,
 ) -> bool:
-    """관측·수신 시각, 양방향 호가 및 스프레드 한도를 검증합니다."""
+    """관측·수신 시각, 양방향 호가 및 스프레드 한도를 검증합니다(스프레드 식·한도는 order_manager 와 같은 것)."""
     if (
         freshness_status(snapshot.observed_at, now, ttl_seconds)
         is FreshnessStatus.STALE
@@ -112,11 +114,7 @@ def validate_quote(
         return False
     if snapshot.ask < snapshot.bid:
         return False
-    mid_price = (snapshot.bid + snapshot.ask) / 2
-    if mid_price <= 0:
-        return False
-    spread_ratio = (snapshot.ask - snapshot.bid) / mid_price
-    return spread_ratio <= max_spread_ratio
+    return spread_ratio(snapshot.bid, snapshot.ask) <= max_spread_ratio
 
 
 def validate_nav_deviation(
@@ -140,12 +138,8 @@ def validate_nav_deviation(
         is FreshnessStatus.STALE
     ):
         return False
-    limit = 0.005 if region == "KR" else 0.012 if region == "US" else None
-    if limit is None:
-        raise ValueError("Region must be KR or US.")
-    quote = snapshot.current_price
-    deviation = abs((quote - snapshot.nav) / snapshot.nav)
-    return deviation <= limit
+    # 명세 7.2절: Ask1 기준 괴리율(실제 주문 검증 `order_manager.validate_spread_and_nav` 와 같은 식·한도).
+    return nav_deviation_within_limit(snapshot.ask, snapshot.nav, region=region)
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from src.config import load_config
 from src.db import connect_database, initialize_database
 from src.scheduler_jobs import create_weekly_preview_handler
 from src.universe import load_universe_allowlist, sync_universe_allowlist
@@ -84,11 +85,9 @@ class SchedulerJobTests(unittest.TestCase):
         connection.commit()
         connection.close()
         self.rules = {
-            "portfolio": {
-                "primary_parking_ticker": "423160",
-                "max_order_participation_rate": 0.01,
-                "concentration": {"max_slots_per_region": 2},
-            },
+            # 실제 rules.yaml 의 portfolio 섹션을 그대로 쓴다: 과거 테스트는 max_slots_per_region 을 숫자 2 로 넣어
+            # 실제 설정(지역별 딕셔너리)에서 나던 TypeError 를 놓쳤다.
+            "portfolio": load_config()["portfolio"],
             "momentum": {"min_daily_excess_volatility": 0.000001},
             "universe": {
                 "allowlist_file": str(self.allowlist_path),

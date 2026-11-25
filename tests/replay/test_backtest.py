@@ -1,46 +1,33 @@
-import tempfile
 import unittest
-from pathlib import Path
 
-from backtest.data_loader import load_csv_bars
+from backtest.engine import BacktestRun
 from backtest.run_backtest import (
+    calculate_cagr,
     calculate_mdd,
     calculate_turnover,
-    run_synthetic_backtest,
 )
 from backtest.walk_forward import walk_forward_windows
 
 
 class BacktestTests(unittest.TestCase):
-    def test_loads_valid_csv_history(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "bars.csv"
-            rows = ["trade_date,adjusted_close,volume"]
-            rows.extend(
-                f"2026-01-{day:02d},100,{day * 100000}"
-                for day in range(1, 32)
-            )
-            # Add 200 valid sessions while preserving the first 31 rows.
-            for day in range(32, 201):
-                rows.append(f"2026-{day:03d},100,{day * 100000}")
-            path.write_text("\n".join(rows), encoding="utf-8")
+    def test_engine_metrics_are_the_shared_functions(self):
+        """BacktestRun 의 CAGR·MDD·회전율은 run_backtest 의 단일 구현을 그대로 쓴다(감사 9번)."""
+        equity = (100.0, 110.0, 99.0, 120.0)
+        run = BacktestRun(dates=("a", "b", "c", "d"), equity=equity, trades=3, traded_notional=300.0,
+                          fees_paid=0.0, slippage_cost=0.0, stops=0, rotations=0)
+        years = 3 / 252
+        self.assertAlmostEqual(run.cagr, calculate_cagr(100.0, 120.0, years))
+        self.assertAlmostEqual(run.mdd, calculate_mdd(equity))
+        self.assertAlmostEqual(run.mdd, 99.0 / 110.0 - 1)
+        self.assertAlmostEqual(run.turnover, calculate_turnover(300.0, sum(equity) / 4) / years)
 
-            bars = load_csv_bars(path)
-
-            self.assertGreaterEqual(len(bars), 200)
-
-    def test_calculates_cagr_mdd_and_turnover(self):
-        result = run_synthetic_backtest(
-            10_000_000,
-            [0.01, -0.05, 0.02, 0.03],
-        )
-
-        self.assertLess(result.cagr, 1.0)
-        self.assertLessEqual(result.mdd, 0.0)
-        self.assertGreater(result.turnover_ratio, 0.0)
-        self.assertEqual(result.trades, 4)
+    def test_metric_edge_cases(self):
         self.assertAlmostEqual(calculate_mdd([100, 90, 99, 95]), -0.1)
         self.assertAlmostEqual(calculate_turnover(500, 1000), 0.5)
+        self.assertEqual(calculate_cagr(100.0, 0.0, 1.0), -1.0)
+        self.assertEqual(calculate_mdd([100.0, 0.0]), -1.0)  # 전액 손실 곡선도 계산된다
+        with self.assertRaises(ValueError):
+            calculate_mdd([100.0, -1.0])
 
     def test_walk_forward_creates_training_and_test_windows(self):
         dates = [str(index) for index in range(1008)]

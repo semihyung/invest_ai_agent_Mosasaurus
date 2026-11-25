@@ -3,7 +3,7 @@
 import math
 from datetime import date
 from dataclasses import dataclass
-from typing import Callable, Iterable, Mapping
+from typing import Callable, Iterable, Mapping, Sequence
 
 
 SLOT_WEIGHTS = {"S1": 0.45, "S2": 0.30, "S3": 0.20}
@@ -250,8 +250,13 @@ def build_weekly_preview(
     parking_ticker: str,
     existing_slot_tickers: Mapping[str, str] | None = None,
     max_slots_per_region: int = 2,
+    slots: Sequence[SlotAssignment] | None = None,
 ) -> WeeklyPreview:
-    """완료 일봉 기준 주간 순위, 다음 슬롯과 종목 단위 예상 거래를 만듭니다."""
+    """완료 일봉 기준 주간 순위, 다음 슬롯과 종목 단위 예상 거래를 만듭니다.
+
+    `slots` 를 주면(`select_final_slots` 결과) 그대로 쓴다: 월요일 15:00 실행과 같은 규칙(지역·지역 비중·상관·순위
+    버퍼)으로 계산한 슬롯이어야 주말 브리핑이 실제 집행과 어긋나지 않는다. 생략하면 단순 규칙(`assign_risk_slots`)을 쓴다.
+    """
     if not isinstance(base_candle_date, str):
         raise ValueError("base_candle_date must be an ISO date string.")
     try:
@@ -284,7 +289,7 @@ def build_weekly_preview(
     ):
         raise ValueError("Existing slot tickers must be non-empty strings.")
 
-    projected = assign_risk_slots(
+    projected = list(slots) if slots is not None else assign_risk_slots(
         ranked,
         max_slots_per_region=max_slots_per_region,
     )

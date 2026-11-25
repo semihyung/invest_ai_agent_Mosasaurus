@@ -1,3 +1,9 @@
+# 이 파일의 값은 두 종류입니다(감사 4번).
+#  ① 코드가 읽는 값: portfolio.*, execution.fee_rate·sell_first_deadline·new_order_cutoff, universe.*, corporate_action.*,
+#     account.token_policy.*, momentum.min_daily_excess_volatility, kis.rate_limit_per_second 등.
+#  ② 코드가 같은 값을 상수로 들고 있는 값(손절·낙폭·스프레드·NAV·TTL·텔레그램 한도·시각 등): 코드는 이 파일을 읽지 않으며,
+#     값이 코드 상수와 다르면 부팅 때 CONFIG_INVALID 로 거부됩니다(src/config.py `_CODE_CONSTANTS`). 바꾸려면 코드와 함께 고칩니다.
+#  그 밖의 키(strategy.*, accounting.* 의 설명용 값 등)는 명세와의 대응을 보여 주는 정보 표시용이며 동작에 영향이 없습니다.
 project_name: "mosasaurus"
 version: "3.7.5"
 is_calibrated_by_backtest: false  # 정보 표시용. REAL 전략 게이트는 DB backtest_approvals + strategy_params_hash로 판정(7.1절)

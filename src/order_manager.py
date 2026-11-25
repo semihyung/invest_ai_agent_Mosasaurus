@@ -1166,6 +1166,23 @@ def validate_order_submission_gate(context: RealOrderGateContext) -> bool:
     return context.intent_type is not OrderIntentType.SMOKE_TEST and first_failed_gate(context) is None
 
 
+# 명세 7.2절: 스프레드 한도와 iNAV 괴리 한도(지역별). `rules.yaml` 값은 부팅 때 이 상수와 같은지 검사한다(config._CODE_CONSTANTS).
+MAX_SPREAD_RATIO = 0.003
+NAV_DEVIATION_LIMITS = {"KR": 0.005, "US": 0.012, "GLOBAL": 0.012}
+
+
+def spread_ratio(bid: int, ask: int) -> float:
+    """(Ask1 - Bid1) / 중간가. 주문 검증과 시세 검증(`market_data`)이 같은 식을 쓰도록 한 곳에 둔다."""
+    return (ask - bid) / ((bid + ask) / 2)
+
+
+def nav_deviation_within_limit(ask: int, nav: float, *, region: str) -> bool:
+    """|Ask1 - iNAV| / iNAV 가 지역별 한도 이내인지 봅니다(명세 7.2절: Ask1 기준, KR 0.5%·US/GLOBAL 1.2%)."""
+    if region not in NAV_DEVIATION_LIMITS:
+        raise ValueError("Region must be KR, US or GLOBAL.")
+    return abs((ask - nav) / nav) <= NAV_DEVIATION_LIMITS[region]
+
+
 def validate_spread_and_nav(
     quote: Quote,
     *,
@@ -1174,7 +1191,7 @@ def validate_spread_and_nav(
     """호가 스프레드와 NAV 괴리율을 수치 검증 후 적용합니다."""
     if not isinstance(quote, Quote):
         raise TypeError("quote must be a Quote value.")
-    if region not in ("KR", "US", "GLOBAL"):
+    if region not in NAV_DEVIATION_LIMITS:
         raise ValueError("Region must be KR, US or GLOBAL.")
     if (
         isinstance(quote.bid, bool)
@@ -1187,11 +1204,7 @@ def validate_spread_and_nav(
         return False
     if quote.ask <= quote.bid:
         return False
-    mid_price = (quote.bid + quote.ask) / 2
-    if mid_price <= 0:
-        return False
-    spread_ratio = (quote.ask - quote.bid) / mid_price
-    if spread_ratio > 0.003:
+    if spread_ratio(quote.bid, quote.ask) > MAX_SPREAD_RATIO:
         return False
     if (
         quote.nav is None
@@ -1201,8 +1214,7 @@ def validate_spread_and_nav(
         or quote.nav <= 0
     ):
         return False
-    limit = 0.005 if region == "KR" else 0.012  # US·GLOBAL 은 rules.yaml nav_deviation_limit_us/global 과 같은 0.012
-    return abs((quote.ask - quote.nav) / quote.nav) <= limit
+    return nav_deviation_within_limit(quote.ask, quote.nav, region=region)
 
 
 def allows_buy_submission(

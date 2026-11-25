@@ -66,3 +66,56 @@ class ConfigLoaderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodeConstantParityTests(unittest.TestCase):
+    """감사 4번: 설정에 적힌 값이 코드가 실제로 쓰는 상수와 같은지 확인하고, 어긋나면 부팅을 거부한다."""
+
+    def test_shipped_rules_pass_and_a_changed_stop_is_rejected(self):
+        import copy
+
+        from src.config import ConfigError, load_config, validate_config
+
+        config = load_config()
+        validate_config(config)
+        changed = copy.deepcopy(config)
+        changed["trailing_stop"]["normal"] = -0.08  # 설정만 바꿔도 코드는 -10% 에서 판다
+        with self.assertRaisesRegex(ConfigError, "trailing_stop.normal must equal"):
+            validate_config(changed)
+
+    def test_every_pinned_value_matches_the_code(self):
+        from src import db, net_watchdog, order_executor, order_manager, safety_flags, telegram_bot
+        from src.config import _CODE_CONSTANTS
+        from src.risk_manager import get_drawdown_mode, next_drawdown_stage, trailing_stop_ratio, DrawdownMode
+        import inspect
+
+        actual = {
+            "trailing_stop.normal": trailing_stop_ratio(False),
+            "trailing_stop.training": trailing_stop_ratio(True),
+            "risk.portfolio_drawdown.caution": inspect.signature(get_drawdown_mode).parameters["caution_threshold"].default,
+            "risk.portfolio_drawdown.warning": inspect.signature(get_drawdown_mode).parameters["warning_threshold"].default,
+            "risk.portfolio_drawdown.critical": inspect.signature(get_drawdown_mode).parameters["critical_threshold"].default,
+            "risk.portfolio_drawdown.recovery_buffer": inspect.signature(next_drawdown_stage).parameters["recovery_buffer"].default,
+            "execution.max_spread_ratio": order_manager.MAX_SPREAD_RATIO,
+            "execution.max_spread_ratio_reduce_only": order_executor.MAX_SPREAD_REDUCE_ONLY,
+            "execution.nav_deviation_limit_kr": order_manager.NAV_DEVIATION_LIMITS["KR"],
+            "execution.nav_deviation_limit_us": order_manager.NAV_DEVIATION_LIMITS["US"],
+            "execution.nav_deviation_limit_global": order_manager.NAV_DEVIATION_LIMITS["GLOBAL"],
+            "execution.reduce_only_nav_floor_ratio": order_manager.REDUCE_ONLY_NAV_FLOOR_RATIO,
+            "execution.cancel_confirm_consecutive_matches": inspect.signature(order_manager.cancel_can_finalize).parameters["required_matches"].default,
+            "ttl_seconds.reconciliation": order_executor.RECONCILIATION_TTL_SECONDS,
+            "telegram.confirm_code_length": telegram_bot.CONFIRM_CODE_LENGTH,
+            "telegram.confirm_max_failures": telegram_bot.CONFIRM_MAX_FAILURES,
+            "telegram.confirm_lockout_seconds": int(telegram_bot.CONFIRM_LOCKOUT.total_seconds()),
+            "telegram.max_commands_per_minute": telegram_bot.MAX_COMMANDS_PER_MINUTE,
+            "db.busy_timeout_ms": db._BUSY_TIMEOUT_MS,
+            "db.max_write_tx_ms": int(db._MAX_WRITE_TX_SECONDS * 1000),
+            "host_state.run_file_ttl_seconds": inspect.signature(safety_flags.sync_host_state_flags).parameters["ttl_seconds"].default,
+            "ups.halt_ratio": inspect.signature(safety_flags.sync_host_state_flags).parameters["ups_halt_ratio"].default,
+            "ups.clear_ratio_margin": inspect.signature(safety_flags.sync_host_state_flags).parameters["ups_clear_margin"].default,
+            "net_watchdog.max_reboots_per_hour": inspect.signature(net_watchdog.decide_action).parameters["max_reboots_per_hour"].default,
+            "execution.new_order_cutoff": order_executor.ORDER_WINDOW[1].strftime("%H:%M:%S"),
+            "market.regular_open": order_executor.ORDER_WINDOW[0].strftime("%H:%M:%S"),
+        }
+        for key, value in actual.items():
+            self.assertEqual(_CODE_CONSTANTS[key], value, key)

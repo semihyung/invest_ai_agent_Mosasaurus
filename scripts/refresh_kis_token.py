@@ -61,6 +61,7 @@ def record_refresh_status(run_dir: Path, *, ok: bool, now: datetime, alert_thres
         handle.write(json.dumps(payload))
         handle.flush()
         os.fsync(handle.fileno())
+    os.chmod(temporary, 0o644)  # mkstemp 는 0600: 앱(컨테이너, 다른 uid)이 읽어 경보를 보내야 한다(비밀값 없음)
     os.replace(temporary, path)
     return payload
 

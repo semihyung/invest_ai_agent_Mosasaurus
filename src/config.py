@@ -98,6 +98,30 @@ _KNOWN_SECTIONS = frozenset(
         "host_state",
     }
 )
+# 코드가 상수로 들고 있는 값(감사 4번): 설정 파일에는 같은 값이 적혀 있지만 코드는 설정을 읽지 않는다.
+# 설정만 바꾸면 "바뀐 줄 알지만 동작은 그대로" 이고 전략 해시만 달라져 재승인을 요구하므로, 다르면 부팅을 거부한다.
+# 값을 바꾸려면 코드 상수와 이 표(그리고 이를 확인하는 tests/unit/test_config.py)를 함께 고친다.
+_CODE_CONSTANTS = {
+    "trailing_stop.normal": -0.10, "trailing_stop.training": -0.07,                    # risk_manager
+    "risk.portfolio_drawdown.caution": -0.07, "risk.portfolio_drawdown.warning": -0.10,
+    "risk.portfolio_drawdown.critical": -0.15, "risk.portfolio_drawdown.recovery_buffer": 0.02,
+    "execution.max_spread_ratio": 0.003, "execution.max_spread_ratio_reduce_only": 0.010,  # order_manager·order_executor
+    "execution.nav_deviation_limit_kr": 0.005, "execution.nav_deviation_limit_us": 0.012,
+    "execution.nav_deviation_limit_global": 0.012, "execution.reduce_only_nav_floor_ratio": 0.020,
+    "execution.cancel_confirm_consecutive_matches": 2,
+    "momentum.lookbacks": [20, 60, 120], "momentum.weights": [0.4, 0.4, 0.2],           # quant_engine
+    "ttl_seconds.reconciliation": 300,                                                   # order_executor
+    "telegram.confirm_ttl_seconds": 300, "telegram.confirm_code_length": 8,              # telegram_bot
+    "telegram.confirm_max_failures": 5, "telegram.confirm_lockout_seconds": 1800,
+    "telegram.max_commands_per_minute": 10,
+    "db.busy_timeout_ms": 5000, "db.max_write_tx_ms": 1000,                              # db
+    "host_state.run_file_ttl_seconds": 120, "ups.halt_ratio": 0.20, "ups.clear_ratio_margin": 0.10,  # safety_flags
+    "net_watchdog.max_reboots_per_hour": 1,                                              # net_watchdog
+    "market.morning_prep_time": "08:30:00", "market.regular_open": "09:00:00",           # scheduler·order_executor
+    "market.open_checkpoint_time": "09:10:00", "market.daily_pipeline_time": "15:00:00",
+    "market.order_cancel_sweep_time": "15:14:30", "market.post_close_reconcile_time": "15:40:00",
+    "market.weekly_preview_time": "10:00:00", "execution.new_order_cutoff": "15:10:00",
+}
 # 시각 키는 이 순서대로 증가해야 합니다(마감 타임라인 역전 방지).
 _TIME_ORDER = (
     ("market", "morning_prep_time"),
@@ -206,6 +230,11 @@ def validate_config(config: Mapping[str, Any]) -> None:
     floor = _lookup(config, "momentum.min_daily_excess_volatility")
     if not isinstance(floor, (int, float)) or isinstance(floor, bool) or floor <= 0:
         problems.append("momentum.min_daily_excess_volatility must be positive.")
+
+    # 2-1) 코드 상수와의 일치 검사(설정이 무시되는 키가 조용히 어긋나는 것을 막는다)
+    for key, expected in _CODE_CONSTANTS.items():
+        if _lookup(config, key) != expected:
+            problems.append(f"{key} must equal the value hard-coded in the program ({expected!r}).")
 
     # 3) 폐기 키·알 수 없는 섹션 검사
     for key in _DEPRECATED_KEYS:

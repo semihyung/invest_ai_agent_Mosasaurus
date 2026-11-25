@@ -62,6 +62,15 @@ python -m pytest tests/unit tests/integration tests/replay tests/fault_injection
 테스트는 가짜 데이터와 임시 파일을 사용하며 KIS에 연결하거나 주문하지 않습니다.
 의존성은 `python -m pip install -r requirements.txt`로 설치합니다. 호스트 토큰 갱신기는 외부 `.env`를 직접 읽지 않으므로 `systemd EnvironmentFile=` 등으로 `KIS_APP_KEY`, `KIS_APP_SECRET` 환경 변수를 주입한 뒤 `--trigger morning_prep` 또는 `--trigger recovery`로 실행해야 합니다. systemd 타이머 자체는 아직 구성되지 않았습니다.
 
+## 백테스트 승인 보고서와 오프사이트 백업
+
+- REAL 전략 주문의 필수 조건인 백테스트 승인은 호스트에서 `python -m backtest.run_report --data-dir <CSV 폴더> --universe-history <YAML>` 로
+  보고서(`data/backtests/<run_id>.json`)를 만든 뒤, 출력된 `/approve_backtest <run_id> <sha256>` 를 텔레그램에 입력해 진행합니다.
+  CSV 형식과 유니버스 이력 YAML 은 `backtest/run_report.py` 머리말을 보세요.
+- DB 백업은 SD카드 안에만 두면 카드 고장 때 함께 사라집니다. 호스트 `host.env` 에 `OFFSITE_TARGET`(마운트된 폴더)를 적고
+  `scripts/systemd/mosasaurus-offsite-sync.timer` 를 켜면 `scripts/offsite_sync.sh` 가 매일 새 백업을 체크섬 검증과 함께 복사합니다.
+  실패·정체(72시간)는 앱이 텔레그램으로 알립니다.
+
 ## 비밀 정보 및 안전
 
 - 실제 API 키, 계좌번호, Telegram 토큰 및 OAuth 토큰 캐시를 코드·테스트·Git에 넣지 마세요. 비밀값을 채팅으로 보내지 마세요.

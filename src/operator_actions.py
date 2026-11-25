@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.config import strategy_params_hash
+from src.performance import MIN_UNITS, SnapshotRow, restate_after_late_flow
 from src.safety_flags import (
     active_codes,
     clear_flag,
@@ -286,6 +287,65 @@ def clear_halt(
     return cleared
 
 
+def _restate_performance_for_flow(
+    connection: sqlite3.Connection, *, flow_id: int, flow_type: str
+) -> None:
+    """확정된 현금흐름을 발생일 직전 단위가격으로 반영해 `daily_portfolio` 스냅샷을 다시 계산합니다(명세 6.2절).
+
+    입출금은 단위 수를 `금액 / 직전 단위가격` 만큼 바꾸고, 분배·조정은 단위 수 없이 성과에 포함합니다.
+    발생일 이후 스냅샷이 아직 없으면(분류가 마감 스냅샷보다 먼저) 가장 최근 스냅샷의 단위 수만 조정해
+    다음 마감이 이어받게 합니다. 발생일 이전 스냅샷이 없으면 최초 평가액에 이미 포함된 흐름이라 손대지 않습니다.
+    """
+    flow = connection.execute(
+        "SELECT flow_date, amount FROM cash_flows WHERE id = ?", (flow_id,)
+    ).fetchone()
+    rows = connection.execute(
+        "SELECT snapshot_date, total_equity, unclassified_excluded_amount, units_outstanding, "
+        "flow_adjusted_unit_nav, hwm_flow_adjusted FROM daily_portfolio "
+        "WHERE units_outstanding > 0 AND flow_adjusted_unit_nav IS NOT NULL ORDER BY snapshot_date"
+    ).fetchall()
+    if flow is None or not rows:
+        return
+    amount, flow_date = float(flow["amount"]), flow["flow_date"]
+    snapshots = [
+        SnapshotRow(r["snapshot_date"], float(r["total_equity"]), float(r["unclassified_excluded_amount"]),
+                    float(r["units_outstanding"]), float(r["hwm_flow_adjusted"]))
+        for r in rows
+    ]
+    before = [s for s in snapshots if s.snapshot_date < flow_date]
+    after = [s for s in snapshots if s.snapshot_date >= flow_date]
+    adjusts_units = flow_type in ("DEPOSIT", "WITHDRAWAL")
+    if not after:
+        if adjusts_units:  # 마감 스냅샷 전에 분류: 가장 최근 스냅샷의 단위 수만 조정(다음 마감이 이어받음)
+            last = rows[-1]
+            units = float(last["units_outstanding"]) + amount / float(last["flow_adjusted_unit_nav"])
+            if units <= MIN_UNITS:
+                raise ValueError("Restated unit count is not positive.")
+            connection.execute(
+                "UPDATE cash_flows SET units_delta = ?, unit_price_applied = ?, applied_snapshot_date = ? WHERE id = ?",
+                (units - float(last["units_outstanding"]), float(last["flow_adjusted_unit_nav"]),
+                 last["snapshot_date"], flow_id))
+            connection.execute("UPDATE daily_portfolio SET units_outstanding = ? WHERE snapshot_date = ?",
+                               (units, last["snapshot_date"]))
+        return
+    if adjusts_units and not before:
+        return
+    reference_nav, delta_units, restated = restate_after_late_flow(
+        snapshots, flow_date=flow_date, amount=amount, flow_type=flow_type,
+        hwm_before_flow=before[-1].hwm if before else 0.0)
+    if adjusts_units and (reference_nav is None or delta_units is None):
+        raise ValueError("The unit price before the cash flow is unknown; restate manually.")
+    for row in restated:
+        connection.execute(
+            "UPDATE daily_portfolio SET units_outstanding = ?, unclassified_excluded_amount = ?, "
+            "flow_adjusted_unit_nav = ?, hwm_flow_adjusted = ?, twr_cumulative = ? WHERE snapshot_date = ?",
+            (row.units, int(round(row.excluded_amount)), row.unit_nav, row.hwm, row.unit_nav / 100.0 - 1.0,
+             row.snapshot_date))
+    connection.execute(
+        "UPDATE cash_flows SET units_delta = ?, unit_price_applied = ?, applied_snapshot_date = ? WHERE id = ?",
+        (delta_units, reference_nav, after[0].snapshot_date, flow_id))
+
+
 def classify_cash_flow(
     connection: sqlite3.Connection,
     *,
@@ -333,6 +393,9 @@ def classify_cash_flow(
                 """,
                 (flow_type, _iso(now), action_id, flow_id),
             )
+            # 같은 트랜잭션에서 성과 지표를 다시 계산한다: 분류가 끝나면 미분류 보정(평가액에서 빼 주던 금액)이
+            # 사라지므로 단위 수를 함께 고치지 않으면 출금이 가짜 낙폭(→ 자동 EMERGENCY), 입금이 가짜 수익이 된다.
+            _restate_performance_for_flow(connection, flow_id=flow_id, flow_type=flow_type)
         _audit(connection, actor="operator", action="CLASSIFY_FLOW", target=str(flow_id),
                detail={"flow_type": flow_type}, correlation_id=action_id, now=now)
     remaining = connection.execute(

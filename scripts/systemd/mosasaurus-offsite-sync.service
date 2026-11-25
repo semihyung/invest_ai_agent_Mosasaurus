@@ -1,0 +1,9 @@
+[Unit]
+Description=Copy DB backups off the SD card (see scripts/offsite_sync.sh)
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/mosasaurus
+EnvironmentFile=/home/pi/.secrets/mosasaurus/host.env
+ExecStart=/bin/sh scripts/offsite_sync.sh

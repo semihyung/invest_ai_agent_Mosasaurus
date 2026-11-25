@@ -6,9 +6,11 @@
 `order_executor.submit_sell` 한 곳만 호출합니다.
 """
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Callable, Protocol
 
 from src.cash_recon import (
@@ -196,9 +198,14 @@ def create_intraday_guard_handler(
     last_recon: list[datetime] = []
 
     def handler() -> None:
-        """스탑 감시 한 틱: 보유 종목을 점검하고 스탑 도달 시 매도 또는 의무 기록을 한다."""
+        """스탑 감시 한 틱: 보유 종목을 점검하고 스탑 도달 시 매도 또는 의무 기록을 한다.
+
+        알림은 모아 두었다가 모든 종목의 주문을 낸 뒤에 보낸다: 텔레그램이 안 될 때 알림 전송(최대 10초)이
+        종목마다 끼어들면 뒤쪽 종목의 손절이 그만큼 늦어진다(급락장 + 통신 장애가 겹치는 경우).
+        """
         now = clock()
         connection = connection_factory()
+        notes: list[tuple[str, str]] = []
         try:
             # 4.4절: 보유 종목 수 × 1콜이 초당 한도를 넘으면 폴링 주기를 자동 연장하고 /health 에 표시한다.
             held = connection.execute("SELECT COUNT(*) FROM positions WHERE tracking_status = 'MANAGED' "
@@ -218,7 +225,7 @@ def create_intraday_guard_handler(
                 last_recon[:] = [now]
                 try:  # 7.1절 게이트 2: 마지막 성공 대조 300초 TTL 을 유지한다(장중 2분 주기)
                     if reconcile_intraday(connection, broker, now) == "CONFIRMED":
-                        _safe_notify(notify, "CRITICAL", "계좌 불일치 확정 → SAFE_HALT(ACCOUNT_MISMATCH)")
+                        notes.append(("CRITICAL", "계좌 불일치 확정 → SAFE_HALT(ACCOUNT_MISMATCH)"))
                 except Exception as error:  # noqa: BLE001 - 조회 실패는 STALE(일시) 처리, 다음 주기에 재시도
                     _mark_stale(connection, now, f"intraday_recon:{type(error).__name__}")
             if not last_dd or (now - last_dd[0]).total_seconds() >= 60:
@@ -226,7 +233,7 @@ def create_intraday_guard_handler(
                 try:  # 6.2절: 장중 유량 보정 낙폭 감시 — CRITICAL(-15%) 도달 시 EMERGENCY 자동 전이
                     drawdown = intraday_drawdown(connection, broker.total_equity())
                     if drawdown is not None and auto_emergency_if_critical(connection, drawdown, now):
-                        _safe_notify(notify, "CRITICAL", f"낙폭 {drawdown * 100:.1f}%: EMERGENCY 자동 발동(위험 축소 매도만 허용)")
+                        notes.append(("CRITICAL", f"낙폭 {drawdown * 100:.1f}%: EMERGENCY 자동 발동(위험 축소 매도만 허용)"))
                 except Exception:  # noqa: BLE001 - 잔고 조회 실패는 STALE 처리 대상이 아니라 다음 주기에 재시도
                     pass
             if flags.emergency_mode or _emergency_by_drawdown(connection):
@@ -258,7 +265,7 @@ def create_intraday_guard_handler(
                                             reason="TRAILING_STOP_AFTER_CUTOFF", source_event_id=event_id, now=now):
                         msg = f"{ticker} 스탑 도달(15:10 이후): 주문 없이 매도 의무 기록, 익일 09:10 재매도"
                         _log(connection, "intraday_guard", "STOP_AFTER_CUTOFF", "CRITICAL", msg, now)
-                        _safe_notify(notify, "CRITICAL", msg)
+                        notes.append(("CRITICAL", msg))
                     continue
                 kind = (OrderKind.PROTECTIVE_EXIT_SELL if flags.is_safe_halt else OrderKind.REDUCE_ONLY_SELL)
                 result = submit_sell(
@@ -274,11 +281,13 @@ def create_intraday_guard_handler(
                 if result != "DUPLICATE":
                     msg = f"{ticker} 트레일링 스탑 → {result}"
                     _log(connection, "intraday_guard", "STOP_TRIGGERED", "CRITICAL", msg, now)
-                    _safe_notify(notify, "CRITICAL", msg)
+                    notes.append(("CRITICAL", msg))
             if rows and not failed:
                 _clear_transient_stale(connection, now)
         finally:
             connection.close()
+            for severity, message in notes:
+                _safe_notify(notify, severity, message)
 
     return handler
 
@@ -303,6 +312,7 @@ def create_open_checkpoint_handler(
         """09:10 점검: 열린 매도 의무를 재매도하거나 보유가 없으면 닫는다."""
         now = clock()
         connection = connection_factory()
+        notes: list[tuple[str, str]] = []  # 모든 의무의 주문을 낸 뒤에 보낸다(알림 지연이 다음 종목 재매도를 늦추지 않게)
         try:
             trade_date = now.astimezone(KST).date().isoformat()
             for ob in connection.execute(
@@ -330,9 +340,11 @@ def create_open_checkpoint_handler(
                 if result != "DUPLICATE":
                     msg = f"{ob['ticker']} 매도 의무 재주문({remaining}주) → {result}"
                     _log(connection, "open_checkpoint", "OBLIGATION_RETRY", "WARN", msg, now)
-                    _safe_notify(notify, "WARN", msg)
+                    notes.append(("WARN", msg))
         finally:
             connection.close()
+            for severity, message in notes:
+                _safe_notify(notify, severity, message)
 
     return handler
 
@@ -673,6 +685,48 @@ def create_post_close_reconcile_handler(
 
 # ───────────────────────── safety_flag_auto_clear / 24h 재경보 ─────────────────────────
 
+def _host_job_problem(run_dir: str, name: str, now: datetime, max_age_hours: float | None) -> str | None:
+    """호스트 작업(토큰 갱신·오프사이트 백업)의 상태 파일을 읽어 문제가 있으면 한 줄 사유를, 정상이면 None 을 돌려준다."""
+    try:
+        payload = json.loads((Path(run_dir) / name).read_text(encoding="utf-8"))
+        updated = datetime.fromisoformat(payload["updated_at"])
+    except FileNotFoundError:
+        return "상태 파일 없음(호스트 타이머가 설치·실행됐는지 확인)"
+    except (OSError, ValueError, KeyError, TypeError):
+        return "상태 파일을 읽을 수 없음"
+    if updated.tzinfo is None:
+        return "상태 파일 시각 형식 오류"
+    if max_age_hours is not None and (now - updated).total_seconds() > max_age_hours * 3600:
+        return f"{max_age_hours:g}시간 넘게 갱신되지 않음"
+    if payload.get("alert") is True:
+        return f"연속 {payload.get('consecutive_failures', '?')}회 실패"
+    if payload.get("ok") is False:
+        return f"실패({payload.get('detail', '?')})"
+    return None
+
+
+def check_host_job_alerts(connection: sqlite3.Connection, run_dir: str, now: datetime, notify: Notify) -> None:
+    """토큰 갱신 실패와 오프사이트 백업 실패·정체를 하루 한 번만 텔레그램으로 알린다(호스트 상태 파일, 감사 3·6번).
+
+    토큰 갱신기는 연속 3회 실패하면 `alert=true` 를 쓴다. 토큰이 만료되어 멈추기 전에 알아챌 수 있어야 한다.
+    토큰 상태 파일이 없는 것은 갱신 타이머가 아직 한 번도 돌지 않은 것이므로 알리지 않는다(만료 시 정지 원인이 따로 있다).
+    """
+    today = now.astimezone(KST).date().isoformat()
+    for key, name, label, max_age, missing_is_problem in (
+        ("token_refresh", "token_refresh_status.json", "KIS 토큰 갱신", None, False),
+        ("offsite_backup", "offsite_status.json", "오프사이트 백업", 72, True),
+    ):
+        problem = _host_job_problem(run_dir, name, now, max_age)
+        if problem is None or (problem.startswith("상태 파일 없음") and not missing_is_problem):
+            continue
+        row = connection.execute('SELECT value FROM system_state WHERE "key" = ?', (f"host_alert:{key}",)).fetchone()
+        if row is not None and row[0] == today:
+            continue
+        _set_state_kv(connection, f"host_alert:{key}", today, now)
+        _log(connection, "safety", "HOST_JOB_ALERT", "WARN", f"{label}: {problem}", now)
+        _safe_notify(notify, "WARN", f"{label} 이상: {problem}")
+
+
 def create_safety_maintenance_handler(
     connection_factory: Callable[[], sqlite3.Connection],
     *,
@@ -690,6 +744,7 @@ def create_safety_maintenance_handler(
         try:
             if run_dir:
                 sync_host_state_flags(connection, run_dir, now=now)
+                check_host_job_alerts(connection, run_dir, now, notify)
             until = connection.execute("SELECT value FROM system_state WHERE \"key\" = 'training_until'").fetchone()
             mode = connection.execute("SELECT value, updated_at FROM system_state WHERE \"key\" = 'training_mode'").fetchone()
             if mode and mode[0] == "true" and not (until and until[0]):

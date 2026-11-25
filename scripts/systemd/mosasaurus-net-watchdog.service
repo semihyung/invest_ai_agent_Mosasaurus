@@ -5,4 +5,7 @@ Description=Mosasaurus network watchdog
 Type=oneshot
 User=root
 WorkingDirectory=/home/pi/mosasaurus
+# 봇이 쓰는 KIS 서버(PAPER). REAL 로 전환할 때는 openapi.koreainvestment.com / :9443 으로 함께 바꾼다.
+Environment=KIS_HOST=openapivts.koreainvestment.com
+Environment=KIS_URL=https://openapivts.koreainvestment.com:29443
 ExecStart=/bin/sh scripts/net_watchdog.sh

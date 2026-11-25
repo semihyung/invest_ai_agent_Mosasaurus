@@ -102,7 +102,7 @@ class MarketDataTests(unittest.TestCase):
         us_snapshot = IntradaySnapshot(
             ticker="000001",
             bid=10000,
-            ask=10010,
+            ask=10110,  # 명세 7.2절: 괴리율은 Ask1 기준(order_manager 의 실제 주문 규칙과 같은 기준)
             current_price=10110,
             nav=10000.0,
             observed_at=self.now,
@@ -118,7 +118,7 @@ class MarketDataTests(unittest.TestCase):
                 IntradaySnapshot(
                     ticker="000001",
                     bid=10000,
-                    ask=10010,
+                    ask=10200,
                     current_price=10200,
                     nav=10000.0,
                     observed_at=self.now,
@@ -481,3 +481,21 @@ class CorporateActionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SingleSpreadAndNavRuleTests(unittest.TestCase):
+    """감사 8번: 시세 검증(market_data)과 주문 검증(order_manager)은 같은 스프레드·NAV 규칙을 쓴다."""
+
+    def test_both_paths_agree_for_every_region(self):
+        from src.order_manager import Quote, validate_spread_and_nav
+
+        now = datetime(2026, 11, 22, 6, 0, tzinfo=UTC)
+        for region in ("KR", "US", "GLOBAL"):
+            for ask in (10010, 10050, 10060, 10120, 10125, 10200):
+                bid = ask - 10  # 스프레드 0.1% 로 고정해 NAV 괴리만 달라지게 한다
+                snapshot = IntradaySnapshot("423160", bid, ask, ask, 10000.0, now, now, now, now)
+                self.assertEqual(
+                    validate_nav_deviation(snapshot, now, region=region),
+                    validate_spread_and_nav(Quote(bid, ask, 10000.0), region=region),
+                    (region, ask),
+                )

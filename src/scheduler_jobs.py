@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from src.portfolio_manager import SlotCandidate, build_weekly_preview
+from src.portfolio_manager import SlotCandidate, build_weekly_preview, select_final_slots
 from src.quant_engine import CandidateProfile, assess_risk_candidate, rank_candidates
 from src.scheduler import KST, ScheduleJob
 from src.universe import has_approved_classification, load_universe_allowlist
@@ -366,6 +366,20 @@ def create_weekly_preview_handler(
                     )
 
             ranked = rank_candidates(candidates)
+            from src.daily_pipeline import db_correlation  # 지연 import: daily_pipeline 이 job_handlers → 이 모듈을 부른다
+
+            concentration = rules["portfolio"]["concentration"]
+            # 월요일 15:00 실행(daily_pipeline)과 같은 슬롯 규칙으로 계산한다(지역별 한도·지역 비중·상관·순위 버퍼).
+            projected_slots = select_final_slots(
+                [by_ticker[item.ticker] for item in ranked],
+                held_tickers=held_tickers,
+                hold_rank_buffer=int(rules["portfolio"]["hold_rank_buffer"]),
+                max_slots_per_region=concentration["max_slots_per_region"],
+                max_region_weight=concentration["max_region_weight"],
+                max_pairwise_correlation=float(concentration["max_pairwise_correlation_60d"]),
+                correlation=db_correlation(connection),
+                slot_weights=rules["portfolio"]["slot_weights"],
+            )
             existing_slots = {
                 row["slot_id"]: row["ticker"]
                 for row in connection.execute(
@@ -377,9 +391,7 @@ def create_weekly_preview_handler(
                 (by_ticker[item.ticker] for item in ranked),
                 parking_ticker=parking_ticker,
                 existing_slot_tickers=existing_slots,
-                max_slots_per_region=int(
-                    rules["portfolio"]["concentration"]["max_slots_per_region"]
-                ),
+                slots=projected_slots,
             )
             payloads = (
                 json.dumps(

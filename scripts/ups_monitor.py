@@ -53,6 +53,8 @@ def write_atomic(path: Path, payload: dict, *, now: datetime) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        # mkstemp 는 0600 으로 만든다: 컨테이너(uid 10001)가 읽기 전용으로 읽어야 하므로 열어 둔다(비밀값 없음).
+        os.chmod(temporary, 0o644)
         os.replace(temporary, path)
     except BaseException:
         os.unlink(temporary)

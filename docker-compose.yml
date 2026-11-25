@@ -23,6 +23,8 @@ services:
       TOKEN_CACHE_PATH: /run/secrets/token.json
       APPROVALS_DIR: /run/approvals
       HOST_RUN_DIR: /app/run
+      # `python -m backtest.run_report` 가 호스트 ./data/backtests 에 쓴 승인 보고서를 `/approve_backtest` 가 읽는다.
+      BACKTEST_DIR: /app/data/backtests
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data

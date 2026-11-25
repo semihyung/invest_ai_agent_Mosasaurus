@@ -6,8 +6,10 @@ set -eu
 
 REPO_DIR="${REPO_DIR:-/home/pi/mosasaurus}"
 RUN_DIR="${HOST_RUN_DIR:-$REPO_DIR/run}"
-KIS_HOST="${KIS_HOST:-openapi.koreainvestment.com}"          # 환경(PAPER/REAL)에 맞게 service 에서 지정
-KIS_URL="${KIS_URL:-https://openapi.koreainvestment.com:9443}"
+# 기본값은 봇이 실제로 쓰는 모의투자(PAPER) 서버다(deployment.environment). REAL 로 바꾸면 service 의
+# Environment= 로 KIS_HOST·KIS_URL 도 함께 바꾼다. 예전 기본값(실전 서버)은 모의 서버 장애를 못 잡았다.
+KIS_HOST="${KIS_HOST:-openapivts.koreainvestment.com}"
+KIS_URL="${KIS_URL:-https://openapivts.koreainvestment.com:29443}"
 IFACE_RESTART_CMD="${IFACE_RESTART_CMD:-systemctl restart NetworkManager}"
 mkdir -p "$RUN_DIR"
 failure_file="$RUN_DIR/net_failures"
@@ -19,8 +21,12 @@ check_network() {
     if nslookup "$KIS_HOST" "$resolver" >/dev/null 2>&1; then dns_ok=0; break; fi
   done
   [ "$dns_ok" -eq 0 ] || { echo "DNS 점검 실패"; return 1; }
-  curl -fsS --connect-timeout 5 --max-time 10 "$KIS_URL" >/dev/null 2>&1 \
-    || { echo "KIS HTTPS 점검 실패"; return 1; }
+  # 서버가 어떤 HTTP 응답이든 돌려주면 네트워크는 정상이다. `curl -f` 는 루트 주소의 404 같은 응답을 실패로 보아
+  # 멀쩡한 네트워크에서 장외 재부팅을 반복하게 만들 수 있다. 연결·TLS 실패일 때만 코드가 000 이다.
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "$KIS_URL" 2>/dev/null || true)"
+  case "$code" in
+    ""|000) echo "KIS HTTPS 점검 실패"; return 1 ;;
+  esac
   return 0
 }
 
