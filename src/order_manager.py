@@ -418,7 +418,7 @@ class OrderSubmissionResult:
 def submit_recorded_limit_order(
     transport: LimitOrderTransport,
     *,
-    gate_context: RealOrderGateContext,
+    gate_context: "RealOrderGateContext",
     ticker: str,
     side: OrderSide,
     quantity: int,
@@ -891,7 +891,7 @@ def supersede_exit_obligation(
     connection: sqlite3.Connection,
     *,
     obligation_id: str,
-    new_obligation: ExitObligation,
+    new_obligation: "ExitObligation",
     created_at: datetime,
 ) -> None:
     """필요 수량이 바뀌면 기존 의무를 `SUPERSEDED` 로 닫고 같은 트랜잭션에서 새 `OPEN` 을 만듭니다."""
