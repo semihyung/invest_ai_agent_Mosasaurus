@@ -25,6 +25,32 @@ class SellMutualExclusionTests(HandlerTestCase):
         self.assertEqual(self.count("SELECT COUNT(*) FROM exit_obligations"), 0)
 
 
+class GuardPollIntervalTests(HandlerTestCase):
+    def test_interval_is_extended_and_recorded_when_holdings_exceed_the_rate_limit(self):
+        from datetime import timedelta
+        for index in range(12):
+            self.conn.execute(
+                "INSERT INTO positions (ticker, tracking_status, quantity, avg_buy_price, market_value, peak_price_adj,"
+                " last_synced_at) VALUES (?, 'MANAGED', 1, 1, 1, 1, 't')", (f"9000{index:02d}",))
+        self.conn.commit()
+        times = [MORNING]
+        broker = FakeBroker(price=100.0)
+        calls = []
+        original = broker.last_price
+        broker.last_price = lambda ticker: calls.append(ticker) or original(ticker)
+        handler = create_intraday_guard_handler(self.factory, broker, clock=lambda: times[0], rate_per_second=1.0)
+        handler()
+        first = len(calls)
+        times[0] = MORNING + timedelta(seconds=10)
+        handler()                      # 13초 주기라 10초 뒤는 건너뜀
+        self.assertEqual(len(calls), first)
+        times[0] = MORNING + timedelta(seconds=13)
+        handler()
+        self.assertGreater(len(calls), first)
+        self.assertEqual(self.conn.execute(
+            "SELECT value FROM system_state WHERE \"key\" = 'guard_poll_interval_seconds'").fetchone()[0], "13")  # 기본 보유 1종목 + 12종목
+
+
 class DatabaseSettingsTests(HandlerTestCase):
     def test_connections_use_the_specified_busy_timeout(self):
         connection = self.factory()

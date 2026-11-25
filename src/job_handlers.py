@@ -23,6 +23,7 @@ from src.order_executor import (
 from src.order_manager import OrderStatus, orders_due_for_cancel, persist_order_transition, void_exit_obligation
 from src.order_policy import OrderKind
 from src.order_sync import sync_orders
+from src.rate_limit import guard_poll_interval
 from src.performance import (
     PerformanceState, TWRQualityStatus, initialize_flow_adjusted_performance, rebase_hwm,
     update_flow_adjusted_performance,
@@ -82,6 +83,18 @@ def _mark_stale(connection: sqlite3.Connection, now: datetime, why: str) -> None
     raise_flag(connection, "BUY_BLOCK", "ACCOUNT_DATA_STALE", now=now, detail=why[:200])
 
 
+def _set_guard_interval(connection: sqlite3.Connection, interval: int, now: datetime) -> None:
+    """현재 스탑 감시 폴링 주기(초)를 기록한다(10초 초과 = 한도 때문에 연장됨)."""
+    row = connection.execute("SELECT value FROM system_state WHERE \"key\" = 'guard_poll_interval_seconds'").fetchone()
+    if row is not None and row[0] == str(interval):
+        return
+    with connection:
+        connection.execute(
+            "INSERT INTO system_state (\"key\", value, updated_at) VALUES ('guard_poll_interval_seconds', ?, ?) "
+            "ON CONFLICT(\"key\") DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            (str(interval), now.isoformat()))
+
+
 # ───────────────────────── intraday_guard / intraday_guard_alert_only ─────────────────────────
 
 def create_intraday_guard_handler(
@@ -92,6 +105,7 @@ def create_intraday_guard_handler(
     notify: Notify = _noop,
     protective_enabled: bool = True,
     alert_only_from: time = time(15, 10),
+    rate_per_second: float = 1.0,
 ) -> Callable[[], None]:
     """보유 종목의 트레일링 스탑(-10%/훈련 -7%)을 감시합니다(6.1절).
 
@@ -100,10 +114,20 @@ def create_intraday_guard_handler(
     `OPEN` 의무가 있는 종목은 의무 재주문이 담당하므로 건너뜁니다.
     """
 
+    last_run: list[datetime] = []
+
     def handler() -> None:
         now = clock()
         connection = connection_factory()
         try:
+            # 4.4절: 보유 종목 수 × 1콜이 초당 한도를 넘으면 폴링 주기를 자동 연장하고 /health 에 표시한다.
+            held = connection.execute("SELECT COUNT(*) FROM positions WHERE tracking_status = 'MANAGED' "
+                                      "AND quantity > 0").fetchone()[0]
+            interval = guard_poll_interval(held, rate_per_second)
+            if last_run and (now - last_run[0]).total_seconds() < interval - 0.5:
+                return
+            last_run[:] = [now]
+            _set_guard_interval(connection, interval, now)
             trade_date = now.astimezone(KST).date().isoformat()
             alert_only = now.astimezone(KST).time() >= alert_only_from
             flags = load_risk_flags(connection, protective_exit_enabled=protective_enabled)

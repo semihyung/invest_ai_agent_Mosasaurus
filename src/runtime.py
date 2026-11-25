@@ -28,6 +28,7 @@ from src.main import RuntimeDependencies
 from src.morning_prep import create_morning_prep_handler
 from src.ops_jobs import build_notifier, create_daily_briefing_handler, create_weekly_maintenance_handler
 from src.order_manager import create_paper_order_transport
+from src.rate_limit import PriorityRateLimiter, RateLimitedBroker
 from src.reconciliation import OrderSnapshot, Position, ReconciliationResult, reconcile_account_state
 from src.scheduler import KST, ScheduleJob
 from src.universe import load_universe_allowlist, scheduled_ex_dates
@@ -101,7 +102,11 @@ def build_dependencies(
         finally:
             connection.close()
 
-    broker = KisBroker(client, transport, account_number=account, order_lookup=order_lookup)
+    rate = float(cfg["kis"]["rate_limit_per_second"]["PAPER"])  # type: ignore[index]
+    # 모든 KIS 호출은 프로세스 단일 우선순위 한도기를 지난다(주문·취소·대조 > 스탑 감시 > 기타).
+    broker = RateLimitedBroker(
+        KisBroker(client, transport, account_number=account, order_lookup=order_lookup),
+        PriorityRateLimiter(rate))
     protective = bool(cfg["risk"]["safe_halt"]["protective_exit"]["enabled"])  # type: ignore[index]
 
     def reconcile_account() -> ReconciliationResult:
@@ -134,7 +139,8 @@ def build_dependencies(
         except (ValueError, KeyError, OSError):
             return set()
 
-    guard = create_intraday_guard_handler(connection_factory, broker, notify=notify, protective_enabled=protective)
+    guard = create_intraday_guard_handler(
+        connection_factory, broker, notify=notify, protective_enabled=protective, rate_per_second=rate)
     safety = create_safety_maintenance_handler(connection_factory, run_dir=env.get("HOST_RUN_DIR"), notify=notify)
     ticks = {"n": 0}
 

@@ -141,7 +141,10 @@ def build_command_actions(
         last = _state(c, "last_reconciliation_at") or "없음"
         return (f"대조 상태: {_state(c, 'reconciliation_ok') or '미확인'} / 마지막 대조: {last}\n"
                 f"주문 잠금: {_state(c, 'scheduler_order_lock') or '미설정'} / "
-                f"SAFE_HALT 원인: {', '.join(active_halt_reasons(c)) or '없음'}")
+                f"SAFE_HALT 원인: {', '.join(active_halt_reasons(c)) or '없음'}\n"
+                f"스탑 감시 주기: {_state(c, 'guard_poll_interval_seconds') or '10'}초"
+                + (" (한도로 연장됨: 스탑 판정이 그만큼 지연될 수 있음)"
+                   if int(_state(c, 'guard_poll_interval_seconds') or 10) > 10 else ""))
 
     def reconcile(c, args, now):
         if args[1:] == ["adopt"]:
