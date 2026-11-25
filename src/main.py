@@ -1,9 +1,12 @@
 """복구 게이트를 먼저 통과한 런타임만 스케줄러와 워치독을 시작합니다."""
 
 import os
+import signal
 import sqlite3
 import sys
 import threading
+import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,8 +74,14 @@ def run_agent(
     *,
     stop_event: threading.Event,
     heartbeat_interval_seconds: float = 10.0,
+    recovery_retry_seconds: float | None = 600.0,
+    full_db_check_interval_seconds: float = 3600.0,
 ) -> BootRecoveryResult:
-    """DB·토큰·계좌 복구와 작업 콜백 검증 후에만 스케줄러를 실행합니다."""
+    """DB·토큰·계좌 복구와 작업 콜백 검증 후에만 스케줄러를 실행합니다.
+
+    복구가 실패하면 `recovery_retry_seconds`(명세 9.1절 10분)마다 다시 시도합니다: 자동 해제 원인(토큰 갱신 전
+    부팅 등)은 시간이 지나면 풀리는데, 재시도가 없으면 스케줄러가 영영 시작되지 않습니다. `None` 이면 한 번만 시도합니다.
+    """
     if not isinstance(dependencies, RuntimeDependencies):
         raise TypeError("dependencies must be a RuntimeDependencies value.")
     if not isinstance(stop_event, threading.Event):
@@ -93,21 +102,29 @@ def run_agent(
             connection_factory=connection_factory,
             market_is_open=dependencies.market_is_open,
         )
-        recovery = boot_recovery(
-            connection,
-            token_cache,
-            reconcile_account=dependencies.reconcile_account,
-            config=load_config(),
-            run_dir=os.environ.get("HOST_RUN_DIR"),
-        )
-        if not recovery.recovery_ok:
-            return recovery
+        while True:
+            recovery = boot_recovery(
+                connection,
+                token_cache,
+                reconcile_account=dependencies.reconcile_account,
+                config=load_config(),
+                run_dir=os.environ.get("HOST_RUN_DIR"),
+            )
+            if recovery.recovery_ok:
+                break
+            # 중지 요청이 오거나 재시도가 꺼져 있으면 실패 결과를 그대로 돌려준다(스케줄러는 시작하지 않음).
+            if recovery_retry_seconds is None or stop_event.wait(recovery_retry_seconds):
+                return recovery
         scheduler.start()
         health_failure_seen = False
+        last_full_check = time.monotonic()  # 부팅 복구가 방금 전체 무결성 검사를 했다
         try:
             while not stop_event.is_set():
                 snapshot = dependencies.health_snapshot()
-                healthy = probe_database(connection_factory) and is_healthy(snapshot)
+                full_check = time.monotonic() - last_full_check >= full_db_check_interval_seconds
+                if full_check:
+                    last_full_check = time.monotonic()
+                healthy = probe_database(connection_factory, full_check=full_check) and is_healthy(snapshot)
                 if healthy:
                     heartbeat_connection = connection_factory()
                     try:
@@ -183,9 +200,20 @@ def main(
         return 0 if result.recovery_ok else 2
     # Telegram 폴링은 메인 스레드(시그널 처리)에서, 에이전트(스케줄러·감시 루프)는 작업 스레드에서 실행한다.
     outcome: list[BootRecoveryResult] = []
-    worker = threading.Thread(
-        target=lambda: outcome.append(run_agent(database_path, cache, dependencies, stop_event=stop)),
-        name="mosasaurus-agent", daemon=False)
+
+    def run_worker() -> None:
+        """에이전트를 실행한다. 예외로 죽으면 프로세스 전체를 종료시켜 컨테이너가 재시작되게 한다.
+
+        그냥 두면 텔레그램 수신만 계속 돌아 `/status` 는 정상으로 답하지만 스케줄러·손절 감시는 멈춘 채 방치된다.
+        """
+        try:
+            outcome.append(run_agent(database_path, cache, dependencies, stop_event=stop))
+        except BaseException:  # noqa: BLE001 - 어떤 종료든 원인을 남기고 프로세스를 내린다
+            traceback.print_exc()
+            if not stop.is_set():
+                os.kill(os.getpid(), signal.SIGTERM)  # 메인 스레드의 텔레그램 폴링이 정상 종료 경로를 탄다
+
+    worker = threading.Thread(target=run_worker, name="mosasaurus-agent", daemon=False)
     worker.start()
     try:
         _run_telegram(database_path, telegram, dependencies.command_context)

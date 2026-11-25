@@ -587,8 +587,14 @@ def _acquire_polling_lock(
     connection_factory: Callable[[], sqlite3.Connection],
     *,
     owner_id: str,
+    takeover: bool = False,
 ) -> None:
-    """SQLite 쓰기 잠금으로 단일 Telegram polling 프로세스만 허용합니다."""
+    """SQLite 쓰기 잠금으로 단일 Telegram polling 프로세스만 허용합니다.
+
+    `takeover=True`(운영 경로)는 남아 있는 잠금을 인계받고 감사 이벤트를 남깁니다. 컨테이너는 하나뿐이라
+    남은 잠금은 정전·강제 종료로 못 푼 것이고, 풀지 않으면 재시작마다 같은 오류로 영구히 부팅에 실패합니다.
+    같은 봇 토큰의 동시 수신은 텔레그램 서버가 두 번째를 거부(409)하므로 중복 수신은 거기서도 막힙니다.
+    """
     connection = connection_factory()
     try:
         with connection:
@@ -597,7 +603,14 @@ def _acquire_polling_lock(
                 ("telegram_polling_lock",),
             ).fetchone()
             if row is not None and row[0] != "false":
-                raise RuntimeError("Telegram polling is already locked.")
+                if not takeover:
+                    raise RuntimeError("Telegram polling is already locked.")
+                connection.execute(
+                    "INSERT INTO system_events (component, event_type, severity, message, created_at) "
+                    "VALUES ('telegram', 'POLLING_LOCK_TAKEOVER', 'WARN', ?, ?)",
+                    ("이전 프로세스가 잠금을 풀지 못하고 종료됨: 잠금을 인계받음",
+                     datetime.now(timezone.utc).isoformat()),
+                )
             connection.execute(
                 """
                 INSERT INTO system_state ("key", value, updated_at)
@@ -660,7 +673,7 @@ def run_telegram_polling(
         summary_provider=summary_provider,
     )
     owner_id = uuid4().hex
-    _acquire_polling_lock(connection_factory, owner_id=owner_id)
+    _acquire_polling_lock(connection_factory, owner_id=owner_id, takeover=True)
     pending_store.expire_pending_on_restart(now=datetime.now(timezone.utc))
     application = Application.builder().token(token).build()
 

@@ -30,13 +30,13 @@ services:
       - ${SECRETS_DIR:-/home/pi/.secrets/mosasaurus}/token-cache:/run/secrets:ro
       - ${SECRETS_DIR:-/home/pi/.secrets/mosasaurus}/approvals:/run/approvals:ro
     healthcheck:
-      test:
-        - CMD-SHELL
-        - python -c "from src.db import connect_database; c=connect_database('/app/data/mosasaurus.db'); c.close()"
+      # DB 를 열 수 있는지 + 10초마다 쓰는 heartbeat 가 60초 이내인지(매매 스레드가 죽으면 unhealthy).
+      # 복구가 실패해 재시도 중일 때도 heartbeat 가 없으므로 unhealthy 로 보인다(정상 동작).
+      test: ["CMD", "python", "-m", "src.health_monitor", "/app/data/mosasaurus.db"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 120s
     logging:
       driver: json-file
       options:
