@@ -30,7 +30,7 @@ from src.performance import (
     PerformanceState, TWRQualityStatus, initialize_flow_adjusted_performance, rebase_hwm,
     update_flow_adjusted_performance,
 )
-from src.reconciliation import OrderSnapshot, Position, persist_reconciliation_result, reconcile_account_state
+from src.reconciliation import OrderSnapshot, Position, ReconciliationResult, persist_reconciliation_result, reconcile_account_state
 from src.scheduler import is_order_scheduler_locked, set_order_scheduler_lock
 from src.risk_manager import DrawdownMode, get_drawdown_mode, next_drawdown_stage, should_trailing_sell
 from src.safety_flags import (
