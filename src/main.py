@@ -4,7 +4,7 @@ import os
 import sqlite3
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
@@ -60,6 +60,8 @@ class RuntimeDependencies:
     market_is_open: Callable[[], bool]
     health_snapshot: Callable[[], HealthSnapshot]
     refresh_watchdog: Callable[[], None]
+    # Telegram 명령이 쓰는 맥락(broker·token_expiry·run_dir·parking_ticker). 없으면 해당 명령은 DB 정보만 보여 준다.
+    command_context: Mapping[str, object] = field(default_factory=dict)
 
 
 def run_agent(
@@ -186,7 +188,7 @@ def main(
         name="mosasaurus-agent", daemon=False)
     worker.start()
     try:
-        _run_telegram(database_path, telegram)
+        _run_telegram(database_path, telegram, dependencies.command_context)
     finally:
         stop.set()
         worker.join()
@@ -204,9 +206,9 @@ def _telegram_settings(environ: Mapping[str, str]) -> dict | None:
             "backtest_dir": environ.get("BACKTEST_DIR", "/run/backtests")}
 
 
-def _run_telegram(database_path: str | Path, settings: dict) -> None:
+def _run_telegram(database_path: str | Path, settings: dict, context: Mapping[str, object] | None = None) -> None:
     """명령 콜백을 연결해 Telegram 폴링을 시작한다(블로킹)."""
-    from src.telegram_actions import build_command_actions
+    from src.telegram_actions import build_command_actions, build_summary_provider
     from src.telegram_bot import PendingActionStore, run_telegram_polling
 
     connection_factory = lambda: connect_database(database_path)
@@ -214,7 +216,9 @@ def _run_telegram(database_path: str | Path, settings: dict) -> None:
         token=settings["token"], allowed_chat_ids=settings["chat_ids"],
         pending_store=PendingActionStore(connection_factory),
         command_actions=build_command_actions(
-            connection_factory, approvals_dir=settings["approvals_dir"], backtest_dir=settings["backtest_dir"]),
+            connection_factory, approvals_dir=settings["approvals_dir"], backtest_dir=settings["backtest_dir"],
+            **(context or {})),
+        summary_provider=build_summary_provider(connection_factory, settings["approvals_dir"]),
         connection_factory=connection_factory, allowed_user_ids=settings["user_ids"])
 
 

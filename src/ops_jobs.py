@@ -9,7 +9,7 @@
 import json
 import sqlite3
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -50,7 +50,54 @@ def build_notifier(
     return notify
 
 
-def compose_briefing(connection: sqlite3.Connection, now: datetime) -> str:
+def xirr(flows: list[tuple[date, float]]) -> float | None:
+    """불규칙 현금흐름의 연환산 내부수익률(이분법). 부호가 한쪽뿐이거나 기간이 0이면 None."""
+    if len(flows) < 2 or not (any(v < 0 for _, v in flows) and any(v > 0 for _, v in flows)):
+        return None
+    first = min(d for d, _ in flows)
+    npv = lambda rate: sum(v / (1.0 + rate) ** ((d - first).days / 365.0) for d, v in flows)
+    low, high = -0.99, 100.0
+    if npv(low) * npv(high) > 0:
+        return None
+    for _ in range(200):
+        mid = (low + high) / 2.0
+        if npv(low) * npv(mid) <= 0:
+            high = mid
+        else:
+            low = mid
+    return (low + high) / 2.0
+
+
+def performance_summary(connection: sqlite3.Connection) -> str:
+    """현재 성과 기간(epoch)의 MDD 와 XIRR 요약(스냅샷이 2개 미만이면 계산 불가)."""
+    rows = connection.execute("SELECT snapshot_date, total_equity, flow_adjusted_unit_nav FROM daily_portfolio "
+                              "WHERE performance_epoch = (SELECT MAX(performance_epoch) FROM daily_portfolio) "
+                              "ORDER BY snapshot_date").fetchall()
+    navs = [r["flow_adjusted_unit_nav"] for r in rows if r["flow_adjusted_unit_nav"]]
+    if len(navs) < 2:
+        return "MDD/XIRR 계산에 필요한 스냅샷이 부족합니다."
+    peak, mdd = navs[0], 0.0
+    for nav in navs:
+        peak = max(peak, nav)
+        mdd = min(mdd, nav / peak - 1.0)
+    # 투자자 관점 현금흐름: 최초 평가액·입금은 음수, 출금과 현재 평가액은 양수
+    flows = [(date.fromisoformat(rows[0]["snapshot_date"]), -float(rows[0]["total_equity"]))]
+    for f in connection.execute("SELECT flow_date, amount FROM cash_flows WHERE flow_type IN ('DEPOSIT','WITHDRAWAL') "
+                                "AND classification_status = 'CONFIRMED' AND flow_date > ? ORDER BY flow_date",
+                                (rows[0]["snapshot_date"],)):
+        flows.append((date.fromisoformat(f["flow_date"]), -float(f["amount"])))
+    flows.append((date.fromisoformat(rows[-1]["snapshot_date"]), float(rows[-1]["total_equity"])))
+    rate = xirr(flows)
+    return f"MDD {mdd * 100:.2f}% / XIRR " + (f"{rate * 100:+.2f}%" if rate is not None else "계산 불가")
+
+
+def compose_briefing(
+    connection: sqlite3.Connection,
+    now: datetime,
+    *,
+    token_expiry: datetime | None = None,
+    api_calls_today: int | None = None,
+) -> str:
     """DB 상태를 한 장의 브리핑 문장으로 만든다(숫자·상태만, 계좌 식별자 없음)."""
     snap = connection.execute("SELECT * FROM daily_portfolio ORDER BY snapshot_date DESC LIMIT 1").fetchone()
     count = lambda sql: connection.execute(sql).fetchone()[0]
@@ -71,7 +118,17 @@ def compose_briefing(connection: sqlite3.Connection, now: datetime) -> str:
                          "('PROVISIONAL', 'UNCLASSIFIED_CASH_FLOW')")
     unverified = count("SELECT COUNT(*) FROM corporate_actions WHERE verified = 0")
     held = count("SELECT COUNT(*) FROM positions WHERE quantity > 0")
-    lines.append(f"보유 종목 {held}개 / 열린 매도 의무 {open_obligations}건")
+    slots = connection.execute("SELECT slot_id, ticker FROM portfolio_slots ORDER BY slot_id").fetchall()
+    slot_text = ", ".join(f"{r['slot_id']}={r['ticker'] or '파킹'}" for r in slots) or "미배정"
+    lines.append(f"보유 종목 {held}개 / 열린 매도 의무 {open_obligations}건 / 슬롯 {slot_text}")
+    lines.append(performance_summary(connection))
+    status = []
+    if token_expiry is not None:
+        status.append("토큰 만료 " + token_expiry.astimezone(KST).strftime("%m-%d %H:%M"))
+    if api_calls_today is not None:
+        status.append(f"오늘 KIS API 호출 {api_calls_today}회")
+    if status:
+        lines.append(" / ".join(status))
     lines.append(f"미분류 현금흐름 {unclassified}건 / 미검증 기업행위 {unverified}건")
     return "\n".join(lines)
 
@@ -81,6 +138,8 @@ def create_daily_briefing_handler(
     *,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     notify: Callable[[str, str], None] = lambda severity, message: None,
+    token_expiry: Callable[[], datetime | None] = lambda: None,
+    api_calls_today: Callable[[], int | None] = lambda: None,
 ) -> Callable[[], None]:
     """18:05 브리핑을 만들어 `system_events` 에 기록하고 Telegram 으로 보낸다."""
 
@@ -89,7 +148,7 @@ def create_daily_briefing_handler(
         now = clock()
         connection = connection_factory()
         try:
-            text = compose_briefing(connection, now)
+            text = compose_briefing(connection, now, token_expiry=token_expiry(), api_calls_today=api_calls_today())
             with connection:
                 connection.execute(
                     "INSERT INTO system_events (component, event_type, severity, message, created_at) "

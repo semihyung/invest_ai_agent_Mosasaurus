@@ -6,8 +6,10 @@ KIS 호출은 모두 한 토큰 버킷을 지나며, 우선순위는 **주문·�
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+KST = timezone(timedelta(hours=9), name="KST")
 ORDER, GUARD, OTHER = 0, 1, 2
 
 
@@ -23,6 +25,7 @@ class PriorityRateLimiter:
         self._next_allowed = 0.0
         self._waiting = {ORDER: 0, GUARD: 0, OTHER: 0}
         self._cond = threading.Condition()
+        self._calls = {}  # KST 날짜 → 그날 통과한 호출 수(일일 브리핑의 API 쿼터 표시용)
 
     def acquire(self, priority: int) -> None:
         """호출 1회분 슬롯을 얻을 때까지 대기한다."""
@@ -40,7 +43,14 @@ class PriorityRateLimiter:
             finally:
                 self._waiting[priority] -= 1
             self._next_allowed = max(self._clock(), self._next_allowed) + self._interval
+            day = datetime.now(KST).date()
+            self._calls = {day: self._calls.get(day, 0) + 1}
             self._cond.notify_all()
+
+
+    def calls_today(self) -> int:
+        """오늘(KST) 한도기를 통과한 KIS 호출 수."""
+        return self._calls.get(datetime.now(KST).date(), 0)
 
 
 class _LimitedTransport:

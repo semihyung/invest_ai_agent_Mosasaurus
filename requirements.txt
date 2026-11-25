@@ -3,3 +3,4 @@ APScheduler>=3.10,<4.0
 python-telegram-bot>=20.8,<23.0
 python-telegram-bot>=20.8,<23.0
 websocket-client>=1.8,<2.0
+exchange_calendars>=4.5,<5.0

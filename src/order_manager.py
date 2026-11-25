@@ -999,9 +999,9 @@ def calculate_limit_price(
         or not isinstance(quote.bid, int)
         or not isinstance(quote.ask, int)
         or quote.bid <= 0
-        or quote.ask < quote.bid
+        or quote.ask <= quote.bid
     ):
-        raise ValueError("Quote must have a positive, non-crossed integer spread.")
+        raise ValueError("Quote must satisfy Bid1 > 0 and Ask1 > Bid1 (spec 7.2).")
 
     if reduce_only:
         if side is not OrderSide.SELL:
@@ -1189,7 +1189,7 @@ def validate_spread_and_nav(
         or quote.ask <= 0
     ):
         return False
-    if quote.ask < quote.bid:
+    if quote.ask <= quote.bid:
         return False
     mid_price = (quote.bid + quote.ask) / 2
     if mid_price <= 0:

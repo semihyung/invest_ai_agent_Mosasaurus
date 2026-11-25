@@ -17,7 +17,8 @@ from src.cash_recon import (
     reconciliation_allowed, record_discrepancy, unexplained_cash_delta,
 )
 from src.order_executor import (
-    KST, SELL_ALREADY_ACTIVE, TRANSIENT_BLOCKS, BrokerPort, SellRequest, obligation_cycle_id, open_exit_obligation, stop_cycle_id,
+    KST, SELL_ALREADY_ACTIVE, TRANSIENT_BLOCKS, BrokerPort, SellRequest, obligation_cycle_id, open_exit_obligation,
+    risk_cycle_id, stop_cycle_id,
     submit_sell,
 )
 from src.order_manager import OrderStatus, orders_due_for_cancel, persist_order_transition, void_exit_obligation
@@ -31,7 +32,7 @@ from src.performance import (
 )
 from src.reconciliation import OrderSnapshot, Position, persist_reconciliation_result, reconcile_account_state
 from src.scheduler import is_order_scheduler_locked, set_order_scheduler_lock
-from src.risk_manager import DrawdownMode, next_drawdown_stage, should_trailing_sell
+from src.risk_manager import DrawdownMode, get_drawdown_mode, next_drawdown_stage, should_trailing_sell
 from src.safety_flags import (
     active_codes, clear_flag, due_unresolved_halt_alerts, load_risk_flags, raise_flag, ticker_is_blocked,
     sync_host_state_flags,
@@ -117,6 +118,62 @@ def _set_guard_interval(connection: sqlite3.Connection, interval: int, now: date
 
 # ───────────────────────── intraday_guard / intraday_guard_alert_only ─────────────────────────
 
+def _set_state_kv(connection: sqlite3.Connection, key: str, value: str, now: datetime) -> None:
+    """system_state 한 값을 UPSERT 한다."""
+    with connection:
+        connection.execute(
+            'INSERT INTO system_state ("key", value, updated_at) VALUES (?, ?, ?) '
+            'ON CONFLICT("key") DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+            (key, value, now.isoformat()))
+
+
+def auto_emergency_if_critical(connection: sqlite3.Connection, drawdown: float, now: datetime) -> bool:
+    """유량 보정 낙폭이 CRITICAL(-15%)이면 `EMERGENCY`(원인 DRAWDOWN)를 자동으로 켠다(6.2절). 새로 켰으면 True.
+
+    이미 EMERGENCY 이거나, 직전 해제로 HWM 리베이스가 예약돼 있으면(해제 직후 재발동 금지) 아무것도 하지 않는다.
+    """
+    if get_drawdown_mode(max(-1.0, min(0.0, drawdown))) is not DrawdownMode.CRITICAL:
+        return False
+    state = {r[0]: r[1] for r in connection.execute(
+        "SELECT \"key\", value FROM system_state WHERE \"key\" IN ('emergency_mode', 'hwm_rebase_pending')")}
+    if state.get("emergency_mode") == "true" or state.get("hwm_rebase_pending") == "true":
+        return False
+    _set_state_kv(connection, "emergency_mode", "true", now)
+    _set_state_kv(connection, "emergency_reason", "DRAWDOWN", now)
+    _log(connection, "risk", "EMERGENCY_AUTO", "CRITICAL", f"낙폭 {drawdown * 100:.1f}%: EMERGENCY 자동 발동", now)
+    return True
+
+
+def intraday_drawdown(connection: sqlite3.Connection, equity: int) -> float | None:
+    """마지막 마감 스냅샷의 단위 수·HWM 으로 현재 평가액의 낙폭을 추정한다(미분류 현금흐름은 오염 제거)."""
+    row = connection.execute("SELECT units_outstanding, hwm_flow_adjusted, unclassified_excluded_amount "
+                             "FROM daily_portfolio ORDER BY snapshot_date DESC LIMIT 1").fetchone()
+    if row is None or row["units_outstanding"] <= 0 or row["hwm_flow_adjusted"] <= 0:
+        return None
+    unit_nav = max(0.0, equity - row["unclassified_excluded_amount"]) / row["units_outstanding"]
+    return min(0.0, unit_nav / row["hwm_flow_adjusted"] - 1.0)
+
+
+def _emergency_by_drawdown(connection: sqlite3.Connection) -> bool:
+    """마지막 스냅샷 낙폭 단계가 CRITICAL 이면 EMERGENCY 로 본다(6.3절 파생 규칙)."""
+    row = connection.execute("SELECT drawdown_stage FROM daily_portfolio ORDER BY snapshot_date DESC LIMIT 1").fetchone()
+    return row is not None and row[0] == "CRITICAL"
+
+
+def _quote_recovered(connection: sqlite3.Connection, broker: "AccountBrokerPort", ticker: str, now: datetime) -> bool:
+    """`QUOTE_INVALID` 로만 격리된 종목의 호가가 정상으로 돌아왔으면 격리를 풀고 True."""
+    if active_codes(connection, "TICKER_BLOCK", ticker=ticker) != ("QUOTE_INVALID",):
+        return False
+    try:
+        quote = broker.quote(ticker)
+        if not (quote.bid > 0 and quote.ask >= quote.bid):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    clear_flag(connection, "TICKER_BLOCK", "QUOTE_INVALID", now=now, cleared_by="SYSTEM", ticker=ticker)
+    return True
+
+
 def create_intraday_guard_handler(
     connection_factory: Callable[[], sqlite3.Connection],
     broker: AccountBrokerPort,
@@ -135,6 +192,8 @@ def create_intraday_guard_handler(
     """
 
     last_run: list[datetime] = []
+    last_dd: list[datetime] = []
+    last_recon: list[datetime] = []
 
     def handler() -> None:
         """스탑 감시 한 틱: 보유 종목을 점검하고 스탑 도달 시 매도 또는 의무 기록을 한다."""
@@ -155,10 +214,27 @@ def create_intraday_guard_handler(
             rows = connection.execute(
                 "SELECT ticker, quantity, peak_price_adj FROM positions "
                 "WHERE tracking_status = 'MANAGED' AND quantity > 0").fetchall()
+            if not last_recon or (now - last_recon[0]).total_seconds() >= 120:
+                last_recon[:] = [now]
+                try:  # 7.1절 게이트 2: 마지막 성공 대조 300초 TTL 을 유지한다(장중 2분 주기)
+                    if reconcile_intraday(connection, broker, now) == "CONFIRMED":
+                        _safe_notify(notify, "CRITICAL", "계좌 불일치 확정 → SAFE_HALT(ACCOUNT_MISMATCH)")
+                except Exception as error:  # noqa: BLE001 - 조회 실패는 STALE(일시) 처리, 다음 주기에 재시도
+                    _mark_stale(connection, now, f"intraday_recon:{type(error).__name__}")
+            if not last_dd or (now - last_dd[0]).total_seconds() >= 60:
+                last_dd[:] = [now]
+                try:  # 6.2절: 장중 유량 보정 낙폭 감시 — CRITICAL(-15%) 도달 시 EMERGENCY 자동 전이
+                    drawdown = intraday_drawdown(connection, broker.total_equity())
+                    if drawdown is not None and auto_emergency_if_critical(connection, drawdown, now):
+                        _safe_notify(notify, "CRITICAL", f"낙폭 {drawdown * 100:.1f}%: EMERGENCY 자동 발동(위험 축소 매도만 허용)")
+                except Exception:  # noqa: BLE001 - 잔고 조회 실패는 STALE 처리 대상이 아니라 다음 주기에 재시도
+                    pass
+            if flags.emergency_mode or _emergency_by_drawdown(connection):
+                cancel_active_buys(connection, broker, now)  # EMERGENCY: 미체결 매수 전량 취소(6.2절)
             failed = False
             for row in rows:
                 ticker, quantity, peak = row["ticker"], row["quantity"], row["peak_price_adj"]
-                if ticker_is_blocked(connection, ticker):
+                if ticker_is_blocked(connection, ticker) and not _quote_recovered(connection, broker, ticker, now):
                     continue  # 4.2절: 격리(기업행위 미검증·호가 무효 등) 중에는 가격 기반 자동 매도를 보류한다
                 if peak is None:
                     continue  # 고점 기록 없는 보유분은 대상 제외(스탑 감시 불가 → 별도 경보 대상)
@@ -187,7 +263,7 @@ def create_intraday_guard_handler(
                 kind = (OrderKind.PROTECTIVE_EXIT_SELL if flags.is_safe_halt else OrderKind.REDUCE_ONLY_SELL)
                 result = submit_sell(
                     connection, broker,
-                    SellRequest(ticker, quantity, kind, stop_cycle_id(ticker, trade_date), "TRAILING_STOP"),
+                    SellRequest(ticker, quantity, kind, risk_cycle_id(trade_date, "STOP"), "TRAILING_STOP"),
                     now=now, account_fresh=True, protective_enabled=protective_enabled)
                 if result == SELL_ALREADY_ACTIVE or result in TRANSIENT_BLOCKS:
                     continue  # 진행 중이거나 조회 일시 실패: 의무·경보 없이 다음 틱에 다시 시도한다
@@ -447,6 +523,82 @@ def reconcile_cash(
     return decision
 
 
+def _reconcile_with(connection, broker_positions, broker_orders, now, trade_day, confirm_interval_seconds):
+    """브로커 보유·주문과 DB 를 대조하고 결과를 기록한다(마감 후·장중 공통). `(결과, 판정, 정지상태 여부)` 를 돌려준다."""
+    active = connection.execute(
+        "SELECT COUNT(*) FROM orders WHERE status IN ('CREATED','SUBMITTING','PENDING_CONFIRMATION',"
+        "'ACCEPTED','PARTIALLY_FILLED','CANCEL_PENDING')").fetchone()[0]
+    last_fill = connection.execute("SELECT MAX(executed_at) FROM trade_fills").fetchone()[0]
+    quiescent = reconciliation_allowed(
+        active_order_count=active, now=now,
+        last_fill_at=datetime.fromisoformat(last_fill) if last_fill else None)
+    sqlite_positions = [Position(r["ticker"], r["quantity"]) for r in connection.execute(
+        "SELECT ticker, quantity FROM positions WHERE quantity > 0 AND tracking_status = 'MANAGED'")]
+    sqlite_orders = [OrderSnapshot(r["kis_order_no"], r["ticker"], r["side"], r["requested_qty"],
+                                   r["filled_qty"], r["remaining_qty"], r["status"])
+                     for r in connection.execute(
+        "SELECT * FROM orders WHERE kis_order_no IS NOT NULL AND submitted_at >= ?",
+        (datetime.combine(trade_day, time(0), tzinfo=KST).isoformat(),))]
+    unmanaged = {r[0] for r in connection.execute(
+        "SELECT ticker FROM positions WHERE tracking_status = 'UNMANAGED'")}
+    result = reconcile_account_state(
+        broker_positions=[p for p in broker_positions if p.ticker not in unmanaged],
+        sqlite_positions=sqlite_positions, broker_orders=broker_orders, sqlite_orders=sqlite_orders,
+        account_data_fresh=True,
+        unclassified_cash_flow_exists="UNCLASSIFIED_CASH_FLOW" in active_codes(connection, "BUY_BLOCK"))
+    verdict = persist_reconciliation_result(
+        connection, result, checked_at=now, confirm_interval_seconds=confirm_interval_seconds,
+        quiescent=quiescent)
+    return result, verdict, quiescent
+
+
+def compare_account(connection: sqlite3.Connection, broker_positions, broker_orders, trade_day: date) -> ReconciliationResult:
+    """브로커와 DB 를 비교만 한다(DB 에 아무것도 쓰지 않음 — `/reconcile` 읽기·대조 전용, 명세 6.4절)."""
+    sqlite_positions = [Position(r["ticker"], r["quantity"]) for r in connection.execute(
+        "SELECT ticker, quantity FROM positions WHERE quantity > 0 AND tracking_status = 'MANAGED'")]
+    sqlite_orders = [OrderSnapshot(r["kis_order_no"], r["ticker"], r["side"], r["requested_qty"], r["filled_qty"],
+                                   r["remaining_qty"], r["status"]) for r in connection.execute(
+        "SELECT * FROM orders WHERE kis_order_no IS NOT NULL AND submitted_at >= ?",
+        (datetime.combine(trade_day, time(0), tzinfo=KST).isoformat(),))]
+    unmanaged = {r[0] for r in connection.execute("SELECT ticker FROM positions WHERE tracking_status = 'UNMANAGED'")}
+    return reconcile_account_state(
+        broker_positions=[p for p in broker_positions if p.ticker not in unmanaged],
+        sqlite_positions=sqlite_positions, broker_orders=broker_orders, sqlite_orders=sqlite_orders,
+        account_data_fresh=True, unclassified_cash_flow_exists=False)
+
+
+def cancel_active_buys(connection: sqlite3.Connection, broker: AccountBrokerPort, now: datetime) -> int:
+    """EMERGENCY 중 미체결 매수 주문을 모두 취소 요청한다(6.2절 CRITICAL·/emergency). 요청한 건수를 돌려준다."""
+    cancelled = 0
+    for row in connection.execute(
+            "SELECT order_id, kis_order_no, ticker, attempt_id FROM orders WHERE side = 'BUY' AND kis_order_no IS NOT NULL "
+            "AND status IN ('ACCEPTED', 'PARTIALLY_FILLED') AND remaining_qty > 0").fetchall():
+        try:
+            accepted = broker.cancel_order(row["kis_order_no"], row["ticker"])
+        except Exception:  # noqa: BLE001 - 취소 응답 유실: 상태 유지, 다음 틱에 다시 요청(취소는 사실상 멱등)
+            continue
+        if accepted:
+            persist_order_transition(connection, order_id=row["order_id"], new_status=OrderStatus.CANCEL_PENDING,
+                                     actor="emergency", reason_code="EMERGENCY_CANCEL_BUYS",
+                                     correlation_id=row["attempt_id"], occurred_at=now)
+            cancelled += 1
+    return cancelled
+
+
+def reconcile_intraday(
+    connection: sqlite3.Connection, broker: AccountBrokerPort, now: datetime, confirm_interval_seconds: int = 60
+) -> str:
+    """장중 대조(보유 수량·주문, 명세 9.1절 `intraday_guard`): 마지막 성공 대조가 300초 TTL 안에 있도록 갱신한다.
+
+    먼저 주문·체결을 DB 에 반영(`sync_orders`)한 뒤 비교한다. 활성 주문이 있으면 불일치 판정은 건너뛴다(2.2절).
+    """
+    sync_orders(connection, broker, now=now, market_closed=False)
+    trade_day = now.astimezone(KST).date()
+    _, verdict, _ = _reconcile_with(connection, broker.positions(), broker.orders(trade_day), now, trade_day,
+                                    confirm_interval_seconds)
+    return verdict
+
+
 def create_post_close_reconcile_handler(
     connection_factory: Callable[[], sqlite3.Connection],
     broker: AccountBrokerPort,
@@ -478,30 +630,8 @@ def create_post_close_reconcile_handler(
                 _mark_stale(connection, now, f"{type(error).__name__}")
                 _safe_notify(notify, "WARN", "마감 후 대조 조회 실패: 신규 매수 차단")
                 return
-            active = connection.execute(
-                "SELECT COUNT(*) FROM orders WHERE status IN ('CREATED','SUBMITTING','PENDING_CONFIRMATION',"
-                "'ACCEPTED','PARTIALLY_FILLED','CANCEL_PENDING')").fetchone()[0]
-            last_fill = connection.execute("SELECT MAX(executed_at) FROM trade_fills").fetchone()[0]
-            quiescent = reconciliation_allowed(
-                active_order_count=active, now=now,
-                last_fill_at=datetime.fromisoformat(last_fill) if last_fill else None)
-            sqlite_positions = [Position(r["ticker"], r["quantity"]) for r in connection.execute(
-                "SELECT ticker, quantity FROM positions WHERE quantity > 0 AND tracking_status = 'MANAGED'")]
-            sqlite_orders = [OrderSnapshot(r["kis_order_no"], r["ticker"], r["side"], r["requested_qty"],
-                                           r["filled_qty"], r["remaining_qty"], r["status"])
-                             for r in connection.execute(
-                "SELECT * FROM orders WHERE kis_order_no IS NOT NULL AND submitted_at >= ?",
-                (datetime.combine(trade_day, time(0), tzinfo=KST).isoformat(),))]
-            unmanaged = {r[0] for r in connection.execute(
-                "SELECT ticker FROM positions WHERE tracking_status = 'UNMANAGED'")}
-            result = reconcile_account_state(
-                broker_positions=[p for p in broker_positions if p.ticker not in unmanaged],
-                sqlite_positions=sqlite_positions, broker_orders=broker_orders, sqlite_orders=sqlite_orders,
-                account_data_fresh=True,
-                unclassified_cash_flow_exists="UNCLASSIFIED_CASH_FLOW" in active_codes(connection, "BUY_BLOCK"))
-            verdict = persist_reconciliation_result(
-                connection, result, checked_at=now, confirm_interval_seconds=confirm_interval_seconds,
-                quiescent=quiescent)
+            result, verdict, quiescent = _reconcile_with(
+                connection, broker_positions, broker_orders, now, trade_day, confirm_interval_seconds)
             if verdict == "CONFIRMED":
                 _safe_notify(notify, "CRITICAL", "계좌 불일치 확정 → SAFE_HALT(ACCOUNT_MISMATCH)")
             if result.reconciliation_ok and is_order_scheduler_locked(connection):
@@ -523,8 +653,13 @@ def create_post_close_reconcile_handler(
                     continue
             _update_peaks(connection, now, live_closes)
             try:
-                save_daily_snapshot(connection, trade_date=trade_day.isoformat(), total_equity=equity,
-                                    cash=current_cash, now=now)
+                stage = save_daily_snapshot(connection, trade_date=trade_day.isoformat(), total_equity=equity,
+                                            cash=current_cash, now=now)
+                if stage == DrawdownMode.CRITICAL.value:
+                    row = connection.execute("SELECT hwm_flow_adjusted, flow_adjusted_unit_nav FROM daily_portfolio "
+                                             "WHERE snapshot_date = ?", (trade_day.isoformat(),)).fetchone()
+                    if row and auto_emergency_if_critical(connection, row[1] / row[0] - 1.0, now):
+                        _safe_notify(notify, "CRITICAL", "낙폭 -15% 도달: EMERGENCY 자동 발동")
             except ValueError as error:
                 raise_flag(connection, "BUY_BLOCK", "ACCOUNTING_INVALID", now=now, detail=str(error)[:200])
         finally:
@@ -541,6 +676,7 @@ def create_safety_maintenance_handler(
     run_dir: str | None,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     notify: Notify = _noop,
+    token_valid: Callable[[], bool] | None = None,
 ) -> Callable[[], None]:
     """10분마다: 호스트 상태 파일로 UPS·시각 플래그를 갱신하고, 24시간 이상 풀리지 않은 HALT 를 재경보합니다."""
 
@@ -552,6 +688,14 @@ def create_safety_maintenance_handler(
             if run_dir:
                 sync_host_state_flags(connection, run_dir, now=now)
             until = connection.execute("SELECT value FROM system_state WHERE \"key\" = 'training_until'").fetchone()
+            mode = connection.execute("SELECT value, updated_at FROM system_state WHERE \"key\" = 'training_mode'").fetchone()
+            if mode and mode[0] == "true" and not (until and until[0]):
+                started = datetime.fromisoformat(mode[1])
+                today = now.astimezone(KST).date().isoformat()
+                alerted = connection.execute("SELECT value FROM system_state WHERE \"key\" = 'training_alert_date'").fetchone()
+                if (now - started).days >= 7 and (alerted is None or alerted[0] != today):
+                    _set_state_kv(connection, "training_alert_date", today, now)
+                    _safe_notify(notify, "WARN", f"훈련 모드가 {(now - started).days}일째 무기한으로 유지 중입니다(위험자산 매수 차단).")
             if until and until[0] and now.astimezone(KST).date().isoformat() > until[0]:
                 with connection:  # 훈련 종료일 도래: 자동 해제
                     connection.execute("UPDATE system_state SET value = CASE \"key\" WHEN 'training_mode' THEN 'false' "
@@ -559,6 +703,11 @@ def create_safety_maintenance_handler(
                                        (now.isoformat(),))
                 _safe_notify(notify, "INFO", "훈련 모드 종료일이 지나 자동 해제되었습니다.")
             deliver_previews(connection, notify, now)  # 발송 실패한 주간 프리뷰 재시도(10분 간격, 최대 6회)
+            if token_valid is not None:  # 토큰 무효 → CREDENTIALS_UNAVAILABLE(SAFE_HALT), 유효해지면 자동 해제
+                if token_valid():
+                    clear_flag(connection, "HALT", "CREDENTIALS_UNAVAILABLE", now=now, cleared_by="SYSTEM")
+                elif raise_flag(connection, "HALT", "CREDENTIALS_UNAVAILABLE", now=now, detail="TOKEN_INVALID"):
+                    _safe_notify(notify, "CRITICAL", "KIS 토큰이 없거나 만료되었습니다: 주문 정지")
             for code in due_unresolved_halt_alerts(connection, now=now):
                 _safe_notify(notify, "CRITICAL", f"{code} 미해결 24시간 이상: 운영자 조치 필요")
         finally:

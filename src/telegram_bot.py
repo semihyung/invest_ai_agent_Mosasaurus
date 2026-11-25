@@ -362,8 +362,10 @@ class TelegramCommandHandler:
         pending_store: PendingActionStore | None = None,
         product_metadata_lookup: Callable[[str], ProductMetadata] | None = None,
         allowed_user_ids: set[str] | None = None,
+        summary_provider: Callable[[str], str | None] | None = None,
     ) -> None:
         """허용 채팅(과 선택적 허용 사용자)·DB 확인 저장소를 구성합니다."""
+        self.summary_provider = summary_provider
         if not allowed_chat_ids:
             raise ValueError("At least one allowed chat ID is required.")
         if any(not isinstance(chat_id, str) or not chat_id.isdigit() for chat_id in allowed_chat_ids):
@@ -486,6 +488,11 @@ class TelegramCommandHandler:
                     f"복제 {metadata.replication_method}, "
                     f"출처 {metadata.classification_source}"
                 )
+            if summary is None and self.summary_provider is not None:
+                try:  # 6.4절: 확인 메시지에 실행될 효과(즉시 스탑 도달 종목, 해제될 원인 등)를 표시한다
+                    summary = self.summary_provider(normalized)
+                except Exception:  # noqa: BLE001 - 요약 실패가 확인 절차를 막지 않는다
+                    summary = None
             action_id = uuid4().hex[:12]
             code = new_confirm_code()
             action = PendingAction(
@@ -633,6 +640,7 @@ def run_telegram_polling(
     connection_factory: Callable[[], sqlite3.Connection],
     product_metadata_lookup: Callable[[str], ProductMetadata] | None = None,
     allowed_user_ids: set[str] | None = None,
+    summary_provider: Callable[[str], str | None] | None = None,
 ) -> None:
     """Phase 1 Telegram polling을 시작하고 채팅·사용자·단일 프로세스 잠금을 강제합니다."""
     if not isinstance(token, str) or not token.strip():
@@ -649,6 +657,7 @@ def run_telegram_polling(
         pending_store=pending_store,
         product_metadata_lookup=product_metadata_lookup,
         allowed_user_ids=allowed_user_ids,
+        summary_provider=summary_provider,
     )
     owner_id = uuid4().hex
     _acquire_polling_lock(connection_factory, owner_id=owner_id)

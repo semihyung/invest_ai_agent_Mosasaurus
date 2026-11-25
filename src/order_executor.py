@@ -16,7 +16,7 @@
 import hashlib
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Mapping, Protocol
 
 from src.order_manager import (
@@ -30,6 +30,7 @@ from src.order_manager import (
     Quote,
     RealOrderGateContext,
     calculate_limit_price,
+    etf_tick_size,
     validate_spread_and_nav,
     persist_order_intent,
     persist_order_transition,
@@ -39,7 +40,7 @@ from src.order_manager import (
 )
 from src.order_policy import OrderKind, is_allowed
 from src.risk_manager import DrawdownMode, resolve_operating_mode
-from src.safety_flags import active_codes, load_risk_flags
+from src.safety_flags import active_codes, load_risk_flags, raise_flag
 
 KST = timezone(timedelta(hours=9), name="KST")
 
@@ -61,7 +62,14 @@ SELL_ALREADY_ACTIVE = "BLOCKED:SELL_ALREADY_ACTIVE"
 # 증권사 조회 일시 실패: 의도를 만들지 않으므로 호출자가 다음 주기에 그대로 다시 시도한다(의무로 넘기지 않음).
 QUOTE_UNAVAILABLE = "BLOCKED:QUOTE_UNAVAILABLE"
 BROKER_UNAVAILABLE = "BLOCKED:BROKER_UNAVAILABLE"
-TRANSIENT_BLOCKS = frozenset({QUOTE_UNAVAILABLE, BROKER_UNAVAILABLE})
+QUOTE_INVALID = "BLOCKED:QUOTE_INVALID"  # Bid1/Ask1 가 0 이하이거나 교차: 계산을 생략하고 종목을 격리한다
+OUTSIDE_ORDER_WINDOW = "BLOCKED:OUTSIDE_ORDER_WINDOW"  # 09:00 이전 또는 15:10 이후(취소는 예외, 7.1절 게이트 9)
+SPREAD_WIDE = "BLOCKED:SPREAD_WIDE"  # 위험 축소 매도도 스프레드 1.0% 초과면 보류(7.2절 1번)
+SPREAD_NAV = "BLOCKED:SPREAD_NAV"  # 전략 주문: 스프레드 0.3%·iNAV 괴리 한도 초과 → 의도를 만들지 않고 재평가
+TRANSIENT_BLOCKS = frozenset({QUOTE_UNAVAILABLE, BROKER_UNAVAILABLE, QUOTE_INVALID, OUTSIDE_ORDER_WINDOW, SPREAD_WIDE})
+ORDER_WINDOW = (time(9, 0), time(15, 10))  # market.regular_open ~ execution.new_order_cutoff
+MAX_SPREAD_REDUCE_ONLY = 0.010  # execution.max_spread_ratio_reduce_only
+RECONCILIATION_TTL_SECONDS = 300  # ttl_seconds.reconciliation
 
 
 class BrokerPort(Protocol):
@@ -93,8 +101,26 @@ class SellRequest:
 
 
 def stop_cycle_id(ticker: str, trade_date: str) -> str:
-    """스탑 매도 사이클: 종목당 하루 1회(`S{티커}:{거래일}`)."""
+    """스탑 이벤트 ID(`S{티커}:{거래일}`): 매도 의무의 `source_event_id` 로 쓴다(종목·거래일당 1건)."""
     return f"S{ticker}:{trade_date}"
+
+
+def risk_cycle_id(trade_date: str, reason: str) -> str:
+    """위험 축소 의도의 `cycle_id`(명세 7.1절): `R{거래일}:{STOP|MA120|REMOVE|VETO}`."""
+    if reason not in ("STOP", "MA120", "REMOVE", "VETO"):
+        raise ValueError("Unknown risk reduction reason.")
+    return f"R{trade_date}:{reason}"
+
+
+def weekly_cycle_id(trade_date: str) -> str:
+    """주간 교체·리밸런싱·위험자산 매수 의도의 `cycle_id`(`W{ISO 연}-{주}`, 승계 실행도 같은 값)."""
+    year, week, _ = datetime.fromisoformat(trade_date).isocalendar()
+    return f"W{year}-{week:02d}"
+
+
+def parking_cycle_id(trade_date: str) -> str:
+    """개장일별 파킹 매수·현금화 매도의 `cycle_id`(`D{거래일}`)."""
+    return f"D{trade_date}"
 
 
 def obligation_cycle_id(obligation_id: str, trade_date: str) -> str:
@@ -162,6 +188,8 @@ def submit_order(
                       protective_exit_enabled=protective_enabled):
         return f"BLOCKED:MODE_{mode.value}"
 
+    if not ORDER_WINDOW[0] <= now.astimezone(KST).time() < ORDER_WINDOW[1]:
+        return OUTSIDE_ORDER_WINDOW  # 7.1절 게이트 9: 신규 주문은 09:00~15:10 에만(취소는 예외)
     # 이미 만든 의도면 증권사 조회 없이 끝낸다(10초 주기 감시가 같은 호출을 반복하지 않게).
     key = OrderIntent(cycle_id=request.cycle_id, intent_type=intent_type, slot_id=None, ticker=request.ticker,
                       side=side, quantity=request.quantity, obligation_id=request.obligation_id).idempotency_key()
@@ -186,6 +214,17 @@ def submit_order(
         quote = broker.quote(request.ticker)  # 의도를 저장하기 전에 조회: 실패해도 의도가 CREATED 로 고착되지 않는다
     except Exception:  # noqa: BLE001
         return QUOTE_UNAVAILABLE
+    if not _quote_is_valid(quote):
+        raise_flag(connection, "TICKER_BLOCK", "QUOTE_INVALID", now=now, ticker=request.ticker, detail="NON_POSITIVE_OR_CROSSED")
+        return QUOTE_INVALID  # 의도는 만들지 않는다: 호가가 정상으로 돌아오면 다음 틱에 그대로 시도된다
+
+    # 스프레드 검증은 의도를 만들기 전에 한다: 보류된 주문은 같은 cycle 로 다음 평가에서 그대로 다시 시도된다.
+    spread = (quote.ask - quote.bid) / ((quote.ask + quote.bid) / 2)
+    if reduce_only:
+        if spread > MAX_SPREAD_REDUCE_ONLY:
+            return SPREAD_WIDE
+    elif not validate_spread_and_nav(quote, region=request.region):
+        return SPREAD_NAV
 
     intent = OrderIntent(
         cycle_id=request.cycle_id, intent_type=intent_type, slot_id=None,
@@ -201,9 +240,6 @@ def submit_order(
         return "DUPLICATE"
 
     try:
-        if not reduce_only and not validate_spread_and_nav(quote, region=request.region):
-            _close_intent(connection, result.parent_intent_id, now)
-            return "BLOCKED:SPREAD_NAV"
         price = calculate_limit_price(quote, side, reduce_only=reduce_only)
     except MarketAnomalyError:
         _close_intent(connection, result.parent_intent_id, now)
@@ -214,7 +250,8 @@ def submit_order(
         environment=broker.environment,
         operator_approval=operator_approval,
         reconciliation_ok=_state(connection, "reconciliation_ok") == "true",
-        reconciliation_fresh=account_fresh,
+        reconciliation_fresh=account_fresh and (request.kind is OrderKind.PROTECTIVE_EXIT_SELL
+                                                or _reconciliation_fresh(connection, now)),
         unresolved_order_exists=_unresolved_order_exists(connection, request.ticker, side),
         unclassified_cash_flow_exists="UNCLASSIFIED_CASH_FLOW" in codes,
         token_valid=True, calendar_valid="CALENDAR_MISMATCH" not in codes,
@@ -238,8 +275,8 @@ def submit_order(
             quantity=quantity, price=price,
         )
     except PermissionError:
-        # 게이트 불통과: 전송하지 않았으므로 종결 처리하고 의무로 넘긴다(재가격·재전송 없음).
-        _expire_unsent(connection, order_id, now)
+        # 게이트 불통과: 전송하지 않았으므로 종결 처리한다(재가격·재전송 없음). 실패한 게이트 번호를 이벤트 사유로 남긴다(7.1절).
+        _expire_unsent(connection, order_id, now, reason=f"GATE_{_first_failed_gate(gate) or 0}_FAILED")
         return "BLOCKED:GATE"
     except Exception:
         # 응답 형식 이상 등 불확실: 전송됐을 수 있으므로 확인 대기로 두고 재전송하지 않는다.
@@ -255,6 +292,44 @@ def submit_order(
             connection.execute("UPDATE orders SET kis_order_no = ? WHERE order_id = ?",
                                (outcome.broker_order_number, order_id))
     return "SUBMITTED"
+
+
+def _reconciliation_fresh(connection: sqlite3.Connection, now: datetime) -> bool:
+    """마지막 성공 대조가 `ttl_seconds.reconciliation`(300초) 이내인지(7.1절 게이트 2)."""
+    last = _state(connection, "last_reconciliation_at")
+    if not last:
+        return False
+    return (now - datetime.fromisoformat(last)).total_seconds() <= RECONCILIATION_TTL_SECONDS
+
+
+def _first_failed_gate(ctx: RealOrderGateContext) -> int | None:
+    """7.1절 공통 게이트 중 처음 실패한 번호(1~8). 모두 통과하면 None."""
+    protective = ctx.protective_exit
+    if ctx.environment not in ("PAPER", "REAL") or (ctx.environment == "REAL" and not ctx.operator_approval):
+        return 1
+    if not ((ctx.reconciliation_ok or protective) and ctx.reconciliation_fresh):
+        return 2
+    if ctx.unresolved_order_exists:
+        return 3
+    if not (ctx.token_valid and ctx.calendar_valid and ctx.quote_valid and ctx.adjusted_data_valid) \
+            or (ctx.unclassified_cash_flow_exists and not protective):
+        return 4
+    if not (ctx.quantity_valid and ctx.cash_buffer_valid and ctx.liquidity_limit_valid and ctx.limit_order_only):
+        return 5
+    if not ctx.mode_allows_order:
+        return 6
+    if ctx.idempotency_conflict:
+        return 7
+    if not (ctx.common_order_manager_path and ctx.order_recordable):
+        return 8
+    return None
+
+
+def _quote_is_valid(quote: Quote) -> bool:
+    """호가가 양의 정수이고 매수호가 ≤ 매도호가인지(0 나누기·가격 0 가드, 명세 시나리오 61)."""
+    return (isinstance(quote, Quote) and all(isinstance(v, int) and not isinstance(v, bool) for v in (quote.bid, quote.ask))
+            and quote.bid > 0 and quote.ask > quote.bid  # 명세 7.2절: Ask1 > Bid1
+            and quote.bid % etf_tick_size(quote.bid) == 0 and quote.ask % etf_tick_size(quote.ask) == 0)
 
 
 def _unresolved_order_exists(connection: sqlite3.Connection, ticker: str, side: OrderSide) -> bool:
@@ -291,10 +366,10 @@ def _close_intent(connection: sqlite3.Connection, parent_intent_id: str, now: da
                            (now.isoformat(), parent_intent_id))
 
 
-def _expire_unsent(connection: sqlite3.Connection, order_id: str, now: datetime) -> None:
+def _expire_unsent(connection: sqlite3.Connection, order_id: str, now: datetime, reason: str = "GATE_BLOCKED_NOT_SENT") -> None:
     """게이트에서 막혀 전송되지 않은 SUBMITTING 시도를 REJECTED 로 닫는다(실제 전송 없음)."""
     persist_order_transition(
         connection, order_id=order_id, new_status=OrderStatus.REJECTED, actor="order_executor",
-        reason_code="GATE_BLOCKED_NOT_SENT", correlation_id=order_id, occurred_at=now)
+        reason_code=reason, correlation_id=order_id, occurred_at=now)
     row = connection.execute("SELECT parent_intent_id FROM orders WHERE order_id = ?", (order_id,)).fetchone()
     _close_intent(connection, row[0], now)

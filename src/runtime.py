@@ -22,6 +22,7 @@ from src.job_handlers import (
     create_pending_confirmation_poller, create_post_close_reconcile_handler, create_safety_maintenance_handler,
 )
 from src.daily_pipeline import PipelineConfig, create_daily_pipeline_handler
+from src.calendar_check import verify_calendar
 from src.kis_broker import KisBroker
 from src.kis_client import KisEnvironment, KisReadOnlyClient, KisTokenCache
 from src.main import RuntimeDependencies
@@ -89,6 +90,11 @@ def build_dependencies(
             raise RuntimeError("KIS token is missing or expired.")
         return cached.access_token
 
+    def token_is_valid() -> bool:
+        """캐시된 KIS 토큰이 있고 만료 전이면 True."""
+        cached = token_cache.load()
+        return cached is not None and cached.expires_at > datetime.now(timezone.utc)
+
     client = KisReadOnlyClient(app_key, app_secret, token_cache, environment=KisEnvironment.PAPER)
     transport = create_paper_order_transport(
         app_key=app_key, app_secret=app_secret, account_number=account, token_provider=token)
@@ -105,10 +111,11 @@ def build_dependencies(
             connection.close()
 
     rate = float(cfg["kis"]["rate_limit_per_second"]["PAPER"])  # type: ignore[index]
+    limiter = PriorityRateLimiter(rate)
     # 모든 KIS 호출은 프로세스 단일 우선순위 한도기를 지난다(주문·취소·대조 > 스탑 감시 > 기타).
     broker = RateLimitedBroker(
         KisBroker(client, transport, account_number=account, order_lookup=order_lookup),
-        PriorityRateLimiter(rate))
+        limiter)
     protective = bool(cfg["risk"]["safe_halt"]["protective_exit"]["enabled"])  # type: ignore[index]
 
     def reconcile_account() -> ReconciliationResult:
@@ -141,9 +148,23 @@ def build_dependencies(
         except (ValueError, KeyError, OSError):
             return set()
 
+    def calendar_verify(connection, now):
+        """오늘이 개장일인지 XKRX·KIS 두 달력으로 이중 검증한다(불일치면 None + CALENDAR_MISMATCH)."""
+        return verify_calendar(connection, now.astimezone(KST).date(), now, kis_is_open=client.is_open_day)
+
+    def market_is_open() -> bool:
+        """주문 관련 잡의 개장일 판정: 두 달력이 모두 개장일로 일치할 때만 True(불일치·조회 불가는 fail-closed)."""
+        connection = connection_factory()
+        try:
+            return verify_calendar(connection, datetime.now(KST).date(), datetime.now(timezone.utc),
+                                   kis_is_open=client.is_open_day) is True
+        finally:
+            connection.close()
+
     guard = create_intraday_guard_handler(
         connection_factory, broker, notify=notify, protective_enabled=protective, rate_per_second=rate)
-    safety = create_safety_maintenance_handler(connection_factory, run_dir=env.get("HOST_RUN_DIR"), notify=notify)
+    safety = create_safety_maintenance_handler(
+        connection_factory, run_dir=env.get("HOST_RUN_DIR"), notify=notify, token_valid=token_is_valid)
     ticks = {"n": 0}
 
     def guard_with_safety() -> None:
@@ -161,14 +182,18 @@ def build_dependencies(
         ScheduleJob.POST_CLOSE_RECONCILE: create_post_close_reconcile_handler(connection_factory, broker, notify=notify),
         ScheduleJob.DAILY_PIPELINE: create_daily_pipeline_handler(
             connection_factory, broker, PipelineConfig.from_rules(cfg), notify=notify, protective_enabled=protective),  # type: ignore[arg-type]
-        ScheduleJob.DAILY_BRIEFING: create_daily_briefing_handler(connection_factory, notify=notify),
+        ScheduleJob.DAILY_BRIEFING: create_daily_briefing_handler(
+            connection_factory, notify=notify,
+            token_expiry=lambda: (token_cache.load().expires_at if token_cache.load() else None),
+            api_calls_today=limiter.calls_today),
         ScheduleJob.WEEKLY_MAINTENANCE: create_weekly_maintenance_handler(
             connection_factory, env.get("BACKUP_DIR", "/app/data/backups"), notify=notify),
         ScheduleJob.MORNING_PREP: create_morning_prep_handler(
             connection_factory, lambda ticker: broker.candles(ticker, datetime.now(KST).date()),
             ratio_change_tolerance=float(cfg["corporate_action"]["ratio_change_tolerance"]),  # type: ignore[index]
             min_cash_factor=float(cfg["corporate_action"]["min_cash_factor"]),
-            scheduled_ex_dates=scheduled_dates),  # type: ignore[index]
+            scheduled_ex_dates=scheduled_dates, calendar_verify=calendar_verify, token_valid=token_is_valid,
+            sync_broker=broker),  # type: ignore[index]
         ScheduleJob.PENDING_CONFIRMATION_POLLER: create_pending_confirmation_poller(connection_factory, broker),
         ScheduleJob.WEEKLY_RANKING_PREVIEW: create_weekly_preview_handler(
             connection_factory, cfg, notify=notify),  # type: ignore[arg-type]
@@ -187,7 +212,11 @@ def build_dependencies(
     return RuntimeDependencies(
         reconcile_account=reconcile_account,
         job_handlers=handlers,
-        market_is_open=lambda: client.is_open_day(datetime.now(KST).date()),
+        market_is_open=market_is_open,
         health_snapshot=health_snapshot,
         refresh_watchdog=lambda: None,  # 하드웨어 워치독은 라즈베리파이에서 연결
+        command_context={
+            "broker": broker, "run_dir": env.get("HOST_RUN_DIR"), "parking_ticker": cfg["portfolio"]["primary_parking_ticker"],  # type: ignore[index]
+            "token_expiry": lambda: (token_cache.load().expires_at if token_cache.load() else None),
+        },
     )

@@ -17,7 +17,9 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Mapping, Protocol
 
 from src.job_handlers import AccountBrokerPort, _clear_transient_stale, _log, _mark_stale, _safe_notify, reconcile_cash
-from src.order_executor import KST, SellRequest, submit_order
+from src.order_executor import (
+    KST, SellRequest, SPREAD_NAV, parking_cycle_id, risk_cycle_id, submit_order, weekly_cycle_id,
+)
 from src.order_manager import OrderSide, calculate_limit_price
 from src.order_policy import OrderKind
 from src.order_sync import sync_orders
@@ -54,6 +56,7 @@ class PipelineConfig:
     min_history_sessions: int = 200
     min_avg_turnover_20d: float = 0.0
     rotation_carryover_days: int = 1
+    max_order_participation_rate: float = 0.01
 
     @classmethod
     def from_rules(cls, rules: Mapping) -> "PipelineConfig":
@@ -68,7 +71,8 @@ class PipelineConfig:
             hms(e["sell_first_deadline"]), hms(e["new_order_cutoff"]),
             int(rules["universe"]["min_history_sessions"]),
             float(rules["universe"]["min_avg_turnover_20d_krw"]),
-            int(rules["market"]["weekly_rotation_carryover_days"]))
+            int(rules["market"]["weekly_rotation_carryover_days"]),
+            float(p["max_order_participation_rate"]))
 
 
 def buy_quantity(*, target: int, held_value: int, active_buy_value: int, limit_price: int,
@@ -153,6 +157,13 @@ def _rotation_allowed(connection: sqlite3.Connection, preview: sqlite3.Row, day:
     return True
 
 
+def _avg_turnover_20d(connection: sqlite3.Connection, ticker: str) -> float:
+    """최근 20거래일 평균 거래대금(원주가 종가 × 거래량, 이력이 20일 미만이면 0)."""
+    rows = connection.execute("SELECT raw_close, volume FROM daily_candles WHERE ticker = ? AND raw_close IS NOT NULL "
+                              "ORDER BY trade_date DESC LIMIT 20", (ticker,)).fetchall()
+    return sum(r["raw_close"] * r["volume"] for r in rows) / 20 if len(rows) == 20 else 0.0
+
+
 def _load_preview(connection: sqlite3.Connection, now: datetime) -> sqlite3.Row | None:
     """최근 8일 안의 가장 큰 revision 의 미소비 프리뷰(`CREATED`/`SENT`)."""
     since = (now - timedelta(days=8)).isoformat()
@@ -223,7 +234,7 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
     for ticker, qty in positions.items():
         if ticker in removed and qty > 0:  # /remove 된 보유 종목: 검증 상실 → 퇴출(5.3절 2번)
             if submit_order(connection, broker, SellRequest(ticker, qty, OrderKind.REDUCE_ONLY_SELL,
-                            f"M{ticker}:{day}", "REMOVED_EXIT"), now=now, account_fresh=True,
+                            risk_cycle_id(day, "REMOVE"), "REMOVED_EXIT"), now=now, account_fresh=True,
                             protective_enabled=protective_enabled) == "SUBMITTED":
                 exited.add(ticker)
                 submitted += 1
@@ -244,7 +255,7 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
                                                                 training_mode=flags.training_mode)
         if info["classification_verified"] != 1 or stop or (sma is not None and price <= sma):
             result = submit_order(connection, broker, SellRequest(ticker, qty, OrderKind.REDUCE_ONLY_SELL,
-                                  f"M{ticker}:{day}", "MA120_EXIT"), now=now, account_fresh=True,
+                                  risk_cycle_id(day, "MA120"), "MA120_EXIT"), now=now, account_fresh=True,
                                   protective_enabled=protective_enabled)
             if result == "SUBMITTED":
                 exited.add(ticker)
@@ -293,7 +304,7 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
             if t not in keep:
                 rotation_sells.append(t)
         for t in rotation_sells:
-            planned_sells.append(SellRequest(t, positions[t], OrderKind.RISK_ROTATION_SELL, f"R{t}:{day}",
+            planned_sells.append(SellRequest(t, positions[t], OrderKind.RISK_ROTATION_SELL, weekly_cycle_id(day),
                                              "WEEKLY_ROTATION", region=meta[t]["region"]))
 
         # 리밸런싱 초과분 매도: 유지 종목의 Drift ≥ 5%p AND 최소 주문 금액. 목표보다 많이 팔지 않도록 내림.
@@ -311,7 +322,7 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
                 sell_qty = min(math.floor(excess / limit), qty)
                 if sell_qty > 0:
                     planned_sells.append(SellRequest(a.ticker, sell_qty, OrderKind.RISK_ROTATION_SELL,
-                                                     f"D{a.ticker}:{day}", "WEEKLY_REBALANCE",
+                                                     weekly_cycle_id(day), "WEEKLY_REBALANCE",
                                                      region=meta[a.ticker]["region"]))
         # 파킹 현금화 매도: 위험자산 매수에 필요한 현금이 부족하면 부족분 N 만큼 올림 수량으로 판다.
         needed = 0
@@ -333,7 +344,7 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
                     sell_qty = min(math.ceil(shortfall / bid), parking_qty)
                     region = meta[cfg.parking_ticker]["region"] if cfg.parking_ticker in meta else "KR"
                     planned_sells.append(SellRequest(cfg.parking_ticker, sell_qty, OrderKind.PARKING_SELL,
-                                                     f"P{cfg.parking_ticker}:{day}", "PARKING_LIQUIDATION",
+                                                     parking_cycle_id(day), "PARKING_LIQUIDATION",
                                                      region=region))
             except Exception as error:  # noqa: BLE001 - 자금 조회 불가: 현금화 보류(매수도 같은 이유로 막힘)
                 _log(connection, "daily_pipeline", "PARKING_SELL_SKIPPED", "WARN", type(error).__name__, now)
@@ -344,12 +355,11 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
     while todo:
         blocked = []
         for request in todo:
-            tagged = replace(request, cycle_id=f"{request.cycle_id}:{attempt}") if attempt else request
-            result = submit_order(connection, broker, tagged, now=clock(), account_fresh=True,
+            result = submit_order(connection, broker, request, now=clock(), account_fresh=True,
                                   protective_enabled=protective_enabled)
             if result == "SUBMITTED":
                 submitted += 1
-            elif result == "BLOCKED:SPREAD_NAV":
+            elif result == SPREAD_NAV:
                 blocked.append(request)
         todo = blocked
         if not todo or clock() >= deadline:
@@ -447,10 +457,12 @@ def _buy_phase(connection, broker, cfg, meta, final_risk, risk_weight, day, cloc
         except Exception as error:  # noqa: BLE001 - 조회 실패·미확정 TR: 매수만 보류
             _log(connection, "daily_pipeline", "BUY_SKIPPED", "WARN", f"{ticker}: {type(error).__name__}", now)
             continue
+        # 7.1절 게이트 5 유동성 한도: 주문 금액이 20일 평균 거래대금의 participation 비율을 넘지 않게 줄인다
+        qty = min(qty, math.floor(cfg.max_order_participation_rate * _avg_turnover_20d(connection, ticker) / limit))
         if qty <= 0:
             continue
         reason = "WEEKLY_BUY" if kind is not OrderKind.PARKING_BUY else "PARKING_ALLOCATION"
-        result = submit_order(connection, broker, SellRequest(ticker, qty, kind, f"B{ticker}:{day}", reason,
+        result = submit_order(connection, broker, SellRequest(ticker, qty, kind, parking_cycle_id(day) if kind is OrderKind.PARKING_BUY else weekly_cycle_id(day), reason,
                               region=meta[ticker]["region"] if ticker in meta else "KR"),
                               now=clock(), account_fresh=True)
         _log(connection, "daily_pipeline", "BUY_ORDER", "INFO", f"{ticker} {qty}주 → {result}", now)

@@ -44,7 +44,7 @@ class UncertainOrderScopeTests(HandlerTestCase):
 
         class Broker(FakeBroker):
             def quote(self, ticker):
-                return Quote(bid=100, ask=100, nav=100.0)
+                return Quote(bid=10000, ask=10005, nav=10000.0)
 
             def sellable_qty(self, ticker):
                 return 10

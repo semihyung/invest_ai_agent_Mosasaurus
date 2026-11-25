@@ -37,7 +37,7 @@ class FakeBroker:
 
     environment = "PAPER"
 
-    def __init__(self, price=85.0, bid=85, positions=None, orders=None, cash=1_000_000, equity=2_000_000):
+    def __init__(self, price=85.0, bid=8500, positions=None, orders=None, cash=1_000_000, equity=2_000_000):
         self.transport = FakeTransport()
         self.price, self.bid = price, bid
         self._positions = positions if positions is not None else [Position("069500", 10)]
@@ -46,7 +46,8 @@ class FakeBroker:
         self.cancelled, self.fail = [], False
 
     def quote(self, ticker):
-        return Quote(bid=self.bid, ask=self.bid + 1, nav=None)
+        # Ask1 > Bid1(명세 7.2절), 2,000원 이상은 5원 단위, 스프레드 ≈0.06%(위험 축소 한도 1% 통과)
+        return Quote(bid=self.bid, ask=self.bid + 5, nav=None)
 
     def sellable_qty(self, ticker):
         return 10
@@ -99,6 +100,9 @@ class HandlerTestCase(unittest.TestCase):
             " source_timestamp) VALUES ('069500','2026-11-24',100,100,1000,'KIS','t')")
         self.conn.execute(
             "INSERT INTO system_state (\"key\", value, updated_at) VALUES ('reconciliation_ok','true','t')")
+        # 마지막 성공 대조가 항상 신선하도록 먼 미래 시각을 둔다(7.1절 게이트 2, 300초 TTL)
+        self.conn.execute(
+            "INSERT INTO system_state (\"key\", value, updated_at) VALUES ('last_reconciliation_at','2099-01-01T00:00:00+00:00','t')")
         self.conn.commit()
         self.notes = []
 
@@ -128,7 +132,7 @@ class IntradayGuardTests(HandlerTestCase):
         self.run_guard(broker)
         self.run_guard(broker)  # 10초 뒤 다시 돌아도 같은 사유는 1회만
         self.assertEqual(len(broker.transport.calls), 1)
-        self.assertEqual(broker.transport.calls[0]["price"], 85)
+        self.assertEqual(broker.transport.calls[0]["price"], 8500)
         row = self.conn.execute("SELECT status, kis_order_no FROM orders").fetchone()
         self.assertEqual((row[0], row[1]), ("ACCEPTED", "0000001"))
 

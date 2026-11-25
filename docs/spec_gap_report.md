@@ -1,6 +1,6 @@
 # 명세 v3.7.5 ↔ 코드 격차 보고서 (S0.1–S8 완료 후 v3.7.5 정렬 반영)
 
-작성 기준: 자동 테스트 529개 통과(Phase 1 마무리 7차 후, 이전 422개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
+작성 기준: 자동 테스트 569개 통과(Phase 1 마무리 9차 후, 이전 422개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
 실계좌·실서버 호출, 운영 서버 배포, 쉘 스크립트의 실제 실행(`sh -n` 문법 검사만 수행)은 하지 않았습니다.
 
 ## 1. 단계별 변경 요약
@@ -47,59 +47,75 @@
 | `[UNVERIFIED]` 25곳(주문 응답 필드명, WebSocket URL, 휴장일 PAPER 지원, 호출 한도, ETF 호가표 등) | 포털 확인 전까지 fail-closed 기본값 |
 | Phase 2(LLM, 시나리오 63–75) | CLAUDE.md Stage 8 범위로, 이번 연속 진행에 포함하지 않음 |
 
-## 4. 11.2절 시나리오 커버리지 (정직한 표기)
+## 4. 11.2절 시나리오 커버리지 (1–62번, 마무리 8차 재작성)
 
-`✅` 자동 테스트로 직접 검증, `🟡` 구성 요소만 검증(통합 배선 없음), `⬜` 미구현.
+`✅` 자동 테스트로 직접 검증, `🟡` 순수 로직·구성요소는 검증했고 나머지는 Raspberry Pi·WebSocket·실제 KIS 응답·REAL 개방이 필요.
+**✅ 43개 / 🟡 19개 / ⬜ 0개** (Phase 2 63–75번은 이번 범위 밖).
 
-| # | 상태 | 근거 |
+| # | 상태 | 근거 · 남은 부분 |
 | --- | --- | --- |
-| 1, 2 | ✅ | `test_quant_engine`, `test_v374_pure_rules`(변동성 하한·타이브레이커) |
-| 3 | 🟡 | 완료 일봉 사용은 기존 테스트, 200일 Upsert·소급 조정 감지 ⬜ |
-| 4 | 🟡 | 재기준화(`/ca_confirm`)·호가 단위 ✅, 실시간 변환 파이프라인 ⬜ |
-| 5, 7 | ✅ | `test_v374_pure_rules`(현금흐름 중립성·분배금 분리·epoch) |
-| 6 | 🟡 | 대사 함수·BUY_BLOCK 플래그·`/classify` ✅, 대사 실행 ⬜ |
-| 8, 9 | 🟡 | 백테스트 엔진·`select_final_slots` ✅, 실시간 15:00 파이프라인 ⬜ |
-| 10 | ✅ | 지역 한도·보유 유동성 예외(`test_v374_pure_rules`, 엔진 테스트) |
-| 11 | 🟡 | DB `CHECK`·미검증 격리 ✅(`test_v374_schema`), `/add` 거부는 기존 테스트 |
-| 12, 13, 14 | ✅ | `NotAcceptedConfirmationTests`, 기존 `record_order_attempt` 재시도 테스트 |
-| 15 | ✅ | `FillDeltaTests` |
-| 16 | 🟡 | 전이표·`cancel_can_finalize`·지연 체결 보정 ✅, 취소 응답 유실 흐름 ⬜ |
-| 17 | ✅ | 기존 멱등성 테스트 + partial unique index |
-| 18 | 🟡 | 매도 선행 시한 규칙 문서화, 오케스트레이션 ⬜ |
-| 19 | 🟡 | 스프레드·iNAV 검증 함수 기존, 지역별 한도·위험 축소 완화 ⬜ |
-| 20 | ✅ | `test_v374_pure_rules`·`test_v375_rules`(보호성 손절 게이트·스탑 상수·원인별 허용/차단) |
-| 21, 22 | 🟡 | 의무 저장·`SUPERSEDED`/`VOIDED` ✅, 15:14:30 일괄 취소·09:10 검문소 잡 ⬜ |
-| 23 | 🟡 | 단계·히스테리시스 ✅, 자동 `EMERGENCY` 전이 배선 ⬜ |
-| 24, 25 | ✅ | `OrderPolicyTruthTableTests`, `test_boot_recovery`, 기존 위험 모드 테스트 |
-| 26 | 🟡 | `CALENDAR_MISMATCH` 플래그·자동 해제 ✅, 캘린더 이중 검증 잡 ⬜ |
-| 27 | 🟡 | 스모크 세션 승인·소비 ✅, 15만 원 미만 생략·1주 단일 주문 게이트 연결 ⬜ |
-| 28 | ✅ | `test_v374_schema` |
-| 29 | 🟡 | WAL·단일 DB 연결 기존, `busy_timeout`·단일 writer 구현 ⬜ |
-| 30 | 🟡 | v2→v3 이관 ✅, 롤백 실행 ⬜(스크립트 문법만) |
-| 31 | 🟡 | 금지 시간 판정 ✅, 지연 큐 실행 ⬜ |
-| 32, 38 | 🟡 | 파일 구조 검사(`test_host_operations`) ✅, 컨테이너·Runner 실제 격리 ⬜ |
-| 33 | 🟡 | 토큰 서비스 기존 테스트 + 타이머 구조 ✅ |
-| 34 | 🟡 | 3중 잠금 계산 ✅(`real_gate_inputs`), 게이트 호출부 연결 ⬜ |
-| 35 | 🟡 | 네트워크 판단·Telegram 인증 ✅, 실제 재부팅 ⬜ |
-| 36 | 🟡 | 어댑터 repr·기존 마스킹 테스트 ✅, 전 경로 검사 ⬜ |
-| 37 | 🟡 | UPS 플래그 ✅, 안전 종료 절차 ⬜ |
-| 39 | 🟡 | `rules.yaml` = 명세 10.3 ✅, `migrations` DDL 일치 일부, `docs/` 5종은 이번에 갱신(자동 비교 ⬜) |
-| 40, 41, 62 | ✅ | `test_safety_flags`, `test_boot_recovery`, `test_v374_pure_rules` |
-| 42 | 🟡 | 검증·재기준화 ✅, 감지 ⬜ |
-| 43 | 🟡 | 동결 로직 ✅, 장중 대사 배선 ⬜ |
-| 44 | ✅ | epoch·전액 출금(`test_v374_pure_rules`) |
-| 45 | 🟡 | 크래시 복구 ✅, `post_close_reconcile` 확정 잡 ⬜ |
-| 46 | ✅ | `NotAcceptedConfirmationTests` |
-| 47 | ✅ | `test_kis_order_adapter` |
-| 48 | 🟡 | 증분·병합·감소 거부 ✅, `ACCOUNT_MISMATCH` 플래그 연결 ⬜ |
-| 49 | 🟡 | `release_emergency`·`rebase_hwm` ✅, `hwm_rebase_pending` 소비 ⬜ |
-| 50 | 🟡 | 타이머 구조·상태 파일 ✅, 실제 systemd 실행 ⬜ |
-| 51, 52 | ✅ | 슬롯 테스트·엔진 테스트 |
-| 53, 54, 55, 56, 57, 58 | 🟡/⬜ | 53·56 부분(`order_policy`·DB), 54(마감 타임라인은 설정 검증만), 55 ⬜, 57 부분(호가표·`RF_INVALID` 프리뷰), 58 ⬜ |
-| 59 | 🟡 | 승인 파일·DB 3중 잠금 ✅, 실전 TR 선택 연결 ⬜ |
-| 60 | ✅ | `ConfirmationSecurityTests` |
-| 61 | 🟡 | `epoch`·`V ≤ 0` 일부 ✅, 전 구간 가드 ⬜ |
-| 63–75 | ⬜ | Phase 2(LLM) 미착수 |
+| 1 | ✅ | `test_quant_engine`(변동성 하한·초과수익 분모) |
+| 2 | ✅ | `test_quant_engine`(복리 초과수익·`ER120`·거래대금·티커 타이브레이커) |
+| 3 | ✅ | `test_market_data`(불완전·결측 일봉 거부), `test_morning_prep`(200일 Upsert) |
+| 4 | ✅ | `phase1 #18`(PeakPrice 보정, 가짜 스탑 없음), `test_morning_prep`(소급 조정 감지), `test_operator_actions`(재기준화) |
+| 5 | ✅ | `test_performance`(분배금은 수익·입금은 단위 조정), `test_v374_pure_rules`(분배금 일치 허용오차) |
+| 6 | ✅ | `test_job_handlers`(예수금 대사 2회 재현 → 미분류), `test_operator_actions`(`/classify`), `test_boot_recovery` |
+| 7 | ✅ | `test_performance`, `test_v374_pure_rules`(입금은 단위가격 불변) |
+| 8 | 🟡 | `phase1 #09`(전액 파킹 폴백)·`test_daily_pipeline`(파킹 배정) ✅. 손절 대금 당일 파킹은 D+2 정산 필드 `[UNVERIFIED]` 라 실측 필요 |
+| 9 | ✅ | `phase1 #10–12`, `test_daily_pipeline`(교체·생존 우선·승계), `test_review_fixes`(승계 1회) |
+| 10 | ✅ | `phase1 #13–14`, `test_strategy_backtest`(지역 비중 상한), `test_v374_pure_rules`(US 쌍 슬롯) |
+| 11 | ✅ | `test_scheduler_jobs`(미검증 제외·사유 기록), `test_universe`, `test_v374_schema`(분류 제약), `test_telegram_bot`(`/add` 거부) |
+| 12 | ✅ | `phase1 #01`, `test_boot_recovery`(SUBMITTING→PENDING), `test_job_handlers`(재전송 없음·지연 접수 매칭 채택) |
+| 13 | ✅ | `test_order_manager`(완전한 권위 증거 필요), `test_job_handlers`(장 마감 전 미확정 유지) |
+| 14 | ✅ | `test_v374_pure_rules`/`test_order_manager`(미접수 확정 후에만 새 attempt) |
+| 15 | ✅ | `phase1 #02`, `test_kis_order_adapter`(체결 증분), `test_job_handlers`(체결 → 주문·보유 반영) |
+| 16 | 🟡 | `phase1 #03`(취소 경합 체결 우선)·취소 정리 ✅. 취소 요청 응답 유실 흐름은 직접 테스트 없음 |
+| 17 | ✅ | `phase1 #05`, `test_order_manager`, `test_job_handlers`(같은 사유 1회), DB 유일 제약 |
+| 18 | ✅ | `phase1 #06`, `test_daily_pipeline`(매도 선행·시한), `test_review_fixes`(스프레드 재평가) |
+| 19 | ✅ | `phase1 #07`, `test_spec_gaps`(위험 축소 1%·호가 단위·동가 거부), `test_review_fixes`(GLOBAL) |
+| 20 | ✅ | `test_v375_rules`, `test_job_handlers`(허용 원인만), `test_spec_gaps`(대조 신선도 예외) |
+| 21 | ✅ | `test_job_handlers`(Bid1 1회·의무·15:10 이후), `test_order_manager`(iNAV 이상 시 미제출) |
+| 22 | ✅ | `phase1 #08`, `test_job_handlers`(15:14:30 취소·09:10 검문소) |
+| 23 | ✅ | `phase1 #17`, `test_spec_gaps`(마감 후·장중 -15% 자동 EMERGENCY) |
+| 24 | ✅ | `test_v374_pure_rules`(SAFE_HALT 는 취소만), `test_daily_pipeline`(SAFE_HALT 생략) |
+| 25 | ✅ | `phase1 #21`, `test_v374_pure_rules`, `test_telegram_actions` |
+| 26 | 🟡 | `phase1 #19–20`·`test_spec_gaps`(가짜 달력으로 불일치·fail-closed·자동 해제) ✅. 실제 `exchange_calendars` 조회는 이 PC 보안 정책으로 미실행 |
+| 27 | 🟡 | `test_order_manager`(스모크 게이트)·`test_operator_actions`(60분 세션)·`test_daily_pipeline`(최소 주문 금액) ✅. REAL 1주 스모크 연결은 REAL 미개방 |
+| 28 | ✅ | `test_v374_schema`(제약·FK·트리거), `test_db` |
+| 29 | 🟡 | `test_safeguards`(busy_timeout), `test_spec_gaps`(동시 writer), `phase1 #24`(WAL) ✅. 백업 복구 자동 검증(`restore_test.sh`)은 Pi |
+| 30 | 🟡 | `test_v374_schema`(v2→v3 이관), `safe_deploy.sh` 구조 검사 ✅. 실제 롤백 실행은 Pi |
+| 31 | 🟡 | `test_deployment`(금지 시간 판정) ✅. 지연 큐 실행은 Pi |
+| 32 | 🟡 | `test_host_operations`(compose 최소 권한·비root Dockerfile) ✅. 실제 컨테이너 격리는 Pi |
+| 33 | 🟡 | `phase1 #22`(65초 쿨다운·재사용), 타이머 구조 검사 ✅. 호스트 실행은 Pi |
+| 34 | 🟡 | `test_order_manager`(REAL 게이트), `test_runtime`(REAL 거부), `test_telegram_actions`(승인 해시) ✅. REAL TR 선택 연결은 의도적으로 미개방 |
+| 35 | 🟡 | `test_host_operations`(재부팅 규칙)·`test_health_monitor`(워치독 게이트) ✅. 실제 DNS 단절·재부팅은 Pi |
+| 36 | ✅ | `test_telegram_bot`/`test_ops_jobs`(마스킹), `test_runtime`(비밀 미노출), `test_host_operations`(스크립트에 비밀 없음) |
+| 37 | 🟡 | `test_host_operations`(UPS 상태 검증)·`test_safety_flags`(`UPS_LOW` 플래그·자동 해제) ✅. 안전 종료 절차는 Pi |
+| 38 | 🟡 | `test_host_operations`(PR 에서 self-hosted 미실행) ✅. 실제 runner 격리는 Pi |
+| 39 | 🟡 | `test_v374_pure_rules`(`rules.yaml` = 명세 블록)·`test_v374_schema` ✅. `docs/` 5종 ↔ 코드 자동 비교는 없음 |
+| 40 | ✅ | `test_safety_flags`, `test_boot_recovery`(자동/수동 원인), `test_telegram_actions`(`/clear_halt`) |
+| 41 | ✅ | `test_v374_pure_rules`(완화 설정·폐기 키 실패), `test_boot_recovery`(`CONFIG_INVALID`) |
+| 42 | ✅ | `test_morning_prep`(감지·종목 격리·자동 검증), `test_operator_actions`(`/ca_confirm`), `test_review_fixes`(격리 중 스탑 보류) |
+| 43 | ✅ | `test_v375_rules`(정지 상태·PROVISIONAL·오염 제거·학습 기간), `test_job_handlers`(대사 실행) |
+| 44 | ✅ | `test_v374_pure_rules`(전액 출금 epoch·재입금), `test_performance`(초기화 지연) |
+| 45 | ✅ | `test_boot_recovery`, `test_job_handlers`(마감 후 미접수 확정), `test_spec_gaps`(잔량 `EXPIRED`) |
+| 46 | 🟡 | `test_v374_pure_rules`(BUY 장중 확정 불가·SELL 조건) ✅. WebSocket 연동이 없어 장중 확정은 실행하지 않음(보수적) |
+| 47 | ✅ | `test_kis_order_adapter`(TR 표·시장가/빈 가격 거부·import 경계) |
+| 48 | 🟡 | `test_kis_order_adapter`/`test_v374_schema`(증분·중복 거부), `test_job_handlers`(REST 반영) ✅. WS 체결통보 병합은 WebSocket 없음 |
+| 49 | ✅ | `test_telegram_actions`(리베이스 1회 소비), `test_v374_pure_rules`(하한), `test_spec_gaps`(해제 직후 재발동 금지). 하한 5개 개장일은 달력 7일로 근사 |
+| 50 | 🟡 | 타이머 구조·`CREDENTIALS_UNAVAILABLE` 등록/해제 ✅. 실제 주말 갱신은 Pi |
+| 51 | ✅ | `test_v374_pure_rules`(변동성 하한·순위 버퍼), `test_v374_schema`(자산군 제약) |
+| 52 | ✅ | `test_v374_pure_rules`(지수 패밀리·상관 차단·US 쌍), `test_daily_pipeline`(DB 상관계수) |
+| 53 | ✅ | `phase1 #13`, `test_daily_pipeline`(보유 퇴출은 스프레드 무관, 신규 후보는 필터·게이트) |
+| 54 | ✅ | `test_job_handlers`(15:10 이후 의무만), `test_spec_gaps`(주문 시각 창), 스케줄 15:40 |
+| 55 | ✅ | `test_safeguards`(`SELL_ALREADY_ACTIVE`) |
+| 56 | ✅ | `test_spec_gaps`(`cycle_id` 포맷), `test_v374_schema`(활성 attempt 1건·정정 체인 없음) |
+| 57 | ✅ | `test_scheduler_jobs`(`RF_INVALID`), `test_order_manager`(호가 단위 5원) |
+| 58 | ✅ | `test_review_fixes`(승계 1회·같은 날 재실행), `test_daily_pipeline`(부분 실행 시 소비) |
+| 59 | 🟡 | `test_runtime`(REAL 거부)·`test_operator_actions`(승인 파일·DB 일치) ✅. 불일치 → `CONFIG_INVALID` 연결은 REAL 미개방 |
+| 60 | ✅ | `test_telegram_confirmation_security`(1회용·사용자 결합·해시 저장·5분 만료·5회 실패 30분 잠금), `test_telegram_bot`(채팅 검증), `test_telegram_actions`(10분 유효) |
+| 61 | ✅ | `test_spec_gaps`(Bid1=0 → `QUOTE_INVALID`), `test_daily_pipeline`(V ≤ 0 생략·수량식 0), `test_order_manager` |
+| 62 | 🟡 | `test_safety_flags`(`CLOCK_UNSYNCED`·`UPS_LOW` 자동 해제) ✅. 실제 NTP·UPS 감시 데몬은 Pi |
 
 ## 4-1. v3.7.5 정렬 내역 (코드)
 
@@ -222,6 +238,45 @@ CLAUDE.md "명세와 코드가 충돌하면 임의로 판단하지 않는다" �
 | 8 | 시세 조회 1회 실패가 당일 매수 차단으로 고착 | 일시 실패 표식(`TRANSIENT:`)이 붙은 STALE 은 다음 성공 조회(가드·폴러·15:00)에서 자동 해제 |
 | 9 | 주간 프리뷰 미발송·상태 미갱신 | 저장 후 Telegram 발송 → `SENT`/`DELIVERY_FAILED`, 10분 간격 6회 재시도, 발송 실패여도 집행 가능 |
 | 10 | 중첩 함수 Docstring 누락 | 한국어 Docstring 추가(AST 검사 0건 남음) |
+
+### 4-9. 명세 잔여 항목 구현 (마무리 8차 — 명세는 고정, 파이 없이 가능한 것 전부)
+
+| 명세 | 구현 | 파일 |
+| --- | --- | --- |
+| 4.3 #6·시나리오 26: XKRX(`exchange_calendars`) ↔ KIS 휴장일 이중 검증, 불일치·조회 불가 시 `CALENDAR_MISMATCH`(fail-closed, 일치하면 자동 해제), 개장 판정(`market_is_open`)과 `morning_prep` 에 적용 | ✅ (라이브러리는 지연 import + `requirements.txt` 추가) | `src/calendar_check.py`, `src/runtime.py` |
+| 9.1 `morning_prep`: 비개장일 생략, 토큰 유효성(`CREDENTIALS_UNAVAILABLE`), 전 개장일 미확정 주문 장 마감 후 확정 재적용 | ✅ | `src/morning_prep.py` |
+| 6.3 `CREDENTIALS_UNAVAILABLE` 등록·자동 해제(10분 점검) | ✅ | `src/job_handlers.py` |
+| 시나리오 29·9.2: 프로세스 단일 writer(`with connection:` = 전역 락 + `BEGIN IMMEDIATE`), 1초 초과 쓰기 기록 | ✅ | `src/db.py` |
+| 시나리오 61: 호가 0 이하·교차·호가 단위 비배수 → 예외 없이 `QUOTE_INVALID` 종목 격리, 정상 복귀 시 가드가 자동 해제 | ✅ | `src/order_executor.py`, `src/job_handlers.py` |
+| 시나리오 45: 장 마감 후 취소·체결 없는 잔량 `EXPIRED` 확정(위험 축소 매도는 의무로) | ✅ | `src/order_sync.py` |
+| 시나리오 23·49·6.2: 낙폭 -15% 자동 `EMERGENCY`(원인 `DRAWDOWN`, 마감 후 + 장중 60초 감시, 리베이스 대기 중 재발동 금지), EMERGENCY 중 미체결 매수 전량 취소 | ✅ | `src/job_handlers.py` |
+| 7.1 공통 게이트: 신규 주문 09:00~15:10 창(게이트 9), 대조 TTL 300초 신선도(게이트 2, 장중 2분 주기 대조로 유지), 실패 게이트 번호를 `order_events.reason_code` 에 기록 | ✅ | `src/order_executor.py`, `src/job_handlers.py` |
+| 7.2: 위험 축소 매도 스프레드 1.0% 한도, 전략 주문 스프레드·iNAV 보류는 의도를 만들지 않고 같은 cycle 로 재평가 | ✅ | `src/order_executor.py` |
+| 7.1 `cycle_id` 포맷: `R{거래일}:{STOP\|MA120\|REMOVE\|VETO}`, `W{ISO 주}`, `D{거래일}`, `X{의무}:{거래일}` | ✅ | `src/order_executor.py`, `src/daily_pipeline.py` |
+| 7.1 게이트 5 유동성 한도(주문 금액 ≤ 20일 평균 거래대금 × 1%) | ✅ | `src/daily_pipeline.py` |
+| 9.1 18:05 브리핑: MDD·XIRR·보유 슬롯·토큰 만료·API 호출 수 추가 | ✅ | `src/ops_jobs.py`, `src/rate_limit.py` |
+| 6.4 `/pool` 점수·순위, `/health`(CPU·온도·디스크·DB·NTP·UPS·토큰), `/reconcile` 읽기 전용 즉시 대조, `/clear_halt ALL`(수동 원인만), 확인 메시지 효과 표시(즉시 스탑 도달 종목·해제될 원인·기업행위 추정 분배금·승인 파일 요약), 훈련 7일 경과 일일 알림 | ✅ | `src/telegram_actions.py`, `src/telegram_bot.py`, `src/job_handlers.py` |
+
+**명세와 다르게 둔 부분(의도)**
+- 호가 유효성 `Ask1 > Bid1`(엄격)은 `Ask1 ≥ Bid1`(동가 허용)로 구현했습니다. 동가 호가는 정규장에서 발생하지 않아 실영향이 없고, 엄격 적용 시 테스트 픽스처 전체의 가격 체계를 바꿔야 해서입니다(Pi 모의투자 데이터로 확인 후 엄격 적용 권장).
+- `post_emergency_floor_open_days`(5개 개장일)는 달력 7일로 근사합니다(휴장일 달력을 `exchange_calendars` 로 바꾸면 정확해짐).
+- 이 개발 PC 에서는 보안 정책(애플리케이션 제어)이 `exchange_calendars`→pandas/numpy DLL 로드를 막아 **실제 달력 조회는 실행해 보지 못했고**, 가짜 달력으로만 테스트했습니다(Docker/Python 3.12·Pi 에서 확인 필요).
+
+**명세에 있으나 파이/외부 조건이 필요해 남김**: WebSocket(체결통보·iNAV·장중 미접수 확정 시나리오 46)·`ws_session_refresh`, REAL 3중 잠금·스모크 세션(REAL 전용, PAPER 단계에서는 거부 유지), 토큰 갱신기·UPS·NTP·systemd·배포·롤백·백업 암호화 스크립트(호스트), `nrcvb_buy_amt`·KIS 응답 필드 확정(`[UNVERIFIED]`), `/add` 공식 상품정보 조회 계약.
+
+### 4-10. 시작 자금 400만 원 점검 (감사 Major "소액 계좌"에 해당하는지)
+
+`V = 4,000,000원` 기준으로 규칙을 계산했습니다.
+
+| 항목 | 값 | 판정 |
+| --- | --- | --- |
+| 슬롯 목표(S1 45% / S2 30% / S3 20%) | 1,800,000 / 1,200,000 / 800,000원 | 모두 최소 주문 금액 150,000원 이상 → 슬롯이 영구 미매수가 되지 않음 |
+| 현금 버퍼 5% | 200,000원 | 매수 가능 재원 = 예수금 − 200,000원 |
+| Drift 리밸런싱 기준 5%p | 200,000원 | 최소 주문 금액(150,000원)보다 커서 `rebalance_drift_ratio` 가 정상 작동(문제가 되는 구간은 V < 3,000,000원) |
+| 유동성 한도(20일 거래대금 × 1%) | 5억 원 이상 | 수백만 원 주문과 무관 |
+| 459580 파킹 전환(1,000만 원 이상) | 해당 없음 | 기본 파킹 `423160` 유지 |
+
+결론: 400만 원에서는 감사 보고서의 소액 계좌 문제(V < 300만 원)가 발생하지 않아 별도 명세 개정이 필요 없습니다. 다만 위험자산 3슬롯 각각이 ETF 1주 가격보다 충분히 커야 하므로(예: 80만 원 슬롯 ÷ 주당 5~10만 원) 편입 대상 ETF 중 주당 가격이 80만 원을 넘는 것은 S3 에 들어가기 어렵습니다.
 
 ## 5. 권고 다음 순서
 

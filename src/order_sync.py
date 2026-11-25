@@ -154,6 +154,12 @@ def sync_orders(connection: sqlite3.Connection, broker: SyncBroker, *, now: date
             if o["status"] == "ACCEPTED":
                 _move(connection, o, OrderStatus.CANCEL_PENDING, now, "BROKER_CANCELED")
             _move(connection, o, OrderStatus.CANCELED, now, "BROKER_CANCELED_CONFIRMED")
+        elif market_closed and snap.remaining_qty > 0 and o["status"] in ("ACCEPTED", "PARTIALLY_FILLED", "CANCEL_PENDING"):
+            # 장 마감 후 완전 조회: 취소·체결 없이 남은 잔량은 당일 만료(EXPIRED)로 확정한다(7.3절).
+            _move(connection, o, OrderStatus.EXPIRED, now, "EXPIRED_AFTER_CLOSE")
+            if o["side"] == "SELL" and o["intent_type"] in ("RISK_REDUCTION", "EXIT_OBLIGATION_RETRY"):
+                open_exit_obligation(connection, ticker=o["ticker"], quantity=snap.remaining_qty,
+                                     reason="EXPIRED_UNFILLED", source_event_id=f"E{o['order_id']}", now=now)
         elif snap.filled_qty > 0:
             _move(connection, o, OrderStatus.PARTIALLY_FILLED, now, "BROKER_PARTIAL")
         else:

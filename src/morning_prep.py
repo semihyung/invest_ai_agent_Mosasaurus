@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Callable, Sequence
 
 from src.market_data import DailyCandle
+from src.order_sync import sync_orders
 from src.safety_flags import clear_flag, raise_flag
 
 MAX_DAILY_MOVE = 0.30  # 4.3절 #2: 일간 수익률 ±30% 초과 미검증 이상치
@@ -107,6 +108,9 @@ def create_morning_prep_handler(
     min_cash_factor: float = 0.95,
     min_history: int = 200,
     scheduled_ex_dates: Callable[[str], set[str]] = lambda ticker: set(),
+    calendar_verify: Callable[[sqlite3.Connection, datetime], bool | None] | None = None,
+    token_valid: Callable[[], bool] | None = None,
+    sync_broker: object | None = None,
 ) -> Callable[[], None]:
     """활성 종목마다 일봉을 받아 검사하고 갱신합니다. 한 종목의 실패가 다른 종목을 막지 않습니다."""
 
@@ -115,6 +119,21 @@ def create_morning_prep_handler(
         now = clock()
         connection = connection_factory()
         try:
+            # 9.1절: ① XKRX·KIS 휴장일 이중 검증(비개장일·불일치면 이후 단계 생략) ② 토큰 유효성 ③ 전 개장일 미확정 주문 확정
+            if calendar_verify is not None and calendar_verify(connection, now) is not True:
+                return
+            if token_valid is not None:
+                if token_valid():
+                    clear_flag(connection, "HALT", "CREDENTIALS_UNAVAILABLE", now=now, cleared_by="SYSTEM")
+                else:
+                    raise_flag(connection, "HALT", "CREDENTIALS_UNAVAILABLE", now=now, detail="TOKEN_INVALID_AT_MORNING_PREP")
+                    return
+            if sync_broker is not None:
+                try:  # 장 마감 후 확정 규칙 재적용(7.3절): 전 개장일의 미확정 주문을 완전 조회로 확정한다
+                    sync_orders(connection, sync_broker, now=now, market_closed=True)
+                except Exception as error:  # noqa: BLE001 - 조회 실패는 다음 폴러·마감 후 대조가 다시 시도
+                    raise_flag(connection, "BUY_BLOCK", "ACCOUNT_DATA_STALE", now=now,
+                               detail=f"TRANSIENT:morning_sync:{type(error).__name__}")
             for row in connection.execute("SELECT ticker FROM universe_assets WHERE status = 'ACTIVE'").fetchall():
                 ticker = row["ticker"]
                 try:

@@ -26,14 +26,16 @@ class PipelineBroker(FakeBroker):
         kw.setdefault("cash", 9_000_000)
         kw.setdefault("equity", 10_000_000)
         super().__init__(positions=[Position(t, q) for t, q in (holdings or {}).items()], **kw)
-        self.prices, self.buyable, self.raise_buyable = prices, 9_000_000, False
+        # 호가 단위(2,000원 이상 5원)와 Ask1 > Bid1 을 만족하도록 가격을 100배로 환산해 쓴다(예: 110 → 11,000원)
+        self.prices = {ticker: value * 100 for ticker, value in prices.items()}
+        self.buyable, self.raise_buyable = 9_000_000, False
 
     def last_price(self, ticker):
         return float(self.prices[ticker])
 
     def quote(self, ticker):
         price = self.prices[ticker]
-        return Quote(bid=price, ask=price, nav=float(price))
+        return Quote(bid=price, ask=price + 5, nav=float(price))
 
     def sellable_qty(self, ticker):
         return dict((p.ticker, p.quantity) for p in self._positions).get(ticker, 0)
@@ -61,7 +63,7 @@ class PipelineTestCase(unittest.TestCase):
             for i in range(210):
                 self.conn.execute(
                     "INSERT INTO daily_candles (ticker, trade_date, raw_close, adjusted_close, volume, source,"
-                    " source_timestamp) VALUES (?,?,100,100,100000000,'KIS','t')",
+                    " source_timestamp) VALUES (?,?,10000,10000,1000000,'KIS','t')",
                     (ticker, f"2026-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}"))
         self.conn.execute(
             "INSERT INTO daily_portfolio (snapshot_date, total_equity, cash_balance, parking_value, risk_asset_value,"
@@ -70,6 +72,8 @@ class PipelineTestCase(unittest.TestCase):
             "'VALID','{}','VALID')")
         self.conn.execute(
             "INSERT INTO system_state (key, value, updated_at) VALUES ('reconciliation_ok','true','t')")
+        self.conn.execute(
+            "INSERT INTO system_state (key, value, updated_at) VALUES ('last_reconciliation_at','2099-01-01T00:00:00+00:00','t')")
         self.conn.commit()
         self.now = T0
 
@@ -192,18 +196,18 @@ class PipelineTests(PipelineTestCase):
 
     def test_drift_overweight_is_trimmed_down_to_target_with_floor(self):
         self.add_preview(["069500"])
-        broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100}, holdings={"069500": 100_000})
+        broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100}, holdings={"069500": 1_000})
         self.run_pipeline(broker)
         sells = [c for c in self.calls(broker) if c[1] == "SELL"]
-        self.assertEqual(sells, [("069500", "SELL", 59_090)])  # floor((11,000,000 - 4,500,000) / 110)
+        self.assertEqual(sells, [("069500", "SELL", 590)])  # floor((1,000주 × 11,000 − 4,500,000) / Bid1 11,000)
 
     def test_parking_is_liquidated_only_for_the_cash_shortfall(self):
         self.add_preview(["069500"])
-        broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100}, holdings={"423160": 50_000},
+        broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100}, holdings={"423160": 500},
                                 cash=100_000)
         broker.buyable = 100_000
         self.run_pipeline(broker)
-        self.assertEqual([c for c in self.calls(broker) if c[1] == "SELL"], [("423160", "SELL", 45_000)])
+        self.assertEqual([c for c in self.calls(broker) if c[1] == "SELL"], [("423160", "SELL", 450)])
 
     def test_stop_loss_reentry_block_is_released_by_the_next_consumed_rotation(self):
         self.add_preview(["069500"])
@@ -222,6 +226,21 @@ class PipelineTests(PipelineTestCase):
         self.run_pipeline(broker)
         self.assertNotIn("360750", [c[0] for c in self.calls(broker)])
         self.assertIn("069500", [c[0] for c in self.calls(broker)])
+
+    def test_order_size_is_capped_by_the_liquidity_participation_limit(self):
+        self.add_preview(["069500"])
+        broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100}, equity=10_000_000_000,
+                                cash=9_000_000_000)
+        broker.buyable = 9_000_000_000
+        self.run_pipeline(broker)
+        first = [c for c in self.calls(broker) if c[0] == "069500"][0]
+        self.assertEqual(first, ("069500", "BUY", 9_086))  # floor(1% × 20일 평균 거래대금 1e10 / Ask1 11,005)
+
+    def test_strategy_cycle_ids_follow_the_weekly_and_parking_formats(self):
+        self.add_preview(["069500"])
+        self.run_pipeline(PipelineBroker({"069500": 110, "360750": 110, "423160": 100}))
+        cycles = {r[0] for r in self.conn.execute("SELECT cycle_id FROM order_intents")}
+        self.assertEqual(cycles, {"W2026-48", "D2026-11-25"})
 
     def test_missing_nav_blocks_strategy_orders(self):
         self.add_preview(["069500"])

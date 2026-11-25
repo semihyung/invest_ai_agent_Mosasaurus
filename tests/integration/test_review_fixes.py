@@ -86,8 +86,8 @@ class GlobalRegionTests(HandlerTestCase):
 
     def test_spread_check_accepts_global_region(self):
         from src.order_manager import validate_spread_and_nav
-        self.assertTrue(validate_spread_and_nav(Quote(bid=100, ask=100, nav=100.0), region="GLOBAL"))
-        self.assertFalse(validate_spread_and_nav(Quote(bid=100, ask=100, nav=90.0), region="GLOBAL"))  # 괴리 > 1.2%
+        self.assertTrue(validate_spread_and_nav(Quote(bid=10000, ask=10005, nav=10000.0), region="GLOBAL"))
+        self.assertFalse(validate_spread_and_nav(Quote(bid=10000, ask=10005, nav=9000.0), region="GLOBAL"))  # 괴리 > 1.2%
 
 
 class QuarantineTests(HandlerTestCase):
@@ -121,8 +121,9 @@ class TransientStaleTests(HandlerTestCase):
         self.assertNotIn("ACCOUNT_DATA_STALE", active_codes(self.conn, "BUY_BLOCK"))
 
     def test_reconciliation_pending_flag_is_not_cleared_by_a_good_tick(self):
+        from src.job_handlers import _clear_transient_stale
         raise_flag(self.conn, "BUY_BLOCK", "ACCOUNT_DATA_STALE", now=MORNING, detail="PROVISIONAL_ACCOUNT_MISMATCH")
-        create_intraday_guard_handler(self.factory, FakeBroker(price=95.0), clock=lambda: MORNING)()
+        _clear_transient_stale(self.conn, MORNING)  # 일시 조회 실패 표식이 없으므로 건드리지 않는다
         self.assertIn("ACCOUNT_DATA_STALE", active_codes(self.conn, "BUY_BLOCK"))
 
     def test_poller_success_clears_transient_stale(self):
@@ -160,7 +161,7 @@ class RotationRetryTests(PipelineTestCase):
     def test_unsubmitted_rotation_sell_blocks_risk_buys_and_logs(self):
         self.add_preview(["360750"])
         broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100}, holdings={"069500": 10})
-        wide = lambda ticker: Quote(bid=90, ask=110, nav=100.0) if ticker == "069500" else Quote(bid=110, ask=110, nav=110.0)
+        wide = lambda ticker: Quote(bid=90, ask=110, nav=100.0) if ticker == "069500" else Quote(bid=11000, ask=11005, nav=11000.0)
         broker.quote = wide
         self.run_pipeline(broker)
         self.assertEqual([c for c in self.calls(broker) if c[0] == "360750"], [])  # 위험자산 매수 생략

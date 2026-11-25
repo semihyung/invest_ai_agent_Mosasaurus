@@ -1,5 +1,8 @@
 import hashlib
+import logging
 import sqlite3
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -73,8 +76,50 @@ _CLASSIFICATION_COLUMNS = {
 }
 
 
+_WRITE_LOCK = threading.RLock()  # 프로세스 안의 모든 쓰기 트랜잭션을 한 번에 하나씩 통과시킨다(단일 writer)
+_MAX_WRITE_TX_SECONDS = 1.0  # db.max_write_tx_ms(1000)
+_LOG = logging.getLogger("mosasaurus.db")
+SLOW_WRITE_TRANSACTIONS = [0]  # 1초를 넘긴 쓰기 트랜잭션 수(점검용 카운터)
+
+
+class _SerializedConnection(sqlite3.Connection):
+    """`with connection:` 블록을 단일 writer 쓰기 트랜잭션으로 만든다(명세 9.2절).
+
+    블록에 들어갈 때 프로세스 전역 락을 잡고 `BEGIN IMMEDIATE` 로 쓰기 락을 먼저 확보하며, 나갈 때 커밋·롤백 후 락을 푼다.
+    KIS 네트워크 호출은 이 블록 밖에서 하므로(write-ahead 규칙) 락 점유 시간은 짧다. 중첩 블록은 같은 스레드가 재진입한다.
+    """
+
+    _tx_started = 0.0
+
+    def __enter__(self):
+        """쓰기 락을 잡고 즉시 쓰기 트랜잭션을 시작한다."""
+        _WRITE_LOCK.acquire()
+        try:
+            result = super().__enter__()
+            if not self.in_transaction:
+                self.execute("BEGIN IMMEDIATE")
+                self._tx_started = time.monotonic()
+            return result
+        except BaseException:
+            _WRITE_LOCK.release()
+            raise
+
+    def __exit__(self, *exc_info):
+        """커밋·롤백 후 락을 풀고, 1초를 넘긴 쓰기 트랜잭션을 기록한다."""
+        started = self._tx_started
+        try:
+            return super().__exit__(*exc_info)
+        finally:
+            if started and time.monotonic() - started > _MAX_WRITE_TX_SECONDS:
+                SLOW_WRITE_TRANSACTIONS[0] += 1
+                _LOG.warning("write transaction exceeded %.0f ms", _MAX_WRITE_TX_SECONDS * 1000)
+            self._tx_started = 0.0
+            _WRITE_LOCK.release()
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(db_path)
+    """단일 writer 연결(`_SerializedConnection`)을 열고 외래키·내구성·대기 시간 PRAGMA 를 적용한다."""
+    connection = sqlite3.connect(db_path, factory=_SerializedConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     # 명세 9.2절(v3.7.5): WAL + NORMAL 은 정전 시 마지막 커밋(write-ahead 주문 기록)이 사라질 수 있어 FULL 을 강제한다.
@@ -98,6 +143,7 @@ def _validate_durability(connection: sqlite3.Connection) -> None:
 
 
 def _validate_schema(connection: sqlite3.Connection) -> None:
+    """스키마 버전과 필수 테이블·분류 컬럼이 기대와 같은지 확인한다(다르면 RuntimeError)."""
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if version != _SCHEMA_VERSION:
         raise RuntimeError(f"Unsupported database schema version: {version}.")

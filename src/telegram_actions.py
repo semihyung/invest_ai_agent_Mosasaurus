@@ -16,8 +16,9 @@ from typing import Callable, Mapping
 from src import operator_actions as ops
 from src.config import load_config, strategy_params_hash
 from src.ops_jobs import compose_briefing
-from src.reconciliation import Position
-from src.safety_flags import active_halt_reasons, is_safe_halt
+from src.job_handlers import compare_account
+from src.quant_engine import calculate_momentum_score
+from src.safety_flags import MANUAL_HALT_CODES, active_halt_reasons, is_safe_halt, read_host_state
 
 KST = timezone(timedelta(hours=9), name="KST")
 
@@ -70,12 +71,72 @@ def _consume_approval(connection: sqlite3.Connection, command: str) -> None:
             "AND args_hash = ?", (hashlib.sha256(command.encode("utf-8")).hexdigest(),))
 
 
+def build_summary_provider(
+    connection_factory: Callable[[], sqlite3.Connection], approvals_dir: str | Path
+) -> Callable[[str], str | None]:
+    """2단계 확인 메시지에 붙일 "실행될 효과" 문장을 만드는 함수(명세 6.4절). 정보가 없으면 None."""
+
+    def provider(command: str) -> str | None:
+        """명령별로 즉시 스탑 도달 종목·해제될 원인·기업행위 정보·승인 파일 요약 등을 보여 준다."""
+        parts = command.split()
+        connection = connection_factory()
+        try:
+            if parts[0] == "/training" and parts[1] == "on":
+                hits = []
+                for r in connection.execute("SELECT ticker, peak_price_adj FROM positions WHERE tracking_status = 'MANAGED' "
+                                            "AND quantity > 0 AND peak_price_adj IS NOT NULL"):
+                    close = connection.execute("SELECT adjusted_close FROM daily_candles WHERE ticker = ? "
+                                               "ORDER BY trade_date DESC LIMIT 1", (r["ticker"],)).fetchone()
+                    if close and close[0] / r["peak_price_adj"] - 1.0 <= -0.07:
+                        hits.append(f"{r['ticker']}({close[0] / r['peak_price_adj'] - 1.0:+.1%})")
+                return ("훈련 모드(스탑 -7%, 위험자산 매수 차단). 즉시 스탑에 도달하는 종목(직전 종가 기준): "
+                        + (", ".join(hits) if hits else "없음"))
+            if parts[0] == "/clear_halt":
+                active = [r[0] for r in connection.execute(
+                    "SELECT code FROM safety_flags WHERE flag_type = 'HALT' AND cleared_at IS NULL ORDER BY code")]
+                manual = [c for c in active if c in MANUAL_HALT_CODES]
+                target = manual if parts[1].lower() == "all" else [c for c in manual if c.lower() == parts[1].lower()]
+                return "해제될 원인: " + (", ".join(target) if target else "없음(자동 해제 원인은 강제 해제할 수 없음)")
+            if parts[0] == "/ca_confirm":
+                row = connection.execute("SELECT ticker, ex_date, detected_factor, cash_amount FROM corporate_actions WHERE id = ?",
+                                         (int(parts[1]),)).fetchone()
+                if row is None:
+                    return "해당 기업행위 후보가 없습니다."
+                close = connection.execute("SELECT adjusted_close FROM daily_candles WHERE ticker = ? ORDER BY trade_date DESC LIMIT 1",
+                                           (row["ticker"],)).fetchone()
+                qty = connection.execute("SELECT quantity FROM positions WHERE ticker = ?", (row["ticker"],)).fetchone()
+                estimate = (1 - row["detected_factor"]) * close[0] * qty[0] if close and qty and row["detected_factor"] else None
+                return (f"{row['ticker']} ex_date {row['ex_date']} / 조정계수 {row['detected_factor']} / 추정 분배금 "
+                        + (f"약 {estimate:,.0f}원" if estimate is not None else "알 수 없음"))
+            if parts[0] == "/resume":
+                return "일시정지를 해제하면 다음 정상 배치부터 신규 매수가 재개됩니다(과거 배치 소급 실행 없음)."
+            if parts[0] == "/emergency":
+                return ("EMERGENCY 해제: 낙폭 원인이면 HWM 리베이스와 WARNING 하한이 적용됩니다." if len(parts) > 1
+                        else "EMERGENCY: 신규 주문을 막고 미체결 매수를 취소합니다(위험 축소 매도만 허용).")
+            if parts[0] == "/approve_real":
+                approval = json.loads((Path(approvals_dir) / "real_activation.json").read_text(encoding="utf-8"))
+                digest = hashlib.sha256((Path(approvals_dir) / "real_activation.json").read_bytes()).hexdigest()[:8]
+                return (f"승인 파일 SHA {digest} / 만료 {approval.get('expires_at')} / 계좌 별칭 {approval.get('account_alias')}")
+            if parts[0] == "/classify":
+                row = connection.execute("SELECT amount, flow_date, classification_status FROM cash_flows WHERE id = ?",
+                                         (int(parts[1]),)).fetchone()
+                return f"현금흐름 {parts[1]}: {row['amount']:,}원 / {row['flow_date']} / {row['classification_status']}" if row else None
+            return None
+        finally:
+            connection.close()
+
+    return provider
+
+
 def build_command_actions(
     connection_factory: Callable[[], sqlite3.Connection],
     *,
     approvals_dir: str | Path,
     backtest_dir: str | Path = "/run/backtests",
-    broker_positions: Callable[[], list[Position]] | None = None,
+    broker: object | None = None,
+    run_dir: str | None = None,
+    parking_ticker: str | None = None,
+    token_expiry: Callable[[], datetime | None] | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> Mapping[str, Callable[[str, str], str]]:
     """`/confirm` 을 제외한 Phase 1 명령 19종의 콜백 표를 만든다(`/add` 는 봇이 직접 처리)."""
@@ -124,15 +185,33 @@ def build_command_actions(
         return f"프리뷰 기준일 {row['base_candle_date']} / 상태 {row['status']}\n순위: {names}"
 
     def pool(c, args, now):
-        """/pool: 활성 종목의 종가·120MA·데이터 상태."""
-        lines = []
-        for r in c.execute("SELECT ticker, category, data_status FROM universe_assets WHERE status = 'ACTIVE' "
-                           "ORDER BY category, ticker"):
-            candles = c.execute("SELECT adjusted_close FROM daily_candles WHERE ticker = ? "
-                                "ORDER BY trade_date DESC LIMIT 120", (r["ticker"],)).fetchall()
-            sma = f"{sum(x[0] for x in candles) / 120:,.0f}" if len(candles) == 120 else "-"
-            close = f"{candles[0][0]:,.0f}" if candles else "-"
-            lines.append(f"{r['ticker']} {r['category']} {r['data_status']} 종가 {close} / 120MA {sma}")
+        """/pool: 활성 종목의 종가·120MA·모멘텀 점수와 점수순 순위."""
+        parking = parking_ticker
+        series = {}
+        for r in c.execute("SELECT ticker FROM universe_assets WHERE status = 'ACTIVE'"):
+            series[r["ticker"]] = {x["trade_date"]: x["adjusted_close"] for x in c.execute(
+                "SELECT trade_date, adjusted_close FROM daily_candles WHERE ticker = ? ORDER BY trade_date DESC LIMIT 200",
+                (r["ticker"],))}
+        rows = []
+        for r in c.execute("SELECT ticker, category, data_status FROM universe_assets WHERE status = 'ACTIVE' ORDER BY category, ticker"):
+            data = series[r["ticker"]]
+            dates = sorted(data)
+            closes = [data[d] for d in dates]
+            sma = f"{sum(closes[-120:]) / 120:,.0f}" if len(closes) >= 120 else "-"
+            score = None
+            if r["category"] == "RISK_ASSET" and parking in series:
+                base = series[parking]
+                common = [d for d in dates if d in base]
+                if len(common) >= 121:
+                    try:
+                        score = calculate_momentum_score([data[d] for d in common], [base[d] for d in common])
+                    except ValueError:
+                        score = None
+            rows.append((r["ticker"], r["category"], r["data_status"], closes[-1] if closes else None, sma, score))
+        ranked = sorted((x for x in rows if x[5] is not None), key=lambda x: -x[5])
+        rank = {x[0]: i + 1 for i, x in enumerate(ranked)}
+        lines = [f"{t} {cat} {ds} 종가 {(f'{cl:,.0f}' if cl else '-')} / 120MA {sma} / 점수 "
+                 + (f"{sc:.3f} (순위 {rank[t]})" if sc is not None else "-") for t, cat, ds, cl, sma, sc in rows]
         return "\n".join(lines) or "활성 종목이 없습니다."
 
     def trades(c, args, now):
@@ -144,26 +223,57 @@ def build_command_actions(
                          f"@{r['order_price']:,} {r['status']}" for r in rows) or "주문 내역이 없습니다."
 
     def health(c, args, now):
-        """/health: 대조 상태, 주문 잠금, 정지 원인, 스탑 감시 주기."""
+        """/health: 대조·잠금·정지 원인·스탑 감시 주기와 CPU·온도·디스크·DB·NTP·UPS·KIS 토큰 상태."""
+        import os
+        import shutil
+
         last = _state(c, "last_reconciliation_at") or "없음"
-        return (f"대조 상태: {_state(c, 'reconciliation_ok') or '미확인'} / 마지막 대조: {last}\n"
-                f"주문 잠금: {_state(c, 'scheduler_order_lock') or '미설정'} / "
-                f"SAFE_HALT 원인: {', '.join(active_halt_reasons(c)) or '없음'}\n"
-                f"스탑 감시 주기: {_state(c, 'guard_poll_interval_seconds') or '10'}초"
-                + (" (한도로 연장됨: 스탑 판정이 그만큼 지연될 수 있음)"
-                   if int(_state(c, 'guard_poll_interval_seconds') or 10) > 10 else ""))
+        lines = [f"대조 상태: {_state(c, 'reconciliation_ok') or '미확인'} / 마지막 대조: {last}",
+                 f"주문 잠금: {_state(c, 'scheduler_order_lock') or '미설정'} / "
+                 f"SAFE_HALT 원인: {', '.join(active_halt_reasons(c)) or '없음'}",
+                 f"스탑 감시 주기: {_state(c, 'guard_poll_interval_seconds') or '10'}초"
+                 + (" (한도로 연장됨: 스탑 판정이 그만큼 지연될 수 있음)"
+                    if int(_state(c, 'guard_poll_interval_seconds') or 10) > 10 else "")]
+        try:
+            load = f"{os.getloadavg()[0]:.2f}"
+        except (AttributeError, OSError):
+            load = "n/a"
+        try:
+            temp = f"{int(Path('/sys/class/thermal/thermal_zone0/temp').read_text()) / 1000:.1f}°C"
+        except (OSError, ValueError):
+            temp = "n/a"
+        usage = shutil.disk_usage(Path(".").resolve().anchor or "/")
+        lines.append(f"CPU 부하 {load} / 온도 {temp} / 디스크 {usage.used / usage.total:.0%} 사용")
+        lines.append("DB 무결성: " + c.execute("PRAGMA quick_check").fetchone()[0])
+        if run_dir:
+            ups = read_host_state(Path(run_dir) / "ups.json", now=now, ttl_seconds=120)
+            clock_state = read_host_state(Path(run_dir) / "clock.json", now=now, ttl_seconds=120)
+            lines.append("UPS: " + (f"배터리 {ups.get('battery_ratio', '?')}" if ups else "상태 불명(감시 파일 없음·오래됨)")
+                         + " / NTP: " + (f"오차 {clock_state.get('offset_seconds', '?')}초" if clock_state else "상태 불명"))
+        expiry = token_expiry() if token_expiry else None
+        lines.append("KIS 토큰 만료: " + (expiry.astimezone(KST).strftime("%m-%d %H:%M") if expiry else "알 수 없음"))
+        return "\n".join(lines)
 
     def reconcile(c, args, now):
-        """/reconcile: 대조 상태 조회 또는 KIS 보유 수량 채택."""
+        """/reconcile: KIS 와 DB 를 즉시 비교해 차이를 보여 준다(읽기만, 상태 덮어쓰기 없음) 또는 KIS 보유 수량 채택(2단계)."""
         if args[1:] == ["adopt"]:
-            if broker_positions is None:
+            if broker is None:
                 raise _Refused("증권사 조회가 연결되지 않아 채택할 수 없습니다.")
             diff = ops.adopt_broker_positions(
-                c, {p.ticker: p.quantity for p in broker_positions()},
+                c, {p.ticker: p.quantity for p in broker.positions()},
                 action_id=_approved_action_id(c, " ".join(args), now), now=now)
             return f"KIS 보유 수량을 채택했습니다(차이 {len(diff)}건). 대조는 다음 마감 후 잡에서 재확인됩니다."
-        return (f"대조 상태: {_state(c, 'reconciliation_ok') or '미확인'} / 마지막 대조: "
-                f"{_state(c, 'last_reconciliation_at') or '없음'}\n수동 채택은 /reconcile adopt (2단계 확인)")
+        if broker is None:
+            return (f"대조 상태: {_state(c, 'reconciliation_ok') or '미확인'} / 마지막 대조: "
+                    f"{_state(c, 'last_reconciliation_at') or '없음'}\n(증권사 조회가 연결되지 않아 즉시 대조는 하지 않았습니다)")
+        today = now.astimezone(KST).date()
+        result = compare_account(c, broker.positions(), broker.orders(today), today)
+        if result.reconciliation_ok:
+            return "KIS 와 DB 가 일치합니다. 수동 채택은 /reconcile adopt (2단계 확인)."
+        return ("불일치 — 보유 수량: " + (", ".join(result.mismatches) or "없음")
+                + " / 주문: " + (", ".join(result.order_mismatches) or "없음")
+                + (" / 고아 주문: " + ", ".join(result.orphan_orders) if result.orphan_orders else "")
+                + "\n(읽기 전용 비교입니다. 채택은 /reconcile adopt)")
 
     # ───── 운영 모드 ─────
     def pause(c, args, now):
@@ -205,9 +315,19 @@ def build_command_actions(
 
     # ───── 운영자 승인·정정 ─────
     def clear_halt(c, args, now):
-        """/clear_halt: 수동 해제 원인을 해제한다(2단계 확인, 대조 성공 필요)."""
-        ok = ops.clear_halt(c, code=args[1].upper(), action_id=_approved_action_id(c, " ".join(args), now),
-                            reconciliation_ok=_state(c, "reconciliation_ok") == "true", now=now)
+        """/clear_halt [원인|ALL]: 수동 해제 원인을 해제한다(2단계 확인, 대조 성공 필요, 자동 해제 원인은 강제 해제 불가)."""
+        action_id = _approved_action_id(c, " ".join(args), now)
+        reconciled = _state(c, "reconciliation_ok") == "true"
+        if args[1].lower() == "all":
+            codes = [code for code in active_halt_reasons(c) if code in MANUAL_HALT_CODES]
+            if not codes:
+                raise _Refused("해제할 수동 해제 원인이 없습니다(자동 해제 원인은 조건 충족 시 스스로 풀립니다).")
+            cleared = [code for code in codes if ops.clear_halt(c, code=code, action_id=action_id,
+                                                                reconciliation_ok=reconciled, now=now)]
+            if not cleared:
+                raise _Refused("해제 조건(대조 성공)을 만족하지 않아 유지됩니다.")
+            return "해제했습니다: " + ", ".join(cleared)
+        ok = ops.clear_halt(c, code=args[1].upper(), action_id=action_id, reconciliation_ok=reconciled, now=now)
         if not ok:
             raise _Refused(f"{args[1].upper()} 는 해제 조건(대조 성공·수동 해제 원인)을 만족하지 않아 유지됩니다.")
         return f"{args[1].upper()} 해제했습니다."
