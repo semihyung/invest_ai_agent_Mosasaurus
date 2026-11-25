@@ -11,8 +11,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from src.order_manager import (
-    OrderSide, OrderStatus, PendingConfirmationEvidence, persist_order_transition, record_fill_from_cumulative,
-    resolve_pending_confirmation, transition_order_status,
+    OrderSide, OrderStatus, PendingConfirmationEvidence, cancel_can_finalize, persist_order_transition,
+    record_fill_from_cumulative, resolve_pending_confirmation, transition_order_status,
 )
 from src.reconciliation import OrderSnapshot
 from src.safety_flags import clear_flag, raise_flag
@@ -33,7 +33,10 @@ class SyncBroker(Protocol):
 def apply_fill_to_position(
     connection: sqlite3.Connection, *, ticker: str, side: str, qty: int, price: float, now: datetime
 ) -> None:
-    """체결 1건(증분)을 `positions` 에 반영한다. 매수는 평균단가·고점 초기화, 매도는 수량 차감."""
+    """체결 1건(증분)을 `positions` 에 반영한다. 매수는 평균단가·고점 초기화, 매도는 수량 차감.
+
+    트랜잭션은 호출자 책임이다: `record_fill_from_cumulative(on_recorded=...)` 가 체결 기록과 같은 커밋 안에서 부른다.
+    """
     row = connection.execute("SELECT quantity, avg_buy_price, peak_price_adj, tracking_status FROM positions "
                              "WHERE ticker = ?", (ticker,)).fetchone()
     factor_row = connection.execute(
@@ -41,29 +44,42 @@ def apply_fill_to_position(
         "ORDER BY trade_date DESC LIMIT 1", (ticker,)).fetchone()
     factor = factor_row[0] if factor_row and factor_row[0] else 1.0
     stamp = now.isoformat()
+    if side == "BUY":
+        old_qty, old_avg = (row["quantity"], row["avg_buy_price"]) if row else (0, 0.0)
+        new_qty = old_qty + qty
+        avg = (old_qty * old_avg + qty * price) / new_qty
+        peak_now = price * factor
+        peak = max(row["peak_price_adj"] or 0.0, peak_now) if row else peak_now
+        managed = connection.execute("SELECT 1 FROM universe_assets WHERE ticker = ?", (ticker,)).fetchone()
+        connection.execute(
+            """
+            INSERT INTO positions (ticker, tracking_status, quantity, avg_buy_price, market_value,
+                                   peak_price_adj, last_synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(ticker) DO UPDATE SET quantity = excluded.quantity, avg_buy_price = excluded.avg_buy_price,
+                market_value = excluded.market_value, peak_price_adj = excluded.peak_price_adj,
+                last_synced_at = excluded.last_synced_at
+            """,
+            (ticker, "MANAGED" if managed else "UNMANAGED", new_qty, avg, int(new_qty * price),
+             peak if managed else None, stamp))
+    elif row is not None:
+        new_qty = max(0, row["quantity"] - qty)
+        connection.execute("UPDATE positions SET quantity = ?, market_value = ?, last_synced_at = ? "
+                           "WHERE ticker = ?", (new_qty, int(new_qty * price), stamp, ticker))
+
+
+def _cancel_matches(connection: sqlite3.Connection, order_id: str, snap: OrderSnapshot, now: datetime) -> int:
+    """취소 확인 조회에서 (누적 체결, 잔량)이 직전 조회와 같으면 연속 횟수를 1 늘리고, 다르면 1 로 되돌린다."""
+    key, seen = f"cancel_match:{order_id}", f"{snap.filled_qty},{snap.remaining_qty}"
+    row = connection.execute('SELECT value FROM system_state WHERE "key" = ?', (key,)).fetchone()
+    last, _, count = (row[0] if row else "").rpartition(",")
+    matches = int(count) + 1 if row and last == seen else 1
     with connection:
-        if side == "BUY":
-            old_qty, old_avg = (row["quantity"], row["avg_buy_price"]) if row else (0, 0.0)
-            new_qty = old_qty + qty
-            avg = (old_qty * old_avg + qty * price) / new_qty
-            peak_now = price * factor
-            peak = max(row["peak_price_adj"] or 0.0, peak_now) if row else peak_now
-            managed = connection.execute("SELECT 1 FROM universe_assets WHERE ticker = ?", (ticker,)).fetchone()
-            connection.execute(
-                """
-                INSERT INTO positions (ticker, tracking_status, quantity, avg_buy_price, market_value,
-                                       peak_price_adj, last_synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(ticker) DO UPDATE SET quantity = excluded.quantity, avg_buy_price = excluded.avg_buy_price,
-                    market_value = excluded.market_value, peak_price_adj = excluded.peak_price_adj,
-                    last_synced_at = excluded.last_synced_at
-                """,
-                (ticker, "MANAGED" if managed else "UNMANAGED", new_qty, avg, int(new_qty * price),
-                 peak if managed else None, stamp))
-        elif row is not None:
-            new_qty = max(0, row["quantity"] - qty)
-            connection.execute("UPDATE positions SET quantity = ?, market_value = ?, last_synced_at = ? "
-                               "WHERE ticker = ?", (new_qty, int(new_qty * price), stamp, ticker))
+        connection.execute(
+            'INSERT INTO system_state ("key", value, updated_at) VALUES (?, ?, ?) '
+            'ON CONFLICT("key") DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+            (key, f"{seen},{matches}", now.isoformat()))
+    return matches
 
 
 def _close_intent(connection: sqlite3.Connection, order_id: str, status: str, now: datetime) -> None:
@@ -133,15 +149,14 @@ def sync_orders(connection: sqlite3.Connection, broker: SyncBroker, *, now: date
             try:
                 recorded = record_fill_from_cumulative(
                     connection, order_id=o["order_id"], new_cumulative_qty=snap.filled_qty,
-                    new_average_price=prices.get(snap.order_key) or float(o["order_price"]), executed_at=now)
+                    new_average_price=prices.get(snap.order_key) or float(o["order_price"]), executed_at=now,
+                    # 보유 수량 반영은 체결 기록과 같은 커밋 안에서 한다(사이에 정전이 나도 둘이 함께 남거나 함께 사라짐).
+                    on_recorded=lambda c, qty, price, o=o: apply_fill_to_position(
+                        c, ticker=o["ticker"], side=o["side"], qty=qty, price=price, now=now))
             except ValueError:
                 raise_flag(connection, "HALT", "ACCOUNT_MISMATCH", now=now, detail="FILL_RECORD_INVALID")
                 continue
             if recorded:
-                fill = connection.execute("SELECT qty, price FROM trade_fills WHERE order_id = ? "
-                                          "ORDER BY cumulative_qty DESC LIMIT 1", (o["order_id"],)).fetchone()
-                apply_fill_to_position(connection, ticker=o["ticker"], side=o["side"], qty=fill["qty"],
-                                       price=fill["price"], now=now)
                 if o["side"] == "SELL" and o["intent_type"] == "RISK_REDUCTION":
                     with connection:  # 손절 체결: 다음 주간 교체까지 재진입 차단(5.2절 6번)
                         connection.execute(
@@ -153,7 +168,12 @@ def sync_orders(connection: sqlite3.Connection, broker: SyncBroker, *, now: date
         elif snap.status == "CANCELED" and (market_closed or o["status"] == "CANCEL_PENDING"):
             if o["status"] == "ACCEPTED":
                 _move(connection, o, OrderStatus.CANCEL_PENDING, now, "BROKER_CANCELED")
-            _move(connection, o, OrderStatus.CANCELED, now, "BROKER_CANCELED_CONFIRMED")
+            # 7.3절: 장중에는 잔량·누적 체결이 연속 2회 같은 조회에서만 확정한다(취소 직후 체결 반영 지연 대비).
+            if cancel_can_finalize(consecutive_matches=_cancel_matches(connection, o["order_id"], snap, now),
+                                   market_closed_full_query=market_closed):
+                _move(connection, o, OrderStatus.CANCELED, now, "BROKER_CANCELED_CONFIRMED")
+                with connection:
+                    connection.execute('DELETE FROM system_state WHERE "key" = ?', (f"cancel_match:{o['order_id']}",))
         elif market_closed and snap.remaining_qty > 0 and o["status"] in ("ACCEPTED", "PARTIALLY_FILLED", "CANCEL_PENDING"):
             # 장 마감 후 완전 조회: 취소·체결 없이 남은 잔량은 당일 만료(EXPIRED)로 확정한다(7.3절).
             _move(connection, o, OrderStatus.EXPIRED, now, "EXPIRED_AFTER_CLOSE")

@@ -11,7 +11,6 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
 
 from src.config import strategy_params_hash
 from src.safety_flags import (
@@ -479,12 +478,6 @@ def release_emergency(
         _audit(connection, actor="operator", action="EMERGENCY_OFF", target="system_state",
                detail={"hwm_rebase": drawdown_reason}, correlation_id=action_id, now=now)
     return drawdown_reason
-
-
-def positions_snapshot(connection: sqlite3.Connection) -> Iterable[tuple[str, int]]:
-    """(티커, 수량) 목록을 정렬해 반환합니다(`/reconcile adopt` 확인 메시지용)."""
-    return tuple((r["ticker"], r["quantity"]) for r in connection.execute(
-        "SELECT ticker, quantity FROM positions ORDER BY ticker"))
 
 
 def real_gate_inputs(

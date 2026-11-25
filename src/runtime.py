@@ -18,7 +18,7 @@ from src.config import load_config
 from src.db import connect_database
 from src.health_monitor import HealthSnapshot
 from src.job_handlers import (
-    create_intraday_guard_handler, create_open_checkpoint_handler, create_order_cancel_sweep_handler,
+    compare_account, create_intraday_guard_handler, create_open_checkpoint_handler, create_order_cancel_sweep_handler,
     create_pending_confirmation_poller, create_post_close_reconcile_handler, create_safety_maintenance_handler,
 )
 from src.daily_pipeline import PipelineConfig, create_daily_pipeline_handler
@@ -30,7 +30,7 @@ from src.morning_prep import create_morning_prep_handler
 from src.ops_jobs import build_notifier, create_daily_briefing_handler, create_weekly_maintenance_handler
 from src.order_manager import create_paper_order_transport
 from src.rate_limit import PriorityRateLimiter, RateLimitedBroker
-from src.reconciliation import OrderSnapshot, Position, ReconciliationResult, reconcile_account_state
+from src.reconciliation import ReconciliationResult
 from src.scheduler import KST, ScheduleJob
 from src.universe import load_universe_allowlist, scheduled_ex_dates
 from src.scheduler_jobs import create_weekly_preview_handler
@@ -97,18 +97,15 @@ def build_dependencies(
     protective = bool(cfg["risk"]["safe_halt"]["protective_exit"]["enabled"])  # type: ignore[index]
 
     def reconcile_account() -> ReconciliationResult:
-        """부팅 복구용 대조: KIS 잔고·주문과 DB 를 비교한다(조회 실패는 예외로 올려 부팅 복구가 처리)."""
+        """부팅 복구용 대조: KIS 잔고·오늘(KST) 주문과 DB 의 오늘 주문을 비교한다(조회 실패는 예외로 올려 부팅 복구가 처리).
+
+        장중 대조와 같은 `compare_account` 를 쓴다: DB 의 과거 주문 전체를 증권사의 당일 주문과 비교하면
+        전날 주문이 모두 불일치가 되어 첫 거래일 이후 부팅이 항상 실패한다.
+        """
         connection = connection_factory()
         try:
-            sqlite_positions = [Position(r[0], r[1]) for r in connection.execute(
-                "SELECT ticker, quantity FROM positions WHERE quantity > 0 AND tracking_status = 'MANAGED'")]
-            sqlite_orders = [OrderSnapshot(r["kis_order_no"], r["ticker"], r["side"], r["requested_qty"],
-                                           r["filled_qty"], r["remaining_qty"], r["status"])
-                             for r in connection.execute("SELECT * FROM orders WHERE kis_order_no IS NOT NULL")]
-            return reconcile_account_state(
-                broker_positions=broker.positions(), sqlite_positions=sqlite_positions,
-                broker_orders=broker.orders(datetime.now(timezone.utc).date()),
-                sqlite_orders=sqlite_orders, account_data_fresh=True)
+            trade_day = datetime.now(KST).date()
+            return compare_account(connection, broker.positions(), broker.orders(trade_day), trade_day)
         finally:
             connection.close()
 
@@ -141,19 +138,14 @@ def build_dependencies(
 
     guard = create_intraday_guard_handler(
         connection_factory, broker, notify=notify, protective_enabled=protective, rate_per_second=rate)
+    # 안전 점검(UPS·시각 플래그, 토큰 자동 해제, 24h 재경보, 프리뷰 재발송)은 자체 10분 잡으로 돈다:
+    # 스탑 감시 안에 두면 장 시간·개장일에만 돌아 주말·야간 경보가 늦는다(명세 9.1절 `safety_flag_auto_clear`).
     safety = create_safety_maintenance_handler(
         connection_factory, run_dir=env.get("HOST_RUN_DIR"), notify=notify, token_valid=token_is_valid)
-    ticks = {"n": 0}
-
-    def guard_with_safety() -> None:
-        """10초 감시 60회(≈10분)마다 안전 점검(UPS·시각 플래그, 24h 재경보)을 함께 실행한다."""
-        ticks["n"] += 1
-        if ticks["n"] % 60 == 1:
-            safety()
-        guard()
 
     handlers: dict[ScheduleJob, Callable[[], None]] = {
-        ScheduleJob.INTRADAY_GUARD: guard_with_safety,
+        ScheduleJob.INTRADAY_GUARD: guard,
+        ScheduleJob.SAFETY_FLAG_AUTO_CLEAR: safety,
         ScheduleJob.OPEN_CHECKPOINT: create_open_checkpoint_handler(
             connection_factory, broker, notify=notify, protective_enabled=protective),
         ScheduleJob.ORDER_CANCEL_SWEEP: create_order_cancel_sweep_handler(connection_factory, broker),

@@ -7,7 +7,7 @@ import json
 import math
 import sqlite3
 from datetime import datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from src._kis_order_adapter import KisOrderAdapter
 
@@ -239,29 +239,32 @@ def persist_order_intent(
                 existing["status"],
             )
 
-        connection.execute(
-            """
-            INSERT INTO order_intents (
-                parent_intent_id, idempotency_key, cycle_id, intent_type,
-                slot_id, ticker, side, requested_qty, obligation_id,
-                intent_payload_hash, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)
-            """,
-            (
-                parent_id,
-                key,
-                intent.cycle_id,
-                intent.intent_type.value,
-                intent.slot_id,
-                intent.ticker,
-                intent.side.value,
-                intent.quantity,
-                intent.obligation_id,
-                payload_hash,
-                timestamp,
-                timestamp,
-            ),
-        )
+        # `with` 블록 = 프로세스 전역 쓰기 락 + 즉시 커밋. 블록 밖 INSERT 는 SQLite 락만 잡은 채 다른 스레드의
+        # 쓰기를 5초 대기 후 실패시킬 수 있다(단일 writer 규칙, 명세 9.2절).
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO order_intents (
+                    parent_intent_id, idempotency_key, cycle_id, intent_type,
+                    slot_id, ticker, side, requested_qty, obligation_id,
+                    intent_payload_hash, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)
+                """,
+                (
+                    parent_id,
+                    key,
+                    intent.cycle_id,
+                    intent.intent_type.value,
+                    intent.slot_id,
+                    intent.ticker,
+                    intent.side.value,
+                    intent.quantity,
+                    intent.obligation_id,
+                    payload_hash,
+                    timestamp,
+                    timestamp,
+                ),
+            )
         return IntentPersistenceResult(parent_id, key, True, "CREATED")
     except sqlite3.IntegrityError:
         # 다른 프로세스가 같은 키를 먼저 넣었을 수 있으므로 결과를 재조회합니다.
@@ -710,11 +713,14 @@ def record_fill_from_cumulative(
     source: str = "REST_DELTA",
     fee: int = 0,
     tax: int = 0,
+    on_recorded: Callable[[sqlite3.Connection, int, float], None] | None = None,
 ) -> bool:
     """누적 체결 증분으로 `trade_fills` 한 행을 기록하고 `orders` 수량을 갱신합니다.
 
     같은 누적 수량이 이미 기록돼 있으면(WS 통보와 REST 조회가 같은 체결을 본 경우) 중복 없이
     병합하고 False 를 반환합니다. 누적 수량이 감소하면 ValueError 입니다.
+    `on_recorded(connection, 증분 수량, 증분 가격)` 은 같은 트랜잭션 안에서 호출됩니다(보유 수량 반영용):
+    체결 기록과 보유 수량이 따로 커밋되면 그 사이 정전 시 체결만 남고 보유가 영구히 어긋납니다.
     """
     if source not in ("REST_DELTA", "WS_NOTICE"):
         raise ValueError("source must be REST_DELTA or WS_NOTICE.")
@@ -775,6 +781,8 @@ def record_fill_from_cumulative(
              order_id, new_cumulative_qty),
         )
         _sync_obligation_filled_qty(connection, order["parent_intent_id"], executed_at)
+        if on_recorded is not None:
+            on_recorded(connection, quantity, price)
     return True
 
 

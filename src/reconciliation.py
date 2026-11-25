@@ -121,13 +121,25 @@ def reconcile_orders(
     broker_orders: Iterable[OrderSnapshot],
     sqlite_orders: Iterable[OrderSnapshot],
 ) -> tuple[str, ...]:
-    """주문번호·방향·수량·체결량·상태를 KIS와 SQLite 사이에서 비교합니다."""
+    """주문번호·종목·방향·주문 수량·누적 체결량을 KIS와 SQLite 사이에서 비교합니다.
+
+    상태 문자열과 잔량은 비교하지 않습니다: DB 는 마감 후 `EXPIRED`·`CANCELED` 같은 내부 종결 상태를 쓰지만
+    KIS 정규화 상태에는 그런 값이 없어(미체결 = `ACCEPTED`), 같은 주문이 매일 불일치로 잡히기 때문입니다.
+    보유 수량을 바꾸는 것은 체결량이므로 체결량이 같으면 같은 주문으로 봅니다.
+    """
     broker = _validate_orders(broker_orders)
     sqlite = _validate_orders(sqlite_orders)
+
+    def identity(order: OrderSnapshot | None):
+        """비교에 쓰는 필드만 뽑는다(없으면 None)."""
+        if order is None:
+            return None
+        return order.ticker, order.side, order.requested_qty, order.filled_qty
+
     return tuple(
         order_key
         for order_key in sorted(set(broker) | set(sqlite))
-        if broker.get(order_key) != sqlite.get(order_key)
+        if identity(broker.get(order_key)) != identity(sqlite.get(order_key))
     )
 
 

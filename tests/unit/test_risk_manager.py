@@ -6,7 +6,6 @@ from src.risk_manager import (
     OperatingMode,
     RiskAction,
     RiskFlags,
-    allows_new_order,
     allows_parking_buy,
     allows_reduce_only_sell,
     allows_risk_asset_buy,
@@ -91,7 +90,7 @@ class RiskManagerTests(unittest.TestCase):
         flags = RiskFlags(data_invalid=True)
 
         self.assertEqual(resolve_operating_mode(flags), OperatingMode.SAFE_HALT)
-        self.assertFalse(allows_new_order(flags))
+        self.assertFalse(allows_risk_asset_buy(flags))
         self.assertFalse(allows_reduce_only_sell(flags))
 
     def test_training_allows_parking_only(self):
@@ -132,7 +131,7 @@ class RiskManagerTests(unittest.TestCase):
                 )
             )
             self.assertTrue(is_action_allowed(flags, RiskAction.CANCEL))
-            self.assertFalse(allows_new_order(flags))
+            self.assertFalse(allows_risk_asset_buy(flags))
 
     def test_training_and_normal_reduce_only_sales_require_hard_stop(self):
         for flags in (RiskFlags(), RiskFlags(training_mode=True)):

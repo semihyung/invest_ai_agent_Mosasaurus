@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Mapping, Protocol
 
+from src.cash_recon import buy_wait_for_cash_flow
 from src.job_handlers import AccountBrokerPort, _clear_transient_stale, _log, _mark_stale, _safe_notify, reconcile_cash
 from src.order_executor import (
     KST, SellRequest, parking_cycle_id, risk_cycle_id, submit_order, weekly_cycle_id,
@@ -388,7 +389,9 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
     uncertain_buy = connection.execute(
         "SELECT 1 FROM orders WHERE side = 'BUY' AND status IN ('SUBMITTING','PENDING_CONFIRMATION') LIMIT 1"
     ).fetchone() is not None  # 불확실한 매수 주문이 있으면 계좌 신규 매수 대기(D3)
-    if clock() < cutoff and reconciled and not has_buy_block(connection) and not uncertain_buy:
+    # 설명 안 된 현금 변동의 첫 관측(PROVISIONAL)도 확정 전까지 신규 매수를 기다린다(명세 2.2절 v3.7.5).
+    if (clock() < cutoff and reconciled and not has_buy_block(connection) and not uncertain_buy
+            and not buy_wait_for_cash_flow(connection)):
         if rotation:
             risk_weight = sum(a.target_weight for a in final_risk)
         else:  # 교체가 없는 날: 이미 보유 중인 위험자산 수만큼 슬롯 비중(S1부터)이 위험자산 몫이다

@@ -31,6 +31,7 @@ class ScheduleJob(str, Enum):
     DAILY_BRIEFING = "daily_briefing"
     WEEKLY_MAINTENANCE = "weekly_maintenance"
     PENDING_CONFIRMATION_POLLER = "pending_confirmation_poller"
+    SAFETY_FLAG_AUTO_CLEAR = "safety_flag_auto_clear"
 
 
 @dataclass(frozen=True)
@@ -89,8 +90,11 @@ SCHEDULE_TRIGGERS = (
 )
 
 # 조회·대조·취소만 하는 복구 경로는 주문 잠금 중에도 실행한다(잠금을 푸는 대조 자체가 잠기는 교착 방지, 명세 0.3절).
+# 스탑 감시도 예외다: 잠금은 마감 후 대조에서야 풀리므로, 잡 오류 한 번에 손절이 몇 시간 꺼지면 안 된다.
+# 감시의 매도도 7.1절 공통 게이트(대조 300초 TTL 등)를 그대로 지나고, 감시는 매수를 내지 않는다(명세 9.1절 misfire 행).
 LOCK_EXEMPT_JOBS = frozenset(
     {
+        ScheduleJob.INTRADAY_GUARD,
         ScheduleJob.ORDER_CANCEL_SWEEP,
         ScheduleJob.POST_CLOSE_RECONCILE,
         ScheduleJob.PENDING_CONFIRMATION_POLLER,
@@ -419,6 +423,8 @@ def build_scheduler(
     )
     if ScheduleJob.PENDING_CONFIRMATION_POLLER in handlers:  # 선택 잡(없어도 부팅 가능)
         schedules += ((ScheduleJob.PENDING_CONFIRMATION_POLLER, IntervalTrigger(seconds=15, timezone=KST), 15),)
+    if ScheduleJob.SAFETY_FLAG_AUTO_CLEAR in handlers:  # 명세 9.1절: 매 10분(주문 잡이 아니므로 잠금·장 시간과 무관)
+        schedules += ((ScheduleJob.SAFETY_FLAG_AUTO_CLEAR, IntervalTrigger(minutes=10, timezone=KST), 60),)
     for job, trigger, grace_seconds in schedules:
         scheduler.add_job(
             _guarded_job,

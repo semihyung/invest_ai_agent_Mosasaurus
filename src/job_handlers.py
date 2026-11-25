@@ -496,13 +496,16 @@ def reconcile_cash(
     다시 합산하므로 옮기면 이중 계산된다). 첫 관측·대기 중에는 어느 경우든 기준을 옮기지 않는다.
     기준값이 없으면(첫 실행) 판정 없이 None 을 돌려주고, advance_baseline 이면 기준만 기록한다.
     """
-    previous = connection.execute("SELECT value FROM system_state WHERE \"key\" = 'last_d2_cash'").fetchone()
+    previous = connection.execute(
+        "SELECT value, updated_at FROM system_state WHERE \"key\" = 'last_d2_cash'").fetchone()
     decision = None
     move = advance_baseline
     if previous is not None:
+        # 기준 예수금을 기록한 시각 이후의 체결을 모두 더한다. "오늘 날짜 체결"만 더하면 기준을 못 옮긴 날의 체결이
+        # 다음 날 빠져 차이가 영영 첫 관측과 같아지지 않는다(WAIT 고착). julianday 는 시간대 표기가 달라도 같은 순간을 비교한다.
         trade_cash = connection.execute(
             "SELECT COALESCE(SUM(CASE side WHEN 'SELL' THEN qty*price ELSE -qty*price END - fee - tax),0) "
-            "FROM trade_fills WHERE substr(executed_at,1,10) = ?", (trade_day.isoformat(),)).fetchone()[0]
+            "FROM trade_fills WHERE julianday(executed_at) > julianday(?)", (previous["updated_at"],)).fetchone()[0]
         delta = unexplained_cash_delta(int(previous[0]), int(round(trade_cash)), current_cash,
                                        tolerance_krw=tolerance_krw)
         first_row = connection.execute("SELECT MIN(snapshot_date) FROM daily_portfolio").fetchone()[0]

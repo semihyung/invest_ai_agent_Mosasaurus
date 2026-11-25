@@ -32,14 +32,27 @@ class LockDeadlockTests(HandlerTestCase):
     """리뷰 1: 대조·동기화·취소 정리는 주문 잠금 중에도 돌고, 대조 성공 시 잠금이 풀린다."""
 
     def test_recovery_jobs_are_exempt_from_the_order_lock(self):
-        self.assertEqual(LOCK_EXEMPT_JOBS, {ScheduleJob.ORDER_CANCEL_SWEEP, ScheduleJob.POST_CLOSE_RECONCILE,
+        self.assertEqual(LOCK_EXEMPT_JOBS, {ScheduleJob.INTRADAY_GUARD, ScheduleJob.ORDER_CANCEL_SWEEP,
+                                            ScheduleJob.POST_CLOSE_RECONCILE,
                                             ScheduleJob.PENDING_CONFIRMATION_POLLER})
         ran = []
         self.conn.execute("INSERT INTO system_state (key, value, updated_at) VALUES ('scheduler_order_lock','true','t')")
         self.conn.commit()
         _guarded_job(ScheduleJob.POST_CLOSE_RECONCILE, lambda: ran.append("close"), self.factory, lambda: True)
-        _guarded_job(ScheduleJob.INTRADAY_GUARD, lambda: ran.append("guard"), self.factory, lambda: True)
-        self.assertEqual(ran, ["close"])  # 스탑 감시는 여전히 잠금, 대조는 실행
+        _guarded_job(ScheduleJob.DAILY_PIPELINE, lambda: ran.append("pipeline"), self.factory, lambda: True)
+        self.assertEqual(ran, ["close"])  # 매수가 있는 파이프라인은 잠금, 대조는 실행
+
+    def test_stop_guard_keeps_running_while_order_jobs_are_locked(self):
+        """감사 4번: 잡 오류로 잠겨도 손절 감시는 계속 돈다(잠금은 15:40 에야 풀리므로)."""
+        from unittest import mock
+
+        ran = []
+        self.conn.execute("INSERT INTO system_state (key, value, updated_at) VALUES ('scheduler_order_lock','true','t')")
+        self.conn.commit()
+        with mock.patch("src.scheduler.datetime") as fake:
+            fake.now.return_value = datetime(2026, 11, 25, 10, 0, tzinfo=KST)
+            _guarded_job(ScheduleJob.INTRADAY_GUARD, lambda: ran.append("guard"), self.factory, lambda: True)
+        self.assertEqual(ran, ["guard"])
 
     def test_successful_reconcile_releases_the_lock_without_restart(self):
         self.conn.execute("INSERT INTO system_state (key, value, updated_at) VALUES ('scheduler_order_lock','true','t')")

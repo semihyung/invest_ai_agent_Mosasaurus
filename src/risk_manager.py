@@ -368,8 +368,3 @@ def allows_reduce_only_sell(
         hard_stop_triggered=hard_stop_triggered,
         safety_gates_passed=safety_gates_passed,
     )
-
-
-def allows_new_order(flags: RiskFlags) -> bool:
-    """기존 호출부 호환을 위해 위험자산 신규 매수 가능 여부를 반환합니다."""
-    return allows_risk_asset_buy(flags)

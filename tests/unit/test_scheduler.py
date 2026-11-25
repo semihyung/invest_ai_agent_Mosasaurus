@@ -92,7 +92,11 @@ class SchedulerTests(unittest.TestCase):
             market_is_open=lambda: True,
         )
 
-        self.assertEqual(len(scheduler.get_jobs()), 9)
+        self.assertEqual(len(scheduler.get_jobs()), 10)
+        # 명세 9.1절: 안전 점검은 장 시간과 무관한 자체 10분 잡이다.
+        safety_job = scheduler.get_job(ScheduleJob.SAFETY_FLAG_AUTO_CLEAR.value)
+        self.assertEqual(safety_job.trigger.interval.total_seconds(), 600)
+        self.assertEqual(safety_job.misfire_grace_time, 60)
         self.assertEqual(
             scheduler.get_job(ScheduleJob.ORDER_CANCEL_SWEEP.value).misfire_grace_time,
             15,
