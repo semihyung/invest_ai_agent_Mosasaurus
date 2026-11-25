@@ -86,3 +86,27 @@ class MaintenanceTests(DbTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackupPruningTests(DbTestCase):
+    """감사 12번: 주간 백업과 배포 전 백업을 따로 세고, 지운 백업의 체크섬 파일도 함께 지운다."""
+
+    def test_weekly_and_predeploy_backups_are_pruned_independently(self):
+        backup_dir = Path(self.tmp.name) / "backups"
+        backup_dir.mkdir()
+        names = [f"mosasaurus-2026110{day}T070000Z.db" for day in range(1, 6)]  # 배포 전 5개
+        names += [f"mosasaurus-2026111{day}.db" for day in range(0, 5)]         # 주간 5개
+        for name in names:
+            (backup_dir / name).write_text("x")
+            (backup_dir / f"{name}.sha256").write_text("h")
+        create_weekly_maintenance_handler(
+            self.factory, backup_dir, clock=lambda: NOW, keep=3, keep_predeploy=2)()
+        left = sorted(path.name for path in backup_dir.iterdir())
+        predeploy = [n for n in left if n.endswith("Z.db")]
+        weekly = [n for n in left if n.endswith(".db") and not n.endswith("Z.db")]
+        self.assertEqual(predeploy, names[3:5])           # 배포 전 백업은 최신 2개만
+        self.assertEqual(len(weekly), 3)                   # 주간(오늘 만든 것 포함)은 최신 3개
+        self.assertIn(f"mosasaurus-{NOW.astimezone(KST).strftime('%Y%m%d')}.db", weekly)
+        for name in (n for n in names if n not in left):   # 지워진 백업의 체크섬 파일은 남지 않는다
+            self.assertNotIn(f"{name}.sha256", left)
+        self.assertEqual(sum(n.endswith(".sha256") for n in left), len([n for n in left if n in names]))

@@ -248,3 +248,22 @@ class SchedulerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SafetyJobStartsImmediatelyTests(unittest.TestCase):
+    """감사 11번: 10분 간격 안전 점검은 스케줄러가 시작되자마자 한 번 돈다(첫 실행이 10분 뒤가 아님)."""
+
+    def test_first_run_is_now_not_ten_minutes_later(self):
+        from datetime import timezone
+
+        handlers = {job: (lambda: None) for job in ScheduleJob if job is not ScheduleJob.BOOT_RECOVERY}
+        scheduler = build_scheduler(handlers, connection_factory=lambda: None, market_is_open=lambda: True)
+        scheduler.start(paused=True)
+        try:
+            soon = scheduler.get_job(ScheduleJob.SAFETY_FLAG_AUTO_CLEAR.value).next_run_time
+            later = scheduler.get_job(ScheduleJob.INTRADAY_GUARD.value).next_run_time
+        finally:
+            scheduler.shutdown(wait=False)
+        now = datetime.now(timezone.utc)
+        self.assertLess(abs((soon - now).total_seconds()), 5)
+        self.assertLess((later - now).total_seconds(), 11)  # 비교용: 10초 주기 작업도 곧 돈다

@@ -426,6 +426,11 @@ def build_scheduler(
     if ScheduleJob.SAFETY_FLAG_AUTO_CLEAR in handlers:  # 명세 9.1절: 매 10분(주문 잡이 아니므로 잠금·장 시간과 무관)
         schedules += ((ScheduleJob.SAFETY_FLAG_AUTO_CLEAR, IntervalTrigger(minutes=10, timezone=KST), 60),)
     for job, trigger, grace_seconds in schedules:
+        extra = {}
+        if job is ScheduleJob.SAFETY_FLAG_AUTO_CLEAR:
+            # 10분 간격 작업의 첫 실행이 시작 10분 뒤가 되면, 부팅 직후 풀린 토큰 문제(CREDENTIALS_UNAVAILABLE) 등의
+            # 자동 해제가 그만큼 늦어진다. 스케줄러가 시작되자마자 한 번 실행한다(감사 11번).
+            extra["next_run_time"] = datetime.now(KST)
         scheduler.add_job(
             _guarded_job,
             trigger=trigger,
@@ -436,5 +441,6 @@ def build_scheduler(
             coalesce=True,
             max_instances=1,
             replace_existing=True,
+            **extra,
         )
     return scheduler

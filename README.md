@@ -16,7 +16,7 @@
 - 토요일 주간 프리뷰 산출, 집중도 제한, 45/30/20 슬롯 배분, 첫 개장일 차순위 승계·보유 종목 생존 처리와 Smart DCA 계산을 구현했습니다.
 - 수정주가 기준 단조 증가 PeakPrice·트레일링 스탑, 단위화 TWR/HWM, 낙폭별 매수 제한과 중앙 운영 모드별 주문 권한 판정을 구현했습니다.
 - 멱등성·확인 대기 복구·지정가 전용 주문 상태 머신, 매도 의무 기록, 잔고·주문 대조 및 불일치 시 SAFE_HALT 처리를 구현했습니다.
-- APScheduler의 KST 예약 작업·미스파이어 잠금, 부팅 복구 게이트, Telegram 허용 채팅·단일 polling 잠금·DB 기반 2단계 확인을 구현했습니다. 주간 프리뷰 콜백은 테스트됐지만 `main`에 연결되지 않았으며, 다른 운영 작업 콜백·실제 헬스 워치독과 기기 검증은 남아 있습니다.
+- APScheduler의 KST 예약 작업·미스파이어 잠금, 부팅 복구 게이트, Telegram 허용 채팅·단일 polling 잠금·DB 기반 2단계 확인을 구현했습니다. 주간 프리뷰·스탑 감시·마감 후 대조·브리핑 등 운영 잡은 `src/runtime.py` 에서 PAPER 전용으로 연결되어 있고, 실제 헬스 워치독(하드웨어)과 기기 검증은 남아 있습니다.
 - 운영자 승인 종목은 `config/universe_allowlist.yaml`로 반영됩니다. 현재 목록은 비어 있어 시작 시 승인된 종목을 자동으로 추가하지 않습니다. Telegram `/add`는 공식 상품 메타데이터 조회 콜백이 연결되지 않으면 안전하게 차단됩니다.
 - Phase 1 백테스트 입력과 핵심 CAGR/MDD/turnover 계산 및 25개 장애 시나리오 검증을 구현했습니다.
 - Docker Compose, GitHub Actions 배포, 장중 배포 차단과 SQLite 백업·복구 스크립트를 구성했습니다.
@@ -41,7 +41,7 @@ src/universe.py                # 공식 상품 메타데이터와 승인 목록 
 src/boot_recovery.py           # 부팅 DB·토큰·계좌 복구 게이트
 src/main.py                    # 콜백 의존성 주입·Fail-Closed 런타임 조립
 src/scheduler.py               # KST 예약 작업·미스파이어 잠금
-src/scheduler_jobs.py          # 주간 프리뷰 콜백 (런타임 미연결)
+src/scheduler_jobs.py          # 주간 프리뷰 콜백 (src/runtime.py 에서 연결)
 src/telegram_bot.py            # Phase 1 Telegram 접근·확인 제어
 src/health_monitor.py          # DB·heartbeat·워치독 헬스 게이트
 src/models.py                  # 공용 도메인 모델 재노출
@@ -51,7 +51,7 @@ backtest/                      # 데이터 로더·백테스트·워크포워드
 
 ## 개발 환경 및 테스트
 
-명세 기준 Python 3.12 이상을 사용합니다. 프로젝트 루트에서 전체 테스트를 실행하려면:
+명세는 Python 3.12 이상을 요구하며, 배포 이미지(Dockerfile)와 CI 는 Python 3.15 입니다. 로컬에서도 같은 버전으로 테스트하세요. 프로젝트 루트에서 전체 테스트를 실행하려면:
 
 ```bash
 python -m unittest discover -s tests -t . -v
@@ -60,7 +60,7 @@ python -m pytest tests/unit tests/integration tests/replay tests/fault_injection
 ```
 
 테스트는 가짜 데이터와 임시 파일을 사용하며 KIS에 연결하거나 주문하지 않습니다.
-의존성은 `python -m pip install -r requirements.txt`로 설치합니다. 호스트 토큰 갱신기는 외부 `.env`를 직접 읽지 않으므로 `systemd EnvironmentFile=` 등으로 `KIS_APP_KEY`, `KIS_APP_SECRET` 환경 변수를 주입한 뒤 `--trigger morning_prep` 또는 `--trigger recovery`로 실행해야 합니다. systemd 타이머 자체는 아직 구성되지 않았습니다.
+의존성은 `python -m pip install -r requirements.txt`로 설치합니다. 호스트 토큰 갱신기는 외부 `.env`를 직접 읽지 않으므로 `systemd EnvironmentFile=` 등으로 `KIS_APP_KEY`, `KIS_APP_SECRET` 환경 변수를 주입한 뒤 `--trigger morning_prep` 또는 `--trigger recovery`로 실행해야 합니다. systemd 유닛은 `scripts/systemd/` 에 있으며 운영자가 호스트에 수동 설치합니다(`scripts/systemd/README.md`).
 
 ## 백테스트 승인 보고서와 오프사이트 백업
 

@@ -36,6 +36,50 @@ def _read_candles(
     ).fetchall()
 
 
+def _latest_preview(connection: sqlite3.Connection, preview_id: str) -> sqlite3.Row | None:
+    """같은 대상 주차(`preview_id`)의 가장 큰 revision 행(없으면 None)."""
+    return connection.execute(
+        "SELECT preview_revision, ranked_candidates_json, projected_slots_json, projected_trades_json "
+        "FROM weekly_previews WHERE preview_id = ? ORDER BY preview_revision DESC LIMIT 1",
+        (preview_id,),
+    ).fetchone()
+
+
+def _insert_preview_revision(
+    connection: sqlite3.Connection,
+    *,
+    preview_id: str,
+    base_date: str,
+    payloads: tuple[str, str, str],
+    timestamp: datetime,
+) -> bool:
+    """프리뷰를 저장한다. 같은 주차에 내용이 같으면 아무것도 안 하고(False), 다르면 기존 행을 덮어쓰지 않고
+    `preview_revision + 1` 새 행으로 저장하며 아직 쓰이지 않은 이전 revision 은 EXPIRED 로 닫는다(명세 5.3절 Step A-4, True).
+
+    집행은 가장 큰 revision 만 쓰므로(daily_pipeline `_load_preview`) 이전 revision 이 다시 발송·소비되지 않게 한다.
+    트랜잭션은 호출자 책임이다(호출자가 같은 블록에서 이벤트도 함께 기록).
+    """
+    latest = _latest_preview(connection, preview_id)
+    if latest is not None and tuple(latest)[1:] == payloads:
+        return False
+    revision = 1 if latest is None else latest["preview_revision"] + 1
+    connection.execute(
+        "UPDATE weekly_previews SET status = 'EXPIRED' WHERE preview_id = ? AND preview_revision < ? "
+        "AND status IN ('CREATED', 'SENT', 'DELIVERY_FAILED')",
+        (preview_id, revision),
+    )
+    connection.execute(
+        """
+        INSERT INTO weekly_previews (
+            preview_id, preview_revision, base_candle_date, ranked_candidates_json,
+            projected_slots_json, projected_trades_json, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?)
+        """,
+        (preview_id, revision, base_date, *payloads, timestamp.isoformat()),
+    )
+    return True
+
+
 def _save_rf_invalid_preview(
     connection: sqlite3.Connection,
     *,
@@ -61,21 +105,11 @@ def _save_rf_invalid_preview(
         "[]",
     )
     preview_id = "weekly-" + hashlib.sha256(base_date.encode("ascii")).hexdigest()[:24]
-    existing = connection.execute(
-        "SELECT 1 FROM weekly_previews WHERE preview_id = ?", (preview_id,)
-    ).fetchone()
-    if existing is not None:
-        return
     with connection:
-        connection.execute(
-            """
-            INSERT INTO weekly_previews (
-                preview_id, base_candle_date, ranked_candidates_json,
-                projected_slots_json, projected_trades_json, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, 'CREATED', ?)
-            """,
-            (preview_id, base_date, *payloads, timestamp.isoformat()),
-        )
+        if not _insert_preview_revision(
+            connection, preview_id=preview_id, base_date=base_date, payloads=payloads, timestamp=timestamp
+        ):
+            return
         connection.execute(
             """
             INSERT INTO system_events (component, event_type, severity, message, created_at)
@@ -413,28 +447,12 @@ def create_weekly_preview_handler(
             preview_id = "weekly-" + hashlib.sha256(
                 base_date.encode("ascii")
             ).hexdigest()[:24]
-            existing = connection.execute(
-                """
-                SELECT ranked_candidates_json, projected_slots_json,
-                       projected_trades_json
-                FROM weekly_previews WHERE preview_id = ?
-                """,
-                (preview_id,),
-            ).fetchone()
-            if existing is not None:
-                if tuple(existing) != payloads:
-                    raise RuntimeError("WEEKLY_PREVIEW_CONFLICT")
-                return
             with connection:
-                connection.execute(
-                    """
-                    INSERT INTO weekly_previews (
-                        preview_id, base_candle_date, ranked_candidates_json,
-                        projected_slots_json, projected_trades_json, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, 'CREATED', ?)
-                    """,
-                    (preview_id, base_date, *payloads, timestamp.isoformat()),
-                )
+                if not _insert_preview_revision(
+                    connection, preview_id=preview_id, base_date=base_date,
+                    payloads=payloads, timestamp=timestamp,
+                ):
+                    return
                 for ticker, rejection_code in rejected_assets:
                     connection.execute(
                         """

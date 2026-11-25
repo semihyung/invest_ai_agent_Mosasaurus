@@ -6,7 +6,7 @@
 
 ## 프로젝트 개요 및 명령어
 
-- 언어/런타임: Python 3.12 (Dockerfile 기준), SQLite(WAL), APScheduler, python-telegram-bot
+- 언어/런타임: Python 3.15 (Dockerfile·CI 기준, 명세는 3.12 이상), SQLite(WAL), APScheduler, python-telegram-bot
 - 디렉터리: `src/`(앱), `config/`(rules·llm·allowlist YAML), `migrations/`(SQL), `docs/`(설계 문서 5종), `backtest/`, `tests/`(unit·integration·replay·fault_injection), `scripts/`
 - 테스트 실행 (Windows PowerShell 기준):
 

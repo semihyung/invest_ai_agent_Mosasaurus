@@ -6,7 +6,7 @@ KIS 입출금 조회 TR이 확인되지 않았으므로(명세 2.2절) Phase 1�
 """
 
 import sqlite3
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 
 

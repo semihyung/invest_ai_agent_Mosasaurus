@@ -17,7 +17,7 @@ import hashlib
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from src.order_manager import (
     ExitObligation,

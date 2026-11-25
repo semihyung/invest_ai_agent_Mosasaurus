@@ -9,7 +9,6 @@
 """
 
 import os
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
@@ -157,7 +156,8 @@ def build_dependencies(
             token_expiry=lambda: (token_cache.load().expires_at if token_cache.load() else None),
             api_calls_today=limiter.calls_today),
         ScheduleJob.WEEKLY_MAINTENANCE: create_weekly_maintenance_handler(
-            connection_factory, env.get("BACKUP_DIR", "/app/data/backups"), notify=notify),
+            connection_factory, env.get("BACKUP_DIR", "/app/data/backups"), notify=notify,
+            keep=int(cfg["backup"]["keep_weekly"]), keep_predeploy=int(cfg["backup"]["keep_predeploy"])),  # type: ignore[index]
         ScheduleJob.MORNING_PREP: create_morning_prep_handler(
             connection_factory, lambda ticker: broker.candles(ticker, datetime.now(KST).date()),
             ratio_change_tolerance=float(cfg["corporate_action"]["ratio_change_tolerance"]),  # type: ignore[index]

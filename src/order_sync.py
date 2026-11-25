@@ -8,7 +8,7 @@
 
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Protocol
 
 from src.order_manager import (
     OrderSide, OrderStatus, PendingConfirmationEvidence, cancel_can_finalize, persist_order_transition,

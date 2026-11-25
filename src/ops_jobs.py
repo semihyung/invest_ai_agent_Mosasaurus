@@ -160,6 +160,23 @@ def create_daily_briefing_handler(
     return handler
 
 
+_WEEKLY_BACKUP_PATTERN = "mosasaurus-????????.db"             # 이 잡이 만드는 주간 백업(KST 날짜)
+_PREDEPLOY_BACKUP_PATTERN = "mosasaurus-????????T??????Z.db"  # scripts/backup_db.sh 의 배포 전 백업(UTC 시각)
+
+
+def prune_backups(directory: Path, pattern: str, keep: int) -> None:
+    """`pattern` 에 맞는 백업을 이름순(= 시간순)으로 `keep` 개만 남기고, 지운 파일의 `.sha256` 도 함께 지운다.
+
+    주간 백업과 배포 전 백업은 따로 센다: 한꺼번에 이름순으로 세면 배포가 잦은 달에 주간 백업이 먼저 밀려나고
+    체크섬 파일은 고아로 남는다(감사 12번).
+    """
+    if isinstance(keep, bool) or not isinstance(keep, int) or keep < 1:
+        raise ValueError("keep must be a positive integer.")
+    for old in sorted(directory.glob(pattern))[:-keep]:
+        old.unlink()
+        old.with_name(old.name + ".sha256").unlink(missing_ok=True)
+
+
 def create_weekly_maintenance_handler(
     connection_factory: Callable[[], sqlite3.Connection],
     backup_dir: str | Path,
@@ -167,8 +184,12 @@ def create_weekly_maintenance_handler(
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     notify: Callable[[str, str], None] = lambda severity, message: None,
     keep: int = 8,
+    keep_predeploy: int = 10,
 ) -> Callable[[], None]:
-    """SQLite 일관 백업 → 무결성 검사 → 오래된 사본 정리. 검사 실패는 `DB_INTEGRITY` 정지 원인으로 올린다."""
+    """SQLite 일관 백업 → 무결성 검사 → 오래된 사본 정리. 검사 실패는 `DB_INTEGRITY` 정지 원인으로 올린다.
+
+    `keep`(주간 백업)·`keep_predeploy`(배포 전 백업) 는 `rules.yaml` 의 `backup.keep_weekly`·`backup.keep_predeploy` 이다.
+    """
 
     def handler() -> None:
         """일요일 DB 백업과 무결성 검사를 수행한다."""
@@ -189,8 +210,8 @@ def create_weekly_maintenance_handler(
                 raise_flag(connection, "HALT", "DB_INTEGRITY", now=now, detail="BACKUP_INTEGRITY_CHECK_FAILED")
                 notify("CRITICAL", "주간 백업 무결성 검사 실패: DB_INTEGRITY 정지")
                 return
-            for old in sorted(target_dir.glob("mosasaurus-*.db"))[:-keep]:
-                old.unlink()
+            prune_backups(target_dir, _WEEKLY_BACKUP_PATTERN, keep)
+            prune_backups(target_dir, _PREDEPLOY_BACKUP_PATTERN, keep_predeploy)
             with connection:
                 connection.execute(
                     "INSERT INTO system_events (component, event_type, severity, message, created_at) "

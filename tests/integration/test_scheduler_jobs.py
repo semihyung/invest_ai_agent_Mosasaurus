@@ -131,13 +131,14 @@ class SchedulerJobTests(unittest.TestCase):
             "111111",
         )
 
-    def test_repeated_preview_is_idempotent_and_changed_payload_conflicts(self):
-        """동일 프리뷰는 중복 저장하지 않고 다른 계산 결과는 충돌로 멈춥니다."""
+    def test_repeated_preview_is_idempotent_and_changed_payload_makes_a_new_revision(self):
+        """동일 프리뷰는 중복 저장하지 않고, 다른 계산 결과는 기존 행을 덮어쓰지 않고 revision+1 로 저장합니다(명세 5.3절)."""
         handler = self._handler()
         handler()
         handler()
         connection = connect_database(self.db_path)
         try:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM weekly_previews").fetchone()[0], 1)
             connection.execute(
                 "UPDATE universe_assets SET data_status = 'DATA_INVALID' "
                 "WHERE ticker = '111111'"
@@ -146,16 +147,16 @@ class SchedulerJobTests(unittest.TestCase):
         finally:
             connection.close()
 
-        with self.assertRaisesRegex(RuntimeError, "WEEKLY_PREVIEW_CONFLICT"):
-            handler()
+        handler()  # 예전에는 WEEKLY_PREVIEW_CONFLICT 로 멈췄다
+        handler()  # 같은 결과를 다시 만들면 더 늘지 않는다
         connection = connect_database(self.db_path)
         try:
-            self.assertEqual(
-                connection.execute("SELECT COUNT(*) FROM weekly_previews").fetchone()[0],
-                1,
-            )
+            rows = [tuple(row) for row in connection.execute(
+                "SELECT preview_revision, status FROM weekly_previews ORDER BY preview_revision")]
         finally:
             connection.close()
+        # 이전 revision 은 쓰이지 않도록 닫히고(EXPIRED), 집행은 가장 큰 revision 만 쓴다.
+        self.assertEqual(rows, [(1, "EXPIRED"), (2, "CREATED")])
 
     def _rf_invalid_preview(self):
         """저장된 프리뷰 1건과 RF_INVALID 경보 건수를 읽습니다."""
