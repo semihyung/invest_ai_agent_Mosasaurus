@@ -67,9 +67,10 @@ python -m unittest tests.unit.test_order_manager   # 단일 파일
    - 우선순위: `SAFE_HALT` > `EMERGENCY` > `PAUSED` > `TRAINING` > `NORMAL`
    - `SAFE_HALT` 에서는 조회·대조·취소만 허용하고 신규 매수·매도를 모두 차단하십시오.
 
-5. **Phase 1 우선 완성 후 Phase 2 확장 (1장, 8장):**
+5. **Phase 1 우선 완성 후 Phase 2 확장 (0.1절 3·5번, 1장, 8장):**
    - `Stage 0` ~ `Stage 7` 은 LLM 없이 독립 실행되는 **Phase 1 핵심 코어**입니다.
    - `Stage 8` 에서만 `config/rules.yaml` 의 `features.enable_llm_risk_engine` 으로 제어되는 **Phase 2 LLM 리스크 엔진**을 플러그인 형태로 추가합니다.
+   - 두 Phase 의 경계는 아래 **4장 "Phase 1 / Phase 2 경계 규칙"** 을 예외 없이 따르십시오.
 
 6. **Claude 작업 시 추가 안전 수칙:**
    - `.env`(`.env.example` 제외), `*token*.json`, `*.pem`, `*.key`, `*.db` 는 읽거나 수정하지 마십시오. (`.claude/settings.json` 에서도 차단됨)
@@ -91,3 +92,40 @@ python -m unittest tests.unit.test_order_manager   # 단일 파일
 - **Stage 8: Phase 2 LLM 공시·뉴스 리스크 엔진 및 테스트 13개** — `src/llm_engine.py`(OpenDART, 프롬프트 인젝션 방어, JSON Schema strict, 일일 비용 한도 USD 0.20), `/chart`·`/logs`·`/override`, 시나리오 63~75번
 
 세부 요구사항은 항상 `mosasaurus_spec_v3.7.5.md` 의 해당 절을 확인한 뒤 구현하십시오.
+
+---
+
+## 4. Phase 1 / Phase 2 경계 규칙 (엄격 분리)
+
+명세 0.1절 3번에 따라 Phase 구분은 **기능 활성화·운영 승인 경계**입니다. 아래 규칙은 코드·설정·테스트·작업 절차 모두에 적용됩니다.
+
+1. **무엇이 Phase 2 인가 (이 목록 밖은 모두 Phase 1):**
+   - 명세 8장 전체: `src/llm_engine.py`, OpenDART 공시·뉴스 RSS 수집, LLM 호출·비용 한도·프롬프트 인젝션 방어, `LlmDecision` 판정 로직
+   - Telegram `/chart`·`/logs`·`/override` (6.4절 "Phase 2 (확장)" 행)
+   - ETF 구성종목(look-through) 위험 가중치, `config/llm.yaml`, `app.phase2.env`(`OPENAI_API_KEY`, `DART_API_KEY`, `OPENAI_MODEL_*`)
+   - 명세 11.2절 시나리오 63~75번
+
+2. **작업 절차:**
+   - 사용자가 Stage 8 진행을 명시적으로 요청하기 전에는 Phase 2 코드를 한 줄도 작성하지 마십시오. "미리 자리만 만들어 두기"도 금지입니다.
+   - Phase 1 작업과 Phase 2 작업을 한 커밋에 섞지 마십시오. Phase 2 커밋 메시지에는 `phase2` 범위를 표시합니다(예: `feat(phase2): ...`).
+   - Phase 1 결함을 Phase 2 기능으로 보완하지 마십시오. Phase 1 은 Phase 2 없이도 그 자체로 안전해야 합니다.
+
+3. **코드 경계:**
+   - Phase 2 로직은 `src/llm_engine.py`(필요 시 `src/llm_*.py`)와 Phase 2 전용 Telegram 명령 처리부에만 둡니다.
+   - Phase 1 모듈은 `llm_engine` 을 **모듈 최상단에서 import 하지 않습니다.** 연결 지점은 `risk_manager` 가 받는 **"종목별 신규 매수 제한 신호" 하나**뿐이며, 플래그가 `false` 이거나 모듈이 없으면 그 값은 항상 `DISABLED` 입니다.
+   - Phase 2 외부 라이브러리(LLM SDK, RSS 파서 등)는 `llm_engine` 내부에서만 지연 import 합니다. Phase 1 실행 경로가 이 라이브러리 설치를 요구해서는 안 됩니다.
+   - Phase 1 코드는 Phase 2 비밀값(`OPENAI_*`, `DART_*`)을 읽지 않습니다.
+   - **허용되는 예외:** 명세가 Phase 1 스키마·열거형에 미리 정의한 비활성 자리(`llm_logs` 테이블, `reason_code`/`cycle_id` 의 `VETO`, `pending_actions.action_type` 의 `OVERRIDE_VETO`)는 그대로 둡니다. 이 자리를 채우는 판정·쓰기 로직은 Phase 2 입니다.
+
+4. **권한 방향 (8장 역할 제한):**
+   - Phase 2 는 `RISK_ASSET` 신규 매수를 **막을 수만** 있습니다. 주문 생성·매도·취소·수량·가격 결정, 대표 파킹 매수 제한, Phase 1 게이트 완화는 모두 금지입니다(`allow_llm_direct_order: false`, `allow_llm_force_sell: false`).
+   - Phase 2 장애·타임아웃·예산 초과는 `ANALYSIS_UNAVAILABLE` 로만 기록하고, 손절·120MA·대조·`SAFE_HALT` 등 Phase 1 동작에 영향을 주지 않습니다.
+
+5. **활성화 플래그:**
+   - `features.enable_llm_risk_engine` 의 기본값은 `false` 입니다. Claude 는 사용자의 명시적 지시 없이 이 값을 `true` 로 바꾸지 않습니다.
+   - `true` 는 명세 8.0절 전제 조건(Phase 1 출시 승인, 구성종목 데이터 출처, `llm.yaml` 모델·가격표·피드, 부팅 모델 진단)이 모두 충족될 때만 부팅을 허용하고, 아니면 `CONFIG_INVALID` 로 거부합니다.
+
+6. **테스트 경계:**
+   - Phase 1 테스트(시나리오 1~62번 포함)는 플래그 `false`, `llm_engine` 미존재, Phase 2 라이브러리 미설치 상태에서 전부 통과해야 합니다.
+   - Phase 2 테스트(시나리오 63~75번)는 이름이나 위치로 Phase 2 임을 드러내고, 외부 LLM·DART 호출 없이 가짜 응답으로만 검증합니다.
+   - Stage 8 에서는 "플래그 `false` 일 때 Phase 1 동작이 Phase 2 추가 전과 같다"는 회귀 테스트를 반드시 함께 작성합니다.
