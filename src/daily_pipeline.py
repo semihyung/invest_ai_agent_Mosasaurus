@@ -18,7 +18,7 @@ from typing import Callable, Mapping, Protocol
 
 from src.job_handlers import AccountBrokerPort, _clear_transient_stale, _log, _mark_stale, _safe_notify, reconcile_cash
 from src.order_executor import (
-    KST, SellRequest, SPREAD_NAV, parking_cycle_id, risk_cycle_id, submit_order, weekly_cycle_id,
+    KST, SellRequest, parking_cycle_id, risk_cycle_id, submit_order, weekly_cycle_id,
 )
 from src.order_manager import OrderSide, calculate_limit_price
 from src.order_policy import OrderKind
@@ -234,7 +234,7 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
     for ticker, qty in positions.items():
         if ticker in removed and qty > 0:  # /remove 된 보유 종목: 검증 상실 → 퇴출(5.3절 2번)
             if submit_order(connection, broker, SellRequest(ticker, qty, OrderKind.REDUCE_ONLY_SELL,
-                            risk_cycle_id(day, "REMOVE"), "REMOVED_EXIT"), now=now, account_fresh=True,
+                            risk_cycle_id(day, "REMOVE"), "REMOVED_EXIT"), now=now,
                             protective_enabled=protective_enabled) == "SUBMITTED":
                 exited.add(ticker)
                 submitted += 1
@@ -255,7 +255,7 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
                                                                 training_mode=flags.training_mode)
         if info["classification_verified"] != 1 or stop or (sma is not None and price <= sma):
             result = submit_order(connection, broker, SellRequest(ticker, qty, OrderKind.REDUCE_ONLY_SELL,
-                                  risk_cycle_id(day, "MA120"), "MA120_EXIT"), now=now, account_fresh=True,
+                                  risk_cycle_id(day, "MA120"), "MA120_EXIT"), now=now,
                                   protective_enabled=protective_enabled)
             if result == "SUBMITTED":
                 exited.add(ticker)
@@ -355,11 +355,12 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
     while todo:
         blocked = []
         for request in todo:
-            result = submit_order(connection, broker, request, now=clock(), account_fresh=True,
+            result = submit_order(connection, broker, request, now=clock(),
                                   protective_enabled=protective_enabled)
             if result == "SUBMITTED":
                 submitted += 1
-            elif result == SPREAD_NAV:
+            elif result != "DUPLICATE":
+                # 스프레드뿐 아니라 조회 실패·게이트·활성 매도 등 모든 미제출을 재평가한다(놓치면 슬롯 밖 종목을 든 채 매수하게 됨).
                 blocked.append(request)
         todo = blocked
         if not todo or clock() >= deadline:
@@ -464,5 +465,5 @@ def _buy_phase(connection, broker, cfg, meta, final_risk, risk_weight, day, cloc
         reason = "WEEKLY_BUY" if kind is not OrderKind.PARKING_BUY else "PARKING_ALLOCATION"
         result = submit_order(connection, broker, SellRequest(ticker, qty, kind, parking_cycle_id(day) if kind is OrderKind.PARKING_BUY else weekly_cycle_id(day), reason,
                               region=meta[ticker]["region"] if ticker in meta else "KR"),
-                              now=clock(), account_fresh=True)
+                              now=clock())
         _log(connection, "daily_pipeline", "BUY_ORDER", "INFO", f"{ticker} {qty}주 → {result}", now)

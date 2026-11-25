@@ -68,17 +68,17 @@ class UnavailableQuoteTests(HandlerTestCase):
         broker = FakeBroker()
         broker.quote = lambda ticker: (_ for _ in ()).throw(TimeoutError("x"))
         request = SellRequest("069500", 10, OrderKind.REDUCE_ONLY_SELL, "S1", "STOP")
-        self.assertEqual(submit_order(self.conn, broker, request, now=MORNING, account_fresh=True), QUOTE_UNAVAILABLE)
+        self.assertEqual(submit_order(self.conn, broker, request, now=MORNING), QUOTE_UNAVAILABLE)
         broker2 = FakeBroker()
         broker2.sellable_qty = lambda ticker: (_ for _ in ()).throw(TimeoutError("x"))
-        self.assertEqual(submit_order(self.conn, broker2, request, now=MORNING, account_fresh=True), BROKER_UNAVAILABLE)
+        self.assertEqual(submit_order(self.conn, broker2, request, now=MORNING), BROKER_UNAVAILABLE)
 
     def test_existing_intent_short_circuits_before_any_broker_call(self):
         broker = FakeBroker()
         request = SellRequest("069500", 10, OrderKind.REDUCE_ONLY_SELL, "S1", "STOP")
-        submit_order(self.conn, broker, request, now=MORNING, account_fresh=True)
+        submit_order(self.conn, broker, request, now=MORNING)
         broker.quote = lambda ticker: (_ for _ in ()).throw(AssertionError("must not be called"))
-        self.assertEqual(submit_order(self.conn, broker, request, now=MORNING, account_fresh=True), "DUPLICATE")
+        self.assertEqual(submit_order(self.conn, broker, request, now=MORNING), "DUPLICATE")
 
 
 class GlobalRegionTests(HandlerTestCase):
@@ -167,6 +167,22 @@ class RotationRetryTests(PipelineTestCase):
         self.assertEqual([c for c in self.calls(broker) if c[0] == "360750"], [])  # 위험자산 매수 생략
         self.assertEqual(self.count("SELECT COUNT(*) FROM system_events WHERE event_type='ROTATION_SELL_UNSUBMITTED'"), 1)
 
+    def test_rotation_sell_failing_for_a_non_spread_reason_also_blocks_risk_buys(self):
+        """감사 2: 호가 조회 실패로 못 낸 교체 매도도 재평가 대상이며, 끝내 못 내면 위험자산 매수를 생략한다."""
+        self.add_preview(["360750"])
+        broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100}, holdings={"069500": 10})
+        good = broker.quote
+
+        def quote(ticker):
+            """069500 호가만 계속 실패한다."""
+            if ticker == "069500":
+                raise TimeoutError("down")
+            return good(ticker)
+        broker.quote = quote
+        self.run_pipeline(broker)
+        self.assertEqual([c for c in self.calls(broker) if c[0] == "360750"], [])
+        self.assertEqual(self.count("SELECT COUNT(*) FROM system_events WHERE event_type='ROTATION_SELL_UNSUBMITTED'"), 1)
+
     def test_preview_expires_after_the_first_day_plus_one_carryover(self):
         self.add_preview(["069500"])
         raise_flag(self.conn, "BUY_BLOCK", "UNCLASSIFIED_CASH_FLOW", now=T0)  # 매수를 막아 소비되지 않게 함
@@ -234,3 +250,4 @@ class PreviewDeliveryTests(HandlerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

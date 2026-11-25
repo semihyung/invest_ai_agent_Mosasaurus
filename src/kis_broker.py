@@ -36,6 +36,7 @@ class KisBroker:
         """order_lookup: kis_order_no → (조직번호, 잔량, 주문가격). 취소 요청 본문에 필요하다."""
         self._client, self.transport = client, transport
         self._account, self.environment, self._lookup = account_number, environment, order_lookup
+        self._last_executions: tuple[date, list] | None = None  # orders() 가 받은 행을 fill_prices() 가 1회 재사용
 
     def _balance(self) -> tuple[list[dict], dict]:
         """잔고 조회 결과(보유 목록, 요약 한 건)를 돌려준다."""
@@ -72,6 +73,7 @@ class KisBroker:
     def orders(self, trade_date: date) -> list[OrderSnapshot]:
         """당일 주문·체결 내역을 DB 상태명과 같은 상태로 정규화한다(`odno`, `ord_qty`, `tot_ccld_qty`, `rmn_qty`)."""
         rows, _ = self._client.fetch_daily_order_executions(self._account, trade_date)
+        self._last_executions = (trade_date, rows)
         snapshots = []
         for r in rows:
             ordered, filled, remaining = _int(r, "ord_qty"), _int(r, "tot_ccld_qty"), _int(r, "rmn_qty")
@@ -101,8 +103,16 @@ class KisBroker:
         raise NotImplementedError("buyable-cash TR is not verified; new buys stay blocked (spec 5.4).")
 
     def fill_prices(self, trade_date: date) -> dict[str, float]:
-        """주문번호 → 평균 체결가(`avg_prvs`) `[UNVERIFIED]`. 값이 없는 주문은 빼고 호출자가 주문가로 대체한다."""
-        rows, _ = self._client.fetch_daily_order_executions(self._account, trade_date)
+        """주문번호 → 평균 체결가(`avg_prvs`) `[UNVERIFIED]`. 값이 없는 주문은 빼고 호출자가 주문가로 대체한다.
+
+        바로 앞 `orders()` 가 같은 날짜를 조회했으면 그 행을 한 번만 재사용한다: API 호출이 절반이 되고,
+        체결 수량과 평균가가 같은 시점의 응답에서 나온다.
+        """
+        cached, self._last_executions = self._last_executions, None
+        if cached is not None and cached[0] == trade_date:
+            rows = cached[1]
+        else:
+            rows, _ = self._client.fetch_daily_order_executions(self._account, trade_date)
         return {r["odno"]: float(r["avg_prvs"]) for r in rows
                 if str(r.get("avg_prvs", "")).strip() not in ("", "0")}
 

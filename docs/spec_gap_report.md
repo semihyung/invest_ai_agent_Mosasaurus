@@ -1,6 +1,6 @@
 # 명세 v3.7.5 ↔ 코드 격차 보고서 (S0.1–S8 완료 후 v3.7.5 정렬 반영)
 
-작성 기준: 자동 테스트 569개 통과(Phase 1 마무리 9차 후, 이전 422개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
+작성 기준: 자동 테스트 570개 통과(감사 7건 수정 후, 이전 422개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
 실계좌·실서버 호출, 운영 서버 배포, 쉘 스크립트의 실제 실행(`sh -n` 문법 검사만 수행)은 하지 않았습니다.
 
 ## 1. 단계별 변경 요약
@@ -27,25 +27,20 @@
 6. 배포 금지 시간은 `08:50–15:25` 에서 `08:20–15:45`(+토·일 구간, 완료 신호)로 넓혔고, 기존 `safe_deploy.sh` 는 10단계 절차로 교체했습니다.
 7. (v3.7.5) 비상 재가격 함수(`next_emergency_price`·`calculate_emergency_reprice`·`tick_down`)는 **삭제**했습니다. 위험 축소 매도 가격은 `calculate_limit_price(..., reduce_only=True)`(Bid1 1회)입니다.
 
-## 3. 아직 연결(배선)되지 않은 부분 — 구현 착수 전 반드시 알아야 할 것
+## 3. 아직 남은 부분 (현재 기준)
+
+이전 판의 "미연결" 항목(15:00 파이프라인, 마감 대조, 기업행위 감지, 예수금 대사 실행, 티커별 매도 상호배제, `cycle_id` 헬퍼,
+호출 우선순위·폴링 연장, Telegram 명령 연결 등)은 아래 4-2~4-9절에서 모두 구현됐습니다. 지금 남은 것은 다음뿐입니다.
 
 | 항목 | 상태 |
 | --- | --- |
-| 15:00 `daily_pipeline` 실주문 흐름(보유 유지 판정→진입 게이트→매도 선행→매수) | `scheduler_jobs.py` 에는 **토요일 프리뷰 핸들러만** 있습니다. 명세 5.3 Step B 전체는 부품(`select_final_slots`, `order_policy`, 어댑터, 체결 기록)만 있고 오케스트레이션이 없습니다 |
-| `post_close_reconcile`(15:40), `morning_prep`(기업행위 감지), `intraday_guard`, `open_checkpoint`, `pending_confirmation_poller` | 잡 핸들러 미구현. 규칙은 순수 함수·문서로만 존재 |
-| 기업행위 **감지**(소급 조정·`ex_date` 비교로 `corporate_actions` 후보 생성) | 미구현. 검증(`/ca_confirm`)과 재기준화만 구현 |
-| 예수금 대사 **실행**(`cash_recon` 함수를 잔고 조회와 연결) | 미구현. 순수 함수만 있음. 필드명 `prvs_rcdl_excc_amt` 는 `[UNVERIFIED]` |
-| 티커별 상호배제 락·`SELL_ALREADY_ACTIVE` 정책 | 미구현(같은 의도의 활성 attempt 중복은 DB 가 막지만 서로 다른 의도의 동시 매도는 코드가 막지 않음) |
-| `idempotency_key` 의 `cycle_id` 포맷 헬퍼 | 미구현(형식은 명세·문서에만 존재) |
-| (v3.7.5) 비상 재가격 루프 | 명세·코드에서 삭제됨(해당 없음) |
-| 호출 우선순위 큐·REST 폴링 주기 자동 연장 | 토큰 버킷(`TokenBucket`)만 구현 |
-| `RealOrderGateContext` 가 `real_gate_inputs` 를 쓰도록 연결 | 계산 함수는 있으나 호출부 없음(게이트는 여전히 호출자가 넘긴 불리언을 신뢰) |
-| 실제 HTTP 전송·WebSocket·휴장일 API | `urllib_http_post` 는 작성만 했고 어디에서도 주입하지 않음. 실서버 호출 없음 |
-| 거래일 15:10 이후 스탑 → `exit_obligations` 기록 | 규칙 문서화만 |
-| Telegram 명령 콜백(`/clear_halt` 등)과 `operator_actions` 연결, `main.py` 의 `allowed_user_ids` 주입 | 미연결 |
-| `safe_deploy.sh`·`mosasaurus-deploy`·systemd·`approve_*.sh` 의 실제 실행 | `sh -n` 문법 검사와 승인 스크립트의 임시 디렉터리 실행만 확인. **Raspberry Pi 5 에서 검증 필요** |
-| `[UNVERIFIED]` 25곳(주문 응답 필드명, WebSocket URL, 휴장일 PAPER 지원, 호출 한도, ETF 호가표 등) | 포털 확인 전까지 fail-closed 기본값 |
-| Phase 2(LLM, 시나리오 63–75) | CLAUDE.md Stage 8 범위로, 이번 연속 진행에 포함하지 않음 |
+| 신규 매수 실제 전송 | `KisBroker.buyable_cash`(`nrcvb_buy_amt` TR `[UNVERIFIED]`) 미확정 → 의도적으로 막혀 있음(fail-closed) |
+| WebSocket(체결통보·iNAV·`ws_session_refresh`) | 미구현. iNAV 가 `None` 이라 전략 주문 검증이 거부됨 |
+| REAL 3중 잠금 → `RealOrderGateContext` 연결, 스모크 세션 | REAL 전용. PAPER 단계에서는 거부 유지(`backtest_calibrated=False`·`operator_approval=False` 고정) |
+| `[UNVERIFIED]` 표시(주문 응답 필드명, 휴장일 PAPER 지원, 호출 한도, ETF 호가표 등) | KIS 포털 확인 전까지 fail-closed 기본값 |
+| systemd·워치독·CPU/온도 측정·UPS 안전 종료·배포/롤백·백업 암호화 실제 실행 | **Raspberry Pi 5 에서 검증 필요**(`sh -n` 문법 검사만) |
+| 감사 Major 중 명세 개정이 필요한 항목 | 4-7절 표 참고(사용자 결정 대기) |
+| Phase 2(LLM, 시나리오 63–75) | Stage 8 범위, 미착수 |
 
 ## 4. 11.2절 시나리오 커버리지 (1–62번, 마무리 8차 재작성)
 
@@ -258,7 +253,6 @@ CLAUDE.md "명세와 코드가 충돌하면 임의로 판단하지 않는다" �
 | 6.4 `/pool` 점수·순위, `/health`(CPU·온도·디스크·DB·NTP·UPS·토큰), `/reconcile` 읽기 전용 즉시 대조, `/clear_halt ALL`(수동 원인만), 확인 메시지 효과 표시(즉시 스탑 도달 종목·해제될 원인·기업행위 추정 분배금·승인 파일 요약), 훈련 7일 경과 일일 알림 | ✅ | `src/telegram_actions.py`, `src/telegram_bot.py`, `src/job_handlers.py` |
 
 **명세와 다르게 둔 부분(의도)**
-- 호가 유효성 `Ask1 > Bid1`(엄격)은 `Ask1 ≥ Bid1`(동가 허용)로 구현했습니다. 동가 호가는 정규장에서 발생하지 않아 실영향이 없고, 엄격 적용 시 테스트 픽스처 전체의 가격 체계를 바꿔야 해서입니다(Pi 모의투자 데이터로 확인 후 엄격 적용 권장).
 - `post_emergency_floor_open_days`(5개 개장일)는 달력 7일로 근사합니다(휴장일 달력을 `exchange_calendars` 로 바꾸면 정확해짐).
 - 이 개발 PC 에서는 보안 정책(애플리케이션 제어)이 `exchange_calendars`→pandas/numpy DLL 로드를 막아 **실제 달력 조회는 실행해 보지 못했고**, 가짜 달력으로만 테스트했습니다(Docker/Python 3.12·Pi 에서 확인 필요).
 
@@ -277,6 +271,18 @@ CLAUDE.md "명세와 코드가 충돌하면 임의로 판단하지 않는다" �
 | 459580 파킹 전환(1,000만 원 이상) | 해당 없음 | 기본 파킹 `423160` 유지 |
 
 결론: 400만 원에서는 감사 보고서의 소액 계좌 문제(V < 300만 원)가 발생하지 않아 별도 명세 개정이 필요 없습니다. 다만 위험자산 3슬롯 각각이 ETF 1주 가격보다 충분히 커야 하므로(예: 80만 원 슬롯 ÷ 주당 5~10만 원) 편입 대상 ETF 중 주당 가격이 80만 원을 넘는 것은 S3 에 들어가기 어렵습니다.
+
+### 4-11. 저장소 감사 7건 수정
+
+| # | 결함 | 수정 | 파일 |
+| --- | --- | --- | --- |
+| 1 | `ALLOWED_USER_ID` 가 비면 사용자 확인 없이 명령 수신(명세 6.4 위반) | 사용자 ID 가 없으면 명령 수신을 켜지 않음(fail-closed) | `src/main.py` |
+| 2 | 교체 매도가 스프레드 외 사유(조회 실패·게이트·활성 매도)로 못 나가도 매수 진행 | `SUBMITTED`·`DUPLICATE` 외 결과는 모두 15:06 까지 재평가, 끝내 미제출이면 위험자산 매수 생략 | `src/daily_pipeline.py` |
+| 3 | 대조 신선도(300초) 일시 만료로 손절이 게이트에서 막히면 의도가 닫혀 다음 날 09:10 으로 밀림 | 의도 생성 전 `BLOCKED:RECONCILIATION_STALE`(일시 차단)로 반환 → 다음 틱 재시도 | `src/order_executor.py` |
+| 4 | 공통 게이트 규칙이 3곳(PAPER·REAL 판정, 실패 번호 기록)에 중복 | `order_manager.first_failed_gate` 하나로 통합 | `src/order_manager.py`, `src/order_executor.py` |
+| 5 | 주문 동기화가 같은 일별 체결 조회를 두 번 호출 | `fill_prices()` 가 직전 `orders()` 응답을 1회 재사용 | `src/kis_broker.py` |
+| 6 | 항상 `True` 인 `account_fresh` 인자, 쓰이지 않는 자리표시 핸들러 | 삭제 | `src/order_executor.py`, `src/runtime.py` |
+| 7 | 이 보고서 3절(미연결 표)이 낡음, `Ask1 ≥ Bid1` 설명이 코드(엄격 `>`)와 다름 | 3절 갱신, 틀린 설명 삭제 | 이 문서 |
 
 ## 5. 권고 다음 순서
 

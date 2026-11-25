@@ -55,6 +55,26 @@ class KisBrokerTests(unittest.TestCase):
         self.assertEqual((quote.bid, quote.ask, quote.nav), (85, 86, None))
         self.assertEqual([o.status for o in b.orders(date(2026, 11, 25))], ["PARTIALLY_FILLED", "CANCELED"])
 
+    def test_fill_prices_reuses_the_orders_fetch_once(self):
+        """감사 5: orders() 직후 fill_prices() 는 같은 응답을 재사용하고, 그다음 호출은 새로 조회한다."""
+        client = FakeClient()
+        calls = []
+        original = client.fetch_daily_order_executions
+
+        def counting(account, day):
+            """조회 횟수를 센다."""
+            calls.append(day)
+            rows, summary = original(account, day)
+            rows[0]["avg_prvs"] = "85"
+            return rows, summary
+        client.fetch_daily_order_executions = counting
+        b, day = self.broker(client=client), date(2026, 11, 25)
+        b.orders(day)
+        self.assertEqual(b.fill_prices(day), {"1": 85.0})
+        self.assertEqual(len(calls), 1)
+        b.fill_prices(day)
+        self.assertEqual(len(calls), 2)
+
     def test_missing_cash_field_raises_instead_of_guessing(self):
         b = self.broker(client=FakeClient(summary=[{"tot_evlu_amt": "5000"}]))
         with self.assertRaises(ValueError):

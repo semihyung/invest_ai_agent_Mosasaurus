@@ -87,7 +87,7 @@ class InvalidQuoteTests(HandlerTestCase):
     def test_zero_bid_blocks_without_intent_and_flags_the_ticker(self):
         broker = FakeBroker(bid=0)
         result = submit_order(self.conn, broker, SellRequest("069500", 10, OrderKind.REDUCE_ONLY_SELL, "S1", "STOP"),
-                              now=MORNING, account_fresh=True)
+                              now=MORNING)
         self.assertEqual(result, QUOTE_INVALID)
         self.assertEqual(self.count("SELECT COUNT(*) FROM order_intents"), 0)
         self.assertEqual(active_codes(self.conn, "TICKER_BLOCK", ticker="069500"), ("QUOTE_INVALID",))
@@ -109,7 +109,7 @@ class CommonGateTests(HandlerTestCase):
 
     def sell(self, broker, when=MORNING, kind=OrderKind.REDUCE_ONLY_SELL):
         return submit_order(self.conn, broker, SellRequest("069500", 10, kind, "R2026-11-25:STOP", "STOP"),
-                            now=when, account_fresh=True)
+                            now=when)
 
     def test_orders_are_only_allowed_between_open_and_the_new_order_cutoff(self):
         from src.order_executor import OUTSIDE_ORDER_WINDOW
@@ -151,13 +151,23 @@ class CommonGateTests(HandlerTestCase):
                           ((MORNING - timedelta(seconds=301)).isoformat(),))
         self.conn.commit()
         broker = FakeBroker()
+        # 감사 3: 신선도 만료는 일시 차단 — 의도·의무를 남기지 않아 다음 틱에 같은 cycle 로 재시도된다.
+        self.assertEqual(self.sell(broker), "BLOCKED:RECONCILIATION_STALE")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM order_intents").fetchone()[0], 0)
+        # 대조가 신선하지만 불일치(reconciliation_ok=false)면 게이트 2 에서 막히고 번호가 기록된다.
+        self.conn.execute("UPDATE system_state SET value = ? WHERE key = 'last_reconciliation_at'", (MORNING.isoformat(),))
+        self.conn.execute("UPDATE system_state SET value = 'false' WHERE key = 'reconciliation_ok'")
+        self.conn.commit()
         self.assertEqual(self.sell(broker), "BLOCKED:GATE")
         reason = self.conn.execute("SELECT reason_code FROM order_events WHERE new_status = 'REJECTED'").fetchone()[0]
         self.assertEqual(reason, "GATE_2_FAILED")          # 실패한 게이트 번호 기록
+        self.conn.execute("UPDATE system_state SET value = ? WHERE key = 'last_reconciliation_at'",
+                          ((MORNING - timedelta(seconds=301)).isoformat(),))
+        self.conn.commit()
         raise_flag(self.conn, "HALT", "ACCOUNT_MISMATCH", now=MORNING)
         broker2 = FakeBroker()
         result = submit_order(self.conn, broker2, SellRequest("069500", 10, OrderKind.PROTECTIVE_EXIT_SELL, "R2026-11-25:STOP2", "STOP"),
-                              now=MORNING, account_fresh=True)
+                              now=MORNING)
         self.assertEqual(result, "SUBMITTED")
 
     def test_cycle_id_formats_follow_the_spec(self):

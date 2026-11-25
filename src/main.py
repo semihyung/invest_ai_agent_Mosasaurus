@@ -196,12 +196,18 @@ def main(
 
 
 def _telegram_settings(environ: Mapping[str, str]) -> dict | None:
-    """토큰·허용 채팅이 모두 있을 때만 명령 수신을 켠다(없으면 알림·스케줄러만 동작)."""
+    """토큰·허용 채팅·허용 사용자가 모두 있을 때만 명령 수신을 켠다(없으면 알림·스케줄러만 동작).
+
+    명세 6.4절: 채팅 ID **와** 사용자 ID 를 모두 검증해야 하므로 사용자 ID 가 없으면 명령을 받지 않는다(fail-closed).
+    """
     token, chat = environ.get("TELEGRAM_BOT_TOKEN", "").strip(), environ.get("ALLOWED_CHAT_ID", "").strip()
+    user = environ.get("ALLOWED_USER_ID", "").strip()
     if not token or not chat:
         return None
-    user = environ.get("ALLOWED_USER_ID", "").strip()
-    return {"token": token, "chat_ids": {chat}, "user_ids": {user} if user else None,
+    if not user:
+        print("Telegram commands disabled: ALLOWED_USER_ID is required (spec 6.4).", file=sys.stderr)
+        return None
+    return {"token": token, "chat_ids": {chat}, "user_ids": {user},
             "approvals_dir": environ.get("APPROVALS_DIR", "/run/approvals"),
             "backtest_dir": environ.get("BACKTEST_DIR", "/run/backtests")}
 

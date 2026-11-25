@@ -13,7 +13,7 @@ class SellMutualExclusionTests(HandlerTestCase):
         broker = FakeBroker()
         create_intraday_guard_handler(self.factory, broker, clock=lambda: MORNING)()
         other = SellRequest("069500", 10, OrderKind.RISK_ROTATION_SELL, "R069500:2026-11-25", "WEEKLY_ROTATION")
-        result = submit_order(self.conn, broker, other, now=MORNING, account_fresh=True)
+        result = submit_order(self.conn, broker, other, now=MORNING)
         self.assertEqual(result, SELL_ALREADY_ACTIVE)
         self.assertEqual(len(broker.transport.calls), 1)
 
@@ -53,7 +53,7 @@ class UncertainOrderScopeTests(HandlerTestCase):
     def pending_buy(self, broker):
         broker.transport.response = {}  # 타임아웃 → PENDING_CONFIRMATION
         result = submit_order(self.conn, broker, SellRequest("069500", 5, OrderKind.PARKING_BUY, "B1", "T"),
-                              now=MORNING, account_fresh=True)
+                              now=MORNING)
         broker.transport.response = {"accepted": True, "order_number": "9"}
         return result
 
@@ -62,24 +62,24 @@ class UncertainOrderScopeTests(HandlerTestCase):
         self.pending_buy(broker)
         self.assertEqual(self.count("SELECT COUNT(*) FROM orders WHERE status='PENDING_CONFIRMATION'"), 1)
         again = submit_order(self.conn, broker, SellRequest("360750", 5, OrderKind.PARKING_BUY, "B2", "T"),
-                             now=MORNING, account_fresh=True)
+                             now=MORNING)
         self.assertEqual(again, "BLOCKED:GATE")  # 다른 티커 매수도 계좌 신규 매수 대기
         sell = submit_order(self.conn, broker, SellRequest("360750", 10, OrderKind.REDUCE_ONLY_SELL, "S1", "STOP"),
-                            now=MORNING, account_fresh=True)
+                            now=MORNING)
         self.assertEqual(sell, "SUBMITTED")       # 다른 종목 스탑은 계속 동작
 
     def test_pending_sell_blocks_only_its_own_ticker(self):
         broker = self.broker()
         broker.transport.response = {}
         first = submit_order(self.conn, broker, SellRequest("069500", 10, OrderKind.REDUCE_ONLY_SELL, "S1", "STOP"),
-                             now=MORNING, account_fresh=True)
+                             now=MORNING)
         self.assertEqual(first, "SUBMITTED")
         broker.transport.response = {"accepted": True, "order_number": "9"}
         same = submit_order(self.conn, broker, SellRequest("069500", 10, OrderKind.RISK_ROTATION_SELL, "R1", "T"),
-                            now=MORNING, account_fresh=True)
+                            now=MORNING)
         self.assertEqual(same, SELL_ALREADY_ACTIVE)
         other = submit_order(self.conn, broker, SellRequest("360750", 10, OrderKind.REDUCE_ONLY_SELL, "S2", "STOP"),
-                             now=MORNING, account_fresh=True)
+                             now=MORNING)
         self.assertEqual(other, "SUBMITTED")
 
     def test_uncertain_orders_never_create_safe_halt(self):

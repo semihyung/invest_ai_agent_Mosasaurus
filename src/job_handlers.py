@@ -264,7 +264,7 @@ def create_intraday_guard_handler(
                 result = submit_sell(
                     connection, broker,
                     SellRequest(ticker, quantity, kind, risk_cycle_id(trade_date, "STOP"), "TRAILING_STOP"),
-                    now=now, account_fresh=True, protective_enabled=protective_enabled)
+                    now=now, protective_enabled=protective_enabled)
                 if result == SELL_ALREADY_ACTIVE or result in TRANSIENT_BLOCKS:
                     continue  # 진행 중이거나 조회 일시 실패: 의무·경보 없이 다음 틱에 다시 시도한다
                 if result.startswith("BLOCKED") or result == "ANOMALY":
@@ -326,7 +326,7 @@ def create_open_checkpoint_handler(
                     SellRequest(ob["ticker"], remaining, OrderKind.EXIT_OBLIGATION_RETRY,
                                 obligation_cycle_id(ob["obligation_id"], trade_date), "EXIT_OBLIGATION_RETRY",
                                 obligation_id=ob["obligation_id"]),
-                    now=now, account_fresh=True, protective_enabled=protective_enabled)
+                    now=now, protective_enabled=protective_enabled)
                 if result != "DUPLICATE":
                     msg = f"{ob['ticker']} 매도 의무 재주문({remaining}주) → {result}"
                     _log(connection, "open_checkpoint", "OBLIGATION_RETRY", "WARN", msg, now)

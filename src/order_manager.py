@@ -1053,6 +1053,32 @@ class RealOrderGateContext:
     protective_exit: bool = False
 
 
+def first_failed_gate(ctx: RealOrderGateContext) -> int | None:
+    """7.1절 공통 게이트 중 처음 실패한 번호(1~8). 모두 통과하면 None.
+
+    PAPER·REAL 판정과 거부 사유 기록이 모두 이 함수 하나를 쓴다(규칙이 두 곳에서 따로 바뀌지 않게).
+    목적별 게이트(전략 백테스트 승인·스모크)는 여기에 포함되지 않는다.
+    """
+    protective = ctx.protective_exit
+    if ctx.environment not in ("PAPER", "REAL") or (ctx.environment == "REAL" and not ctx.operator_approval):
+        return 1
+    if not ((ctx.reconciliation_ok or protective) and ctx.reconciliation_fresh):
+        return 2
+    if ctx.unresolved_order_exists:
+        return 3
+    if not (ctx.token_valid and ctx.calendar_valid and ctx.quote_valid and ctx.adjusted_data_valid)             or (ctx.unclassified_cash_flow_exists and not protective):
+        return 4
+    if not (ctx.quantity_valid and ctx.cash_buffer_valid and ctx.liquidity_limit_valid and ctx.limit_order_only):
+        return 5
+    if not ctx.mode_allows_order:
+        return 6
+    if ctx.idempotency_conflict:
+        return 7
+    if not (ctx.common_order_manager_path and ctx.order_recordable):
+        return 8
+    return None
+
+
 def validate_real_order_gate(context: RealOrderGateContext) -> bool:
     """REAL 계좌 공통 8대 게이트와 목적별 제한을 확인합니다."""
     if not isinstance(context, RealOrderGateContext):
@@ -1085,27 +1111,7 @@ def validate_real_order_gate(context: RealOrderGateContext) -> bool:
     )
     if any(not isinstance(value, bool) for value in bool_fields):
         raise ValueError("REAL order gate fields must be booleans.")
-    common_gates_pass = (
-        context.environment == "REAL"
-        and context.operator_approval
-        and (context.reconciliation_ok or context.protective_exit)
-        and context.reconciliation_fresh
-        and not context.unresolved_order_exists
-        and (not context.unclassified_cash_flow_exists or context.protective_exit)
-        and context.token_valid
-        and context.calendar_valid
-        and context.quote_valid
-        and context.adjusted_data_valid
-        and context.mode_allows_order
-        and not context.idempotency_conflict
-        and context.common_order_manager_path
-        and context.order_recordable
-        and context.quantity_valid
-        and context.cash_buffer_valid
-        and context.liquidity_limit_valid
-        and context.limit_order_only
-    )
-    if not common_gates_pass:
+    if context.environment != "REAL" or first_failed_gate(context) is not None:
         return False
     if context.intent_type is OrderIntentType.STRATEGY_REBALANCE:
         return context.backtest_calibrated
@@ -1149,25 +1155,7 @@ def validate_order_submission_gate(context: RealOrderGateContext) -> bool:
     )
     if any(not isinstance(value, bool) for value in bool_fields):
         raise ValueError("PAPER order gate fields must be booleans.")
-    return (
-        context.intent_type is not OrderIntentType.SMOKE_TEST
-        and (context.reconciliation_ok or context.protective_exit)
-        and context.reconciliation_fresh
-        and not context.unresolved_order_exists
-        and (not context.unclassified_cash_flow_exists or context.protective_exit)
-        and context.token_valid
-        and context.calendar_valid
-        and context.quote_valid
-        and context.adjusted_data_valid
-        and context.mode_allows_order
-        and not context.idempotency_conflict
-        and context.common_order_manager_path
-        and context.order_recordable
-        and context.quantity_valid
-        and context.cash_buffer_valid
-        and context.liquidity_limit_valid
-        and context.limit_order_only
-        )
+    return context.intent_type is not OrderIntentType.SMOKE_TEST and first_failed_gate(context) is None
 
 
 def validate_spread_and_nav(

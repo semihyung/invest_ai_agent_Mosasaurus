@@ -35,7 +35,6 @@ from src.scheduler import KST, ScheduleJob
 from src.universe import load_universe_allowlist, scheduled_ex_dates
 from src.scheduler_jobs import create_weekly_preview_handler
 
-NOT_IMPLEMENTED_JOBS: tuple = ()  # 모든 필수 잡이 구현되어 자리표시 핸들러가 필요 없다
 
 
 def _require_env(environ: Mapping[str, str], name: str) -> str:
@@ -44,27 +43,6 @@ def _require_env(environ: Mapping[str, str], name: str) -> str:
     if not value:
         raise ValueError(f"Environment variable {name} is required.")
     return value
-
-
-def not_implemented_handler(
-    connection_factory: Callable[[], sqlite3.Connection], job: ScheduleJob
-) -> Callable[[], None]:
-    """주문 없이 `JOB_NOT_IMPLEMENTED` 경고만 남기는 안전한 자리표시 핸들러."""
-
-    def handler() -> None:
-        """미구현 잡이 호출되면 경고 이벤트만 기록한다."""
-        connection = connection_factory()
-        try:
-            with connection:
-                connection.execute(
-                    "INSERT INTO system_events (component, event_type, severity, message, created_at) "
-                    "VALUES ('runtime', 'JOB_NOT_IMPLEMENTED', 'WARN', ?, ?)",
-                    (f"{job.value} 핸들러가 아직 구현되지 않아 실행하지 않았습니다.",
-                     datetime.now(timezone.utc).isoformat()))
-        finally:
-            connection.close()
-
-    return handler
 
 
 def build_dependencies(
@@ -198,8 +176,6 @@ def build_dependencies(
         ScheduleJob.WEEKLY_RANKING_PREVIEW: create_weekly_preview_handler(
             connection_factory, cfg, notify=notify),  # type: ignore[arg-type]
     }
-    for job in NOT_IMPLEMENTED_JOBS:
-        handlers[job] = not_implemented_handler(connection_factory, job)
 
     def health_snapshot() -> HealthSnapshot:
         """DB·토큰·대조 상태만 실측한다(CPU·디스크·온도는 라즈베리파이에서 연결, 지금은 정상 기본값)."""

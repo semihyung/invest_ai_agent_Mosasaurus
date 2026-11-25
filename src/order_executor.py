@@ -31,6 +31,7 @@ from src.order_manager import (
     RealOrderGateContext,
     calculate_limit_price,
     etf_tick_size,
+    first_failed_gate,
     validate_spread_and_nav,
     persist_order_intent,
     persist_order_transition,
@@ -66,7 +67,9 @@ QUOTE_INVALID = "BLOCKED:QUOTE_INVALID"  # Bid1/Ask1 가 0 이하이거나 교�
 OUTSIDE_ORDER_WINDOW = "BLOCKED:OUTSIDE_ORDER_WINDOW"  # 09:00 이전 또는 15:10 이후(취소는 예외, 7.1절 게이트 9)
 SPREAD_WIDE = "BLOCKED:SPREAD_WIDE"  # 위험 축소 매도도 스프레드 1.0% 초과면 보류(7.2절 1번)
 SPREAD_NAV = "BLOCKED:SPREAD_NAV"  # 전략 주문: 스프레드 0.3%·iNAV 괴리 한도 초과 → 의도를 만들지 않고 재평가
-TRANSIENT_BLOCKS = frozenset({QUOTE_UNAVAILABLE, BROKER_UNAVAILABLE, QUOTE_INVALID, OUTSIDE_ORDER_WINDOW, SPREAD_WIDE})
+RECONCILIATION_STALE = "BLOCKED:RECONCILIATION_STALE"  # 마지막 성공 대조가 300초 초과(게이트 2): 다음 대조 후 재시도
+TRANSIENT_BLOCKS = frozenset({QUOTE_UNAVAILABLE, BROKER_UNAVAILABLE, QUOTE_INVALID, OUTSIDE_ORDER_WINDOW, SPREAD_WIDE,
+                              RECONCILIATION_STALE})
 ORDER_WINDOW = (time(9, 0), time(15, 10))  # market.regular_open ~ execution.new_order_cutoff
 MAX_SPREAD_REDUCE_ONLY = 0.010  # execution.max_spread_ratio_reduce_only
 RECONCILIATION_TTL_SECONDS = 300  # ttl_seconds.reconciliation
@@ -166,7 +169,6 @@ def submit_order(
     request: SellRequest,
     *,
     now: datetime,
-    account_fresh: bool,
     protective_enabled: bool = True,
     operator_approval: bool = False,
     cash_buffer_valid: bool = True,
@@ -195,6 +197,11 @@ def submit_order(
                       side=side, quantity=request.quantity, obligation_id=request.obligation_id).idempotency_key()
     if connection.execute("SELECT 1 FROM order_intents WHERE idempotency_key = ?", (key,)).fetchone():
         return "DUPLICATE"
+    protective = request.kind is OrderKind.PROTECTIVE_EXIT_SELL
+    if not protective and not _reconciliation_fresh(connection, now):
+        # 게이트 2 신선도는 대조가 한 번 늦어도 깨지는 일시 상태다. 의도를 만들기 전에 막아야 같은 cycle 로 다음 틱에 재시도된다
+        # (게이트에서 막히면 의도가 닫혀 그날은 DUPLICATE 가 되고, 손절이 다음 날 09:10 으로 밀린다).
+        return RECONCILIATION_STALE
     try:
         sellable = broker.sellable_qty(request.ticker) if side is OrderSide.SELL else request.quantity
     except Exception:  # noqa: BLE001 - 네트워크·한도 오류는 예외로 퍼뜨리지 않는다(잡 오류 → 주문 잠금 방지)
@@ -250,8 +257,7 @@ def submit_order(
         environment=broker.environment,
         operator_approval=operator_approval,
         reconciliation_ok=_state(connection, "reconciliation_ok") == "true",
-        reconciliation_fresh=account_fresh and (request.kind is OrderKind.PROTECTIVE_EXIT_SELL
-                                                or _reconciliation_fresh(connection, now)),
+        reconciliation_fresh=protective or _reconciliation_fresh(connection, now),
         unresolved_order_exists=_unresolved_order_exists(connection, request.ticker, side),
         unclassified_cash_flow_exists="UNCLASSIFIED_CASH_FLOW" in codes,
         token_valid=True, calendar_valid="CALENDAR_MISMATCH" not in codes,
@@ -259,7 +265,7 @@ def submit_order(
         backtest_calibrated=False, mode_allows_order=True, idempotency_conflict=False,
         intent_type=intent_type, cash_buffer_valid=cash_buffer_valid,
         quantity_valid=quantity <= sellable,
-        protective_exit=request.kind is OrderKind.PROTECTIVE_EXIT_SELL,
+        protective_exit=protective,
     )
     order_id = "O-" + hashlib.sha256(f"{result.parent_intent_id}:1".encode()).hexdigest()[:20]
     attempt_id = "A-" + hashlib.sha256(f"{order_id}:attempt".encode()).hexdigest()[:20]
@@ -276,7 +282,7 @@ def submit_order(
         )
     except PermissionError:
         # 게이트 불통과: 전송하지 않았으므로 종결 처리한다(재가격·재전송 없음). 실패한 게이트 번호를 이벤트 사유로 남긴다(7.1절).
-        _expire_unsent(connection, order_id, now, reason=f"GATE_{_first_failed_gate(gate) or 0}_FAILED")
+        _expire_unsent(connection, order_id, now, reason=f"GATE_{first_failed_gate(gate) or 0}_FAILED")
         return "BLOCKED:GATE"
     except Exception:
         # 응답 형식 이상 등 불확실: 전송됐을 수 있으므로 확인 대기로 두고 재전송하지 않는다.
@@ -300,29 +306,6 @@ def _reconciliation_fresh(connection: sqlite3.Connection, now: datetime) -> bool
     if not last:
         return False
     return (now - datetime.fromisoformat(last)).total_seconds() <= RECONCILIATION_TTL_SECONDS
-
-
-def _first_failed_gate(ctx: RealOrderGateContext) -> int | None:
-    """7.1절 공통 게이트 중 처음 실패한 번호(1~8). 모두 통과하면 None."""
-    protective = ctx.protective_exit
-    if ctx.environment not in ("PAPER", "REAL") or (ctx.environment == "REAL" and not ctx.operator_approval):
-        return 1
-    if not ((ctx.reconciliation_ok or protective) and ctx.reconciliation_fresh):
-        return 2
-    if ctx.unresolved_order_exists:
-        return 3
-    if not (ctx.token_valid and ctx.calendar_valid and ctx.quote_valid and ctx.adjusted_data_valid) \
-            or (ctx.unclassified_cash_flow_exists and not protective):
-        return 4
-    if not (ctx.quantity_valid and ctx.cash_buffer_valid and ctx.liquidity_limit_valid and ctx.limit_order_only):
-        return 5
-    if not ctx.mode_allows_order:
-        return 6
-    if ctx.idempotency_conflict:
-        return 7
-    if not (ctx.common_order_manager_path and ctx.order_recordable):
-        return 8
-    return None
 
 
 def _quote_is_valid(quote: Quote) -> bool:
