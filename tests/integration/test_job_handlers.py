@@ -145,7 +145,7 @@ class IntradayGuardTests(HandlerTestCase):
 
     def test_safe_halt_with_other_reason_blocks_and_records_obligation(self):
         raise_flag(self.conn, "HALT", "ACCOUNT_MISMATCH", now=MORNING)
-        raise_flag(self.conn, "HALT", "PENDING_CONFIRMATION", now=MORNING)
+        raise_flag(self.conn, "HALT", "CREDENTIALS_UNAVAILABLE", now=MORNING)
         broker = FakeBroker()
         self.run_guard(broker)
         self.assertEqual(broker.transport.calls, [])
@@ -318,11 +318,11 @@ class OrderSyncTests(HandlerTestCase):
         self.assertEqual(self.count("SELECT COUNT(*) FROM trade_fills"), 1)
         self.assertEqual(self.conn.execute("SELECT quantity FROM positions").fetchone()[0], 6)
 
-    def test_timeout_order_stays_pending_during_session_and_halts(self):
+    def test_timeout_order_stays_pending_during_session_without_safe_halt(self):
         broker = FakeBroker()
         broker.transport.response = {}
         self.stop_order(broker)
-        self.assertIn("PENDING_CONFIRMATION", active_codes(self.conn, "HALT"))
+        self.assertEqual(active_codes(self.conn, "HALT"), ())  # v3.7.5 D3: 계좌 전체를 멈추지 않는다
         self.poll(broker)
         self.assertEqual(self.count("SELECT COUNT(*) FROM orders WHERE status='PENDING_CONFIRMATION'"), 1)
 

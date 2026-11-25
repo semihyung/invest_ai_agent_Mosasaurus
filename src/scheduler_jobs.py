@@ -86,11 +86,60 @@ def _save_rf_invalid_preview(
         )
 
 
+def preview_message(row: sqlite3.Row) -> str:
+    """주간 프리뷰를 운영자용 한 장 요약으로 만든다(주말 브리핑, 5.3절 Step A-4)."""
+    ranked = json.loads(row["ranked_candidates_json"])
+    if isinstance(ranked, dict):
+        return f"주간 프리뷰 {row['base_candle_date']}: 파킹 시계열 결함({ranked.get('reason', '')})으로 교체·신규 진입을 생략합니다."
+    slots = json.loads(row["projected_slots_json"])
+    trades = json.loads(row["projected_trades_json"])
+    top = ", ".join(item["ticker"] for item in ranked[:5]) or "후보 없음"
+    slot_text = ", ".join(f"{s['slot_id']}={s['ticker'] or '파킹'}" for s in slots) or "변동 없음"
+    return (f"주간 프리뷰 {row['base_candle_date']}\n순위: {top}\n예상 슬롯: {slot_text}\n"
+            f"예상 매매 {len(trades)}건 — 월요일 15:00 집행 전 확인하세요.")
+
+
+def deliver_previews(
+    connection: sqlite3.Connection,
+    notify: Callable[[str, str], Any],
+    now: datetime,
+    *,
+    max_attempts: int = 6,
+    retry_minutes: int = 10,
+) -> int:
+    """미발송(`CREATED`)·발송 실패(`DELIVERY_FAILED`) 프리뷰를 보내고 상태를 `SENT`/`DELIVERY_FAILED` 로 갱신한다.
+
+    실패는 10분 간격으로 최대 6회까지 재시도한다. 알림 함수가 True 를 돌려줘야 성공으로 본다.
+    """
+    sent = 0
+    rows = connection.execute("SELECT * FROM weekly_previews WHERE status IN ('CREATED', 'DELIVERY_FAILED')").fetchall()
+    for row in rows:
+        key = f"preview_delivery:{row['preview_id']}:{row['preview_revision']}"
+        state = connection.execute('SELECT value FROM system_state WHERE "key" = ?', (key,)).fetchone()
+        count, last = (int(state[0].split("|")[0]), datetime.fromisoformat(state[0].split("|")[1])) if state else (0, None)
+        if count >= max_attempts or (last is not None and (now - last) < timedelta(minutes=retry_minutes)):
+            continue
+        try:
+            ok = bool(notify("INFO", preview_message(row)))
+        except Exception:  # noqa: BLE001 - 알림 실패는 상태로만 남긴다
+            ok = False
+        with connection:
+            connection.execute("UPDATE weekly_previews SET status = ? WHERE preview_id = ? AND preview_revision = ?",
+                               ("SENT" if ok else "DELIVERY_FAILED", row["preview_id"], row["preview_revision"]))
+            connection.execute(
+                'INSERT INTO system_state ("key", value, updated_at) VALUES (?, ?, ?) '
+                'ON CONFLICT("key") DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+                (key, f"{count + 1}|{now.isoformat()}", now.isoformat()))
+        sent += ok
+    return sent
+
+
 def create_weekly_preview_handler(
     connection_factory: Callable[[], sqlite3.Connection],
     rules: Mapping[str, Any],
     *,
     now: Callable[[], datetime] | None = None,
+    notify: Callable[[str, str], Any] | None = None,
 ) -> Callable[[], None]:
     """완료 일봉으로 순위를 산출하고 멱등하게 weekly_previews에 저장합니다."""
     if not callable(connection_factory):
@@ -135,7 +184,7 @@ def create_weekly_preview_handler(
         raise TypeError("now must be callable.")
     clock = now or (lambda: datetime.now(timezone.utc))
 
-    def handler() -> None:
+    def create() -> None:
         """계산 결과가 기존 프리뷰와 다르면 조용히 덮어쓰지 않습니다."""
         timestamp = clock()
         if not isinstance(timestamp, datetime) or timestamp.tzinfo is None:
@@ -398,6 +447,17 @@ def create_weekly_preview_handler(
                         timestamp.isoformat(),
                     ),
                 )
+        finally:
+            connection.close()
+
+    def handler() -> None:
+        """프리뷰를 만든 뒤 주말 브리핑을 발송한다(발송 실패는 상태 `DELIVERY_FAILED` 로 기록, 집행은 계속 가능)."""
+        create()
+        if notify is None:
+            return
+        connection = connection_factory()
+        try:
+            deliver_previews(connection, notify, clock())
         finally:
             connection.close()
 

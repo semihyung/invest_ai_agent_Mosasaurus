@@ -11,7 +11,7 @@
 
 | 원인 | 해제 방식 | 해제 조건 |
 | --- | --- | --- |
-| `PENDING_CONFIRMATION` | 자동 | 해당 주문이 모두 종결로 확정됨(장 마감 후 확정 포함) |
+| `PENDING_CONFIRMATION` *(폐기, v3.7.5 D3)* | 자동 | 더 이상 등록하지 않음. 구 DB 행은 다음 부팅·대조에서 해제 |
 | `CREDENTIALS_UNAVAILABLE` | 자동 | 유효 토큰 재로드 성공 |
 | `CALENDAR_MISMATCH` | 자동 | 다음 검증에서 두 캘린더 일치 |
 | `CLOCK_UNSYNCED` | 자동 | NTP 오차 허용치 이내 확인 |

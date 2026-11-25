@@ -1178,8 +1178,8 @@ def validate_spread_and_nav(
     """호가 스프레드와 NAV 괴리율을 수치 검증 후 적용합니다."""
     if not isinstance(quote, Quote):
         raise TypeError("quote must be a Quote value.")
-    if region not in ("KR", "US"):
-        raise ValueError("Region must be KR or US.")
+    if region not in ("KR", "US", "GLOBAL"):
+        raise ValueError("Region must be KR, US or GLOBAL.")
     if (
         isinstance(quote.bid, bool)
         or isinstance(quote.ask, bool)
@@ -1205,7 +1205,7 @@ def validate_spread_and_nav(
         or quote.nav <= 0
     ):
         return False
-    limit = 0.005 if region == "KR" else 0.012 if region == "US" else None
+    limit = 0.005 if region == "KR" else 0.012  # US·GLOBAL 은 rules.yaml nav_deviation_limit_us/global 과 같은 0.012
     return abs((quote.ask - quote.nav) / quote.nav) <= limit
 
 

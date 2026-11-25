@@ -116,7 +116,7 @@
 
 서로 다른 절·설정·모듈의 지시가 충돌하면 아래 우선순위를 적용한다. 개별 기능마다 별도 예외를 만들지 않고 이 규칙을 공통 기준으로 사용한다.
 
-1. **계좌·주문 사실 확인이 최우선:** KIS 조회 결과와 주문 접수 여부가 불명확하거나 `PENDING_CONFIRMATION` 이 존재하면 신규 주문 전송을 전부 중단한다. 조회·대조·취소만 수행한다.
+1. **계좌·주문 사실 확인이 최우선:** KIS 조회 결과가 불명확하면(조회 실패·고아 주문) 신규 주문 전송을 전부 중단하고 조회·대조·취소만 수행한다. **주문 접수 여부가 불명확한(`PENDING_CONFIRMATION`) 주문은 영향 범위를 한정한다(v3.7.5 D3):** 매수 주문이면 계좌의 신규 매수만, 매도 주문이면 그 티커의 신규 주문만 멈추며 다른 티커의 위험 축소 매도는 KIS 매도가능수량(`ord_psbl_qty`) 이내에서 허용한다(과매도는 브로커가 거부하고, 불확실한 주문은 절대 재전송하지 않는다).
 
 2. **데이터 신뢰성 우선:** 필요한 가격·호가·기업행위 조정값이 `STALE` 또는 `DATA_INVALID` 이면 **해당 종목의** 신규 매수와 가격 기반 자동 매도를 중단한다. 잘못된 가격으로 위험 축소를 시도하지 않는다. 단일 종목의 데이터 결함은 그 종목만 격리하며 시스템 전체 `SAFE_HALT` 로 승격하지 않는다. 계좌·주문·토큰·캘린더처럼 계좌 전체에 영향을 주는 데이터만 계좌 범위로 차단한다. 예외: `iNAV` 만 `STALE` 이고 최우선 호가·조정계수·계좌가 유효하면 위험 축소 매도는 허용한다(7.2절).
 
@@ -151,7 +151,7 @@
 | 운영 모드(`OperatingMode`) | `SAFE_HALT`, `EMERGENCY`, `PAUSED`, `TRAINING`, `NORMAL` | 우선순위 순. 독립 플래그에서 매 평가 시 유도 |
 | 계좌 낙폭 단계(`DrawdownStage`) | `NORMAL`, `CAUTION`, `WARNING`, `CRITICAL` | 운영 모드가 아님. `WARNING` 은 모드명으로 쓰지 않는다 |
 | 데이터 품질(`DataQuality`) | `VALID`, `STALE`, `DATA_INVALID` | `DataQualityGate` 결과도 이 집합을 사용(v3.7.2의 `FAILED` 폐기) |
-| `SAFE_HALT` 원인(`HaltReason`) | `ACCOUNT_MISMATCH`, `PENDING_CONFIRMATION`, `DB_INTEGRITY`, `CALENDAR_MISMATCH`, `CREDENTIALS_UNAVAILABLE`, `UPS_LOW`, `CLOCK_UNSYNCED`, `BOOT_RECOVERY_FAILED`, `DEPLOY_ROLLBACK`, `CONFIG_INVALID` | 6.3절 해제 규칙표 참조. 원인이 1개 이상 활성이면 `SAFE_HALT`. **보호성 손절 허용 원인(`ProtectiveExitReason`, 코드 상수):** `DEPLOY_ROLLBACK`, `ACCOUNT_MISMATCH`, `UPS_LOW`, `CONFIG_INVALID` — 활성 원인이 모두 이 집합에 속할 때만 6.3절 보호성 손절이 가능하다(v3.7.5 D1) |
+| `SAFE_HALT` 원인(`HaltReason`) | `ACCOUNT_MISMATCH`, `PENDING_CONFIRMATION`(v3.7.5 D3: 더 이상 등록하지 않음 — 구 DB 행 해제용으로만 남김), `DB_INTEGRITY`, `CALENDAR_MISMATCH`, `CREDENTIALS_UNAVAILABLE`, `UPS_LOW`, `CLOCK_UNSYNCED`, `BOOT_RECOVERY_FAILED`, `DEPLOY_ROLLBACK`, `CONFIG_INVALID` | 6.3절 해제 규칙표 참조. 원인이 1개 이상 활성이면 `SAFE_HALT`. **보호성 손절 허용 원인(`ProtectiveExitReason`, 코드 상수):** `DEPLOY_ROLLBACK`, `ACCOUNT_MISMATCH`, `UPS_LOW`, `CONFIG_INVALID` — 활성 원인이 모두 이 집합에 속할 때만 6.3절 보호성 손절이 가능하다(v3.7.5 D1) |
 | 계좌 매수 차단 플래그(`BuyBlock`) | `UNCLASSIFIED_CASH_FLOW`, `ACCOUNTING_INVALID`, `ACCOUNT_DATA_STALE` | `SAFE_HALT` 가 아니다. 신규 매수만 차단하고 위험 축소 매도는 0.6절대로 허용 |
 | 종목 격리 플래그(`TickerBlock`) | `CORPORATE_ACTION_UNVERIFIED`, `QUOTE_INVALID`, `PRICE_SERIES_INVALID`, `TRADING_HALTED` | 해당 종목의 신규 매수와 가격 기반 자동 매도만 차단 |
 | 주문 상태(`OrderStatus`, 11종) | `CREATED`, `SUBMITTING`, `PENDING_CONFIRMATION`, `ACCEPTED`, `PARTIALLY_FILLED`, `CANCEL_PENDING`, `FILLED`, `CANCELED`, `REJECTED`, `CONFIRMED_NOT_ACCEPTED`, `EXPIRED` | 앞 6개 = 활성(미해결), 뒤 5개 = 종결 |
@@ -431,7 +431,7 @@
 | 1 | 4.1절 TTL 초과 `STALE` 데이터 | 4.1절 표의 범위 | 해당 범위 매수 차단 |
 | 2 | 최근 200거래일 내 가격 결측(`NULL` 또는 `0` 이하), 거래정지, 수정주가 불연속 또는 일간 수익률 $\pm 30\%$ 초과 미검증 이상치 | 종목 | `PRICE_SERIES_INVALID` 격리 |
 | 3 | KIS 계좌 보유 수량과 SQLite `positions.quantity` 불일치 (2.2절 정지 상태에서 `accounting.recon_confirm_interval_seconds` 이상 간격 2회 연속 재현) | 계좌 | 첫 관측: 신규 매수 대기. 재현 시 `ACCOUNT_MISMATCH` 원인 `SAFE_HALT`. 조회 자체 실패(타임아웃·5xx)는 불일치가 아니며 `ACCOUNT_DATA_STALE` 매수 차단으로만 처리 |
-| 4 | `orders` 에 `SUBMITTING`·`PENDING_CONFIRMATION` 주문 잔존(계좌), 또는 대상 티커에 활성 상태(`CANCEL_PENDING` 포함) 주문 잔존(종목) | 계좌 / 종목 | 7.1절 게이트 3: 계좌 범위는 전체 신규 주문 대기, 종목 범위는 해당 티커 신규 주문 대기 |
+| 4 | `SUBMITTING`·`PENDING_CONFIRMATION` **매수** 주문 잔존(계좌), 또는 대상 티커에 `SUBMITTING`·`PENDING_CONFIRMATION`·`CANCEL_PENDING` 주문 잔존(종목) | 계좌(매수만) / 종목 | 7.1절 게이트 3: 계좌 범위는 신규 매수 대기, 종목 범위는 해당 티커 신규 주문 대기(v3.7.5 D3) |
 | 5 | `cash_flows` 에 `PROVISIONAL` 또는 `UNCLASSIFIED_CASH_FLOW` 잔존 | 계좌 | `PROVISIONAL`: 신규 매수 대기만. `UNCLASSIFIED_CASH_FLOW`: 매수 차단 + HWM 상향 동결, 낙폭은 오염 제거 단위가격으로 계속 판정(6.2절) |
 | 6 | `exchange_calendars(XKRX)` 와 KIS 국내휴장일조회의 개장 여부 불일치 | 계좌 | `CALENDAR_MISMATCH` 원인 `SAFE_HALT` |
 | 7 | 기준 유효성 규칙(4.2절) 미충족 | 종목 | `CORPORATE_ACTION_UNVERIFIED` 격리 |
@@ -720,6 +720,8 @@
 
 ### 6.3 다중 운영 모드 우선순위 및 `SAFE_HALT` 권한 분리
 
+> **v3.7.5 D3 (2026-11-25, 운영자 승인):** 주문 1건의 접수 불확실(`PENDING_CONFIRMATION`)이 계좌 전체 `SAFE_HALT` 로 번져 다른 종목의 스탑까지 꺼지는 문제(감사 2.1)를 막기 위해, 영향 범위를 주문 방향별로 한정한다(0.3절 1번·4.3절 #4·7.1절 게이트 3·7.3절). 고아 주문(KIS 에만 있는 당일 주문)처럼 **어떤 주문이 있는지 알 수 없는** 경우는 `BOOT_RECOVERY_FAILED` 로 계좌 전체를 멈춘다.
+
 `system_state` 에 독립 플래그(`emergency_mode`, `emergency_reason`, `is_paused`, `training_mode`, `training_until`)로 저장하고, `SAFE_HALT` 는 플래그가 아니라 **`safety_flags` 테이블에 `flag_type = 'HALT'` 활성 행(뷰 `halt_reasons`)이 1건 이상 존재하는지**로 유도한다. 매 평가 시점마다 아래 상위 우선순위 1개가 유효 모드로 작동한다. 플래그가 독립적이므로 상위 모드 해제 시 별도의 `previous_mode` 복원 없이 남아 있는 하위 플래그가 그대로 유효해진다(예: `TRAINING` 중 `EMERGENCY` 해제 → `TRAINING`).
 
 | 우선순위 | 상태명 | 발동 조건 | 신규 매수 | 정기 교체 | 기존 주문 조회·대조·취소 | 위험 축소 매도 (`REDUCE_ONLY`) | 해제 조건 |
@@ -733,7 +735,7 @@
 > **조건부 위험 축소 매도 공통 게이트:** `EMERGENCY` 및 `PAUSED` 에서는 `Risk Manager` 가 생성한 `REDUCE_ONLY` 매도만 허용한다. KIS 계좌 대조·토큰·종목별 원주가/조정계수·최우선 호가가 모두 유효하고, 해당 티커에 활성 주문이 없으며, 주문 수량이 매도 가능 수량(보유 − 활성 매도 잔량)을 초과하지 않고, `Order Manager` 의 위험 축소 매도 게이트를 통과해야 한다. 하나라도 불명확하면 새 주문을 제출하지 않고 조회·대조·취소·경보만 수행한다. `SAFE_HALT` 는 원인 해소 전 모든 신규 주문(매수·매도)을 금지한다(`risk.safe_halt.allow_reduce_only_sell: false`). 유일한 예외는 아래 보호성 손절이다. 시장가 전환은 항상 금지한다.
 
 > **`SAFE_HALT` 중 보호성 손절 (`PROTECTIVE_EXIT`, v3.7.5 운영자 결정 D1):** 운영자가 군 복무 등으로 수동 해제를 오래 못 하는 동안 보유 포지션이 손절 없이 방치되는 것을 막는 예외다.
-> * **허용 조건 (모두 충족):** ① 활성 `HaltReason` 이 모두 `ProtectiveExitReason`(`DEPLOY_ROLLBACK`, `ACCOUNT_MISMATCH`, `UPS_LOW`, `CONFIG_INVALID`)에 속한다. `PENDING_CONFIRMATION`·`CREDENTIALS_UNAVAILABLE`·`DB_INTEGRITY`·`BOOT_RECOVERY_FAILED`·`CALENDAR_MISMATCH`·`CLOCK_UNSYNCED` 중 하나라도 활성이면 전면 차단을 유지한다(주문 결과 불확실·호출 불가·데이터 신뢰 불가·시각 신뢰 불가). ② 개장일 `market.regular_open` ~ `execution.new_order_cutoff` 사이다. ③ 해당 티커에 활성 주문이 없고 `TickerBlock` 이 없으며, 원주가와 `Bid1`·`Ask1` 호가가 TTL 이내로 유효하다.
+> * **허용 조건 (모두 충족):** ① 활성 `HaltReason` 이 모두 `ProtectiveExitReason`(`DEPLOY_ROLLBACK`, `ACCOUNT_MISMATCH`, `UPS_LOW`, `CONFIG_INVALID`)에 속한다. `CREDENTIALS_UNAVAILABLE`·`DB_INTEGRITY`·`BOOT_RECOVERY_FAILED`·`CALENDAR_MISMATCH`·`CLOCK_UNSYNCED` 중 하나라도 활성이면 전면 차단을 유지한다(주문 결과 불확실·호출 불가·데이터 신뢰 불가·시각 신뢰 불가). ② 개장일 `market.regular_open` ~ `execution.new_order_cutoff` 사이다. ③ 해당 티커에 활성 주문이 없고 `TickerBlock` 이 없으며, 원주가와 `Bid1`·`Ask1` 호가가 TTL 이내로 유효하다.
 > * **판정:** 6.1절 트레일링 스탑만 사용한다(120MA·주간 교체·`/remove`·Phase 2 VETO는 보호성 손절 사유가 아니다). 스탑 비율은 **코드 상수**(평시 `-0.10`, `training_mode` 활성 시 `-0.07`)를 쓰며, `CONFIG_INVALID` 중에도 `rules.yaml` 값에 의존하지 않는다. 고점(`peak_price_adj`)은 DB에 기록된 값을 쓰고, 고점 기록이 없는 종목(예: DB에 없는 KIS 보유분)은 대상에서 제외하고 `CRITICAL` 경보만 보낸다.
 > * **수량·주문:** 수량은 DB가 아니라 **KIS 잔고 조회의 매도가능수량**(`ord_psbl_qty`) 이하로 한다(`ACCOUNT_MISMATCH` 에서는 DB 수량을 신뢰하지 않으며, 과매도는 브로커가 거부한다). 주문은 `RISK_REDUCTION` 의도(`cycle_id = R{거래일}:STOP`, `reason_code = PROTECTIVE_EXIT`), 지정가 `Bid1` **1회 제출**이며 재가격하지 않는다(7.2절). 미체결 잔량은 장 마감 후 `exit_obligations`(`reason_code = PROTECTIVE_EXIT`)로 넘기고, 다음 개장일 09:10 검문소에서 같은 허용 조건을 다시 확인한 뒤에만 재주문한다.
 > * **설정:** `risk.safe_halt.protective_exit.enabled`(`true`)로만 끌 수 있고, 허용 원인 집합과 스탑 비율은 설정으로 넓힐 수 없다(10.5절).
@@ -745,7 +747,7 @@
 
 | 원인 | 해제 방식 | 해제 조건 |
 | ----- | ----- | ----- |
-| `PENDING_CONFIRMATION` | 자동 | 7.3절 규칙으로 해당 주문이 모두 종결 상태로 확정됨(장 마감 후 결정론적 확정 포함) |
+| `PENDING_CONFIRMATION` *(폐기, v3.7.5 D3)* | 자동 | 더 이상 등록하지 않는다. 구 DB 에 남은 행은 다음 부팅·대조에서 자동 해제 |
 | `CREDENTIALS_UNAVAILABLE` | 자동 | 유효 토큰 재로드 성공 |
 | `CALENDAR_MISMATCH` | 자동 | 다음 검증 시점에 두 캘린더 소스 일치 |
 | `CLOCK_UNSYNCED` | 자동 | NTP 오차 허용치 이내로 3회 연속(1분 간격) 확인 |
@@ -815,7 +817,7 @@
 
   2. `reconciliation_ok == true` 이고 마지막 성공 대조 시각이 `ttl_seconds.reconciliation`(`300`초) 이내이며 계좌 잔고·보유 수량이 일치한다(2.2절 정지 상태 대조 기준). **예외 (보호성 손절, 6.3절):** `PROTECTIVE_EXIT` 매도는 이 조건 대신 "KIS 잔고 조회가 `ttl_seconds.reconciliation` 이내에 성공했고 주문 수량 ≤ KIS 매도가능수량"만 확인한다.
 
-  3. **계좌 범위 불확실 주문 없음:** 계좌 전체에 `SUBMITTING`, `PENDING_CONFIRMATION` 주문이 없다(전송 여부가 불명확한 주문만 계좌 전체를 막는다). **종목 범위:** 대상 티커에 활성 상태(0.5절 활성 6종, `CANCEL_PENDING` 포함) 주문이 없다(v3.7.5: 비상 매도 재가격 체인 삭제로 예외 없음). `CANCEL_PENDING` 은 취소 대상이 명확하므로 다른 종목의 주문을 막지 않는다. 매수는 추가로 `BuyBlock` 플래그가 없어야 한다.
+  3. **불확실 주문 없음(v3.7.5 D3):** 신규 **매수**는 계좌 전체에 `SUBMITTING`, `PENDING_CONFIRMATION` **매수** 주문이 없고 대상 티커에 `SUBMITTING`·`PENDING_CONFIRMATION`·`CANCEL_PENDING` 주문이 없어야 한다. **매도**는 그 티커에 `SUBMITTING`, `PENDING_CONFIRMATION` 주문이 없어야 하며 다른 티커의 불확실 주문은 막지 않는다(수량은 KIS `ord_psbl_qty` 로 제한). **종목 범위:** 대상 티커에 활성 상태(0.5절 활성 6종, `CANCEL_PENDING` 포함) 주문이 없다(v3.7.5: 비상 매도 재가격 체인 삭제로 예외 없음). `CANCEL_PENDING` 은 취소 대상이 명확하므로 다른 종목의 주문을 막지 않는다. 매수는 추가로 `BuyBlock` 플래그가 없어야 한다.
 
   4. 토큰·시장 캘린더·해당 종목 가격·호가·기업행위 기준(4.2절)이 모두 유효하고 TTL 이내이며, 대상 종목의 `classification_verified == 1` 이고 `TickerBlock` 이 없다.
 
@@ -921,11 +923,11 @@
 
 * **타임아웃 및 재전송 금지 (`PENDING_CONFIRMATION`):**
 
-  * 주문 API 호출 중 응답 타임아웃(`execution.order_request_timeout_seconds`, `5`초)이 발생하면 즉시 `PENDING_CONFIRMATION` 으로 전이하고 `PENDING_CONFIRMATION` `SAFE_HALT` 원인을 활성화한다.
+  * 주문 API 호출 중 응답 타임아웃(`execution.order_request_timeout_seconds`, `5`초)이 발생하면 즉시 `PENDING_CONFIRMATION` 으로 전이한다(`SAFE_HALT` 원인을 만들지 않는다 — v3.7.5 D3. 영향 범위는 7.1절 게이트 3).
 
   * **단순히 주문 조회에서 2회 연속 미발견이라는 사실만으로 미접수를 확정하지 않는다.**
 
-  * `PENDING_CONFIRMATION` 동안 계좌 전체 신규 주문을 차단하고(취소 요청 제외), 미체결 조회·당일 주문체결 조회·체결통보·KIS 응답 원문(민감정보 제거)을 `execution.pending_poll_seconds`(`15`초) 주기로 대조한다.
+  * `PENDING_CONFIRMATION` 동안 7.1절 게이트 3 범위(매수=계좌 신규 매수, 매도=해당 티커)의 신규 주문을 차단하고(취소 요청 제외), 미체결 조회·당일 주문체결 조회·체결통보·KIS 응답 원문(민감정보 제거)을 `execution.pending_poll_seconds`(`15`초) 주기로 대조한다.
 
 * **미접수 확정 규칙 (결정론적):**
 

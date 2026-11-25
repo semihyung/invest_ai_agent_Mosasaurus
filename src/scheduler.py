@@ -88,6 +88,15 @@ SCHEDULE_TRIGGERS = (
     ),
 )
 
+# 조회·대조·취소만 하는 복구 경로는 주문 잠금 중에도 실행한다(잠금을 푸는 대조 자체가 잠기는 교착 방지, 명세 0.3절).
+LOCK_EXEMPT_JOBS = frozenset(
+    {
+        ScheduleJob.ORDER_CANCEL_SWEEP,
+        ScheduleJob.POST_CLOSE_RECONCILE,
+        ScheduleJob.PENDING_CONFIRMATION_POLLER,
+    }
+)
+
 ORDER_RELATED_JOBS = frozenset(
     {
         ScheduleJob.INTRADAY_GUARD,
@@ -309,7 +318,7 @@ def _guarded_job(
     """잠금·거래일 조건을 통과한 경우에만 실제 작업 콜백을 실행합니다."""
     connection = connection_factory()
     try:
-        if job in ORDER_RELATED_JOBS and is_order_scheduler_locked(connection):
+        if job in ORDER_RELATED_JOBS and job not in LOCK_EXEMPT_JOBS and is_order_scheduler_locked(connection):
             return
     finally:
         connection.close()

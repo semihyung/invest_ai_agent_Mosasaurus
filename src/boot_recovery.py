@@ -195,15 +195,23 @@ def boot_recovery(
                     )
                 connection.commit()
 
-    # Step 6: 판정. 해소되지 않은 PENDING_CONFIRMATION 은 HALT, 미분류 현금흐름은 매수 차단만.
+    # Step 6: 판정(v3.7.5 D3). 전송 여부가 불확실한 주문은 SAFE_HALT 가 아니라 7.1절 게이트 3 이 방향별로 막는다
+    # (경보만 남김). 어떤 주문이 있는지 모르는 고아 주문만 계좌 전체를 멈춘다. 미분류 현금흐름은 매수 차단만.
     pending = connection.execute(
-        "SELECT 1 FROM orders WHERE status = 'PENDING_CONFIRMATION' LIMIT 1"
-    ).fetchone()
-    if pending is not None or orphan_found:
-        raise_flag(connection, "HALT", "PENDING_CONFIRMATION", now=current_time,
-                   detail="전송 여부 불명 주문 또는 고아 주문이 남아 있음")
-    else:
-        resolved["PENDING_CONFIRMATION"] = True
+        "SELECT COUNT(*) FROM orders WHERE status = 'PENDING_CONFIRMATION'"
+    ).fetchone()[0]
+    if pending:
+        connection.execute(
+            "INSERT INTO system_events (component, event_type, severity, message, created_at) "
+            "VALUES ('boot_recovery', 'PENDING_CONFIRMATION_REMAINS', 'CRITICAL', ?, ?)",
+            (f"전송 여부 불명 주문 {pending}건: 해당 방향·티커의 신규 주문만 대기", timestamp),
+        )
+        connection.commit()
+    if orphan_found:
+        raise_flag(connection, "HALT", "BOOT_RECOVERY_FAILED", now=current_time,
+                   detail="고아 주문(KIS 에만 있는 당일 주문)이 남아 있음")
+    # 구 DB 에 남은 PENDING_CONFIRMATION 원인은 항상 해제 대상이다(더 이상 등록하지 않음).
+    resolved["PENDING_CONFIRMATION"] = True
     unclassified = connection.execute(
         "SELECT 1 FROM cash_flows WHERE classification_status = 'UNCLASSIFIED_CASH_FLOW' LIMIT 1"
     ).fetchone()

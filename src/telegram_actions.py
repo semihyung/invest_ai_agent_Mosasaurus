@@ -39,6 +39,7 @@ def _set_state(connection: sqlite3.Connection, key: str, value: str, now: dateti
 
 
 def _state(connection: sqlite3.Connection, key: str) -> str | None:
+    """system_state 한 값을 읽는다(없으면 None)."""
     row = connection.execute('SELECT value FROM system_state WHERE "key" = ?', (key,)).fetchone()
     return row[0] if row else None
 
@@ -83,6 +84,7 @@ def build_command_actions(
         """연결 수명 관리와 예외 → 고정 문구 변환을 한 곳에서 한다."""
 
         def action(_chat_id: str, text: str) -> str:
+            """연결 수명·예외 처리·승인 소진을 한 곳에서 처리하는 명령 실행기."""
             connection = connection_factory()
             try:
                 reply = fn(connection, text.split(), clock())
@@ -104,12 +106,14 @@ def build_command_actions(
 
     # ───── 조회 ─────
     def status(c, args, now):
+        """/status: 운영 모드와 일일 브리핑을 보여 준다."""
         mode = ("SAFE_HALT" if is_safe_halt(c) else "EMERGENCY" if _state(c, "emergency_mode") == "true"
                 else "PAUSED" if _state(c, "is_paused") == "true"
                 else "TRAINING" if _state(c, "training_mode") == "true" else "NORMAL")
         return f"운영 모드: {mode}\n" + compose_briefing(c, now)
 
     def preview(c, args, now):
+        """/preview: 최근 주간 프리뷰 요약."""
         row = c.execute("SELECT * FROM weekly_previews ORDER BY created_at DESC, preview_revision DESC LIMIT 1").fetchone()
         if row is None:
             return "저장된 주간 프리뷰가 없습니다."
@@ -120,6 +124,7 @@ def build_command_actions(
         return f"프리뷰 기준일 {row['base_candle_date']} / 상태 {row['status']}\n순위: {names}"
 
     def pool(c, args, now):
+        """/pool: 활성 종목의 종가·120MA·데이터 상태."""
         lines = []
         for r in c.execute("SELECT ticker, category, data_status FROM universe_assets WHERE status = 'ACTIVE' "
                            "ORDER BY category, ticker"):
@@ -131,6 +136,7 @@ def build_command_actions(
         return "\n".join(lines) or "활성 종목이 없습니다."
 
     def trades(c, args, now):
+        """/trades: 최근 주문·체결 내역."""
         limit = int(args[1]) if len(args) == 2 else 10
         rows = c.execute("SELECT ticker, side, requested_qty, filled_qty, status, order_price, submitted_at "
                          "FROM orders ORDER BY submitted_at DESC LIMIT ?", (limit,)).fetchall()
@@ -138,6 +144,7 @@ def build_command_actions(
                          f"@{r['order_price']:,} {r['status']}" for r in rows) or "주문 내역이 없습니다."
 
     def health(c, args, now):
+        """/health: 대조 상태, 주문 잠금, 정지 원인, 스탑 감시 주기."""
         last = _state(c, "last_reconciliation_at") or "없음"
         return (f"대조 상태: {_state(c, 'reconciliation_ok') or '미확인'} / 마지막 대조: {last}\n"
                 f"주문 잠금: {_state(c, 'scheduler_order_lock') or '미설정'} / "
@@ -147,6 +154,7 @@ def build_command_actions(
                    if int(_state(c, 'guard_poll_interval_seconds') or 10) > 10 else ""))
 
     def reconcile(c, args, now):
+        """/reconcile: 대조 상태 조회 또는 KIS 보유 수량 채택."""
         if args[1:] == ["adopt"]:
             if broker_positions is None:
                 raise _Refused("증권사 조회가 연결되지 않아 채택할 수 없습니다.")
@@ -159,10 +167,12 @@ def build_command_actions(
 
     # ───── 운영 모드 ─────
     def pause(c, args, now):
+        """/pause·/stop: 신규 매수를 막는 일시정지."""
         _set_state(c, "is_paused", "true", now)
         return "일시정지: 신규 매수를 막고 보호 매도·취소만 허용합니다. 해제는 /resume (2단계 확인)."
 
     def resume(c, args, now):
+        """/resume: 일시정지 해제(2단계 확인)."""
         if is_safe_halt(c):
             raise _Refused("SAFE_HALT 중에는 /resume 으로 풀 수 없습니다. /clear_halt 로 원인을 해제하세요.")
         _approved_action_id(c, " ".join(args), now)
@@ -170,6 +180,7 @@ def build_command_actions(
         return "일시정지를 해제했습니다."
 
     def training(c, args, now):
+        """/training: 훈련 모드 켜기·끄기(2단계 확인)."""
         _approved_action_id(c, " ".join(args), now)
         if args[1] == "off":
             _set_state(c, "training_mode", "false", now)
@@ -181,6 +192,7 @@ def build_command_actions(
         return f"훈련 모드 활성화(스탑 -7%, 위험자산 매수 차단){' / 종료일 ' + until if until else ' / 무기한'}"
 
     def emergency(c, args, now):
+        """/emergency: EMERGENCY 켜기·끄기(2단계 확인)."""
         _approved_action_id(c, " ".join(args), now)
         if len(args) == 2:  # off
             rebase = ops.release_emergency(
@@ -193,6 +205,7 @@ def build_command_actions(
 
     # ───── 운영자 승인·정정 ─────
     def clear_halt(c, args, now):
+        """/clear_halt: 수동 해제 원인을 해제한다(2단계 확인, 대조 성공 필요)."""
         ok = ops.clear_halt(c, code=args[1].upper(), action_id=_approved_action_id(c, " ".join(args), now),
                             reconciliation_ok=_state(c, "reconciliation_ok") == "true", now=now)
         if not ok:
@@ -200,16 +213,19 @@ def build_command_actions(
         return f"{args[1].upper()} 해제했습니다."
 
     def classify(c, args, now):
+        """/classify: 미분류 현금흐름을 분류한다."""
         ops.classify_cash_flow(c, flow_id=int(args[1]), flow_type=args[2].upper(),
                                action_id=_approved_action_id(c, " ".join(args), now), now=now)
         return f"현금흐름 {args[1]} 을(를) {args[2].upper()} 로 처리했습니다."
 
     def ca_confirm(c, args, now):
+        """/ca_confirm: 감지된 기업행위를 검증하고 최고가를 재기준화한다."""
         factor = ops.confirm_corporate_action(c, corporate_action_id=int(args[1]),
                                               action_id=_approved_action_id(c, " ".join(args), now), now=now)
         return f"기업행위 {args[1]} 검증 완료(조정계수 {factor:.4f}), PeakPrice 재기준화·격리 해제."
 
     def remove(c, args, now):
+        """/remove: 유니버스에서 종목을 제거한다."""
         _approved_action_id(c, " ".join(args), now)
         with c:
             cur = c.execute("UPDATE universe_assets SET status = 'REMOVED', removed_at = ? WHERE ticker = ? "
@@ -219,11 +235,13 @@ def build_command_actions(
         return f"{args[1]} 을(를) 유니버스에서 제거했습니다. 보유 중이면 다음 15:00 판정에서 퇴출 매도됩니다."
 
     def approve_real(c, args, now):
+        """/approve_real: REAL 활성화 승인 레코드를 만든다."""
         ops.approve_real_activation(c, approval_id=args[1], action_id=_approved_action_id(c, " ".join(args), now),
                                     approvals_dir=approvals_dir, now=now)
         return "REAL 활성화 승인 레코드를 만들었습니다(호스트 승인 파일과 일치 확인). 실계좌 연결은 별도 단계입니다."
 
     def approve_smoke(c, args, now):
+        """/approve_smoke: 스모크 세션(최대 60분)을 승인한다."""
         ops.approve_smoke_session(c, approval_id=args[1], action_id=_approved_action_id(c, " ".join(args), now),
                                   approvals_dir=approvals_dir, now=now)
         return "스모크 세션(최대 60분)을 승인했습니다."

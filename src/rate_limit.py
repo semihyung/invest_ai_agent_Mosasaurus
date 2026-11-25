@@ -15,6 +15,7 @@ class PriorityRateLimiter:
     """초당 `rate` 회를 넘지 않게 하되, 대기자가 여럿이면 우선순위가 높은 쪽부터 통과시킨다."""
 
     def __init__(self, rate_per_second: float, *, clock: Callable[[], float] = time.monotonic) -> None:
+        """초당 호출 한도를 설정한다."""
         if isinstance(rate_per_second, bool) or not isinstance(rate_per_second, (int, float)) or rate_per_second <= 0:
             raise ValueError("rate_per_second must be a positive number.")
         self._interval = 1.0 / rate_per_second
@@ -46,14 +47,17 @@ class _LimitedTransport:
     """주문 전송기 호출(전송·취소)을 최우선(ORDER)으로 한도기에 통과시킨다."""
 
     def __init__(self, inner: Any, limiter: PriorityRateLimiter) -> None:
+        """래핑할 객체와 한도기를 보관한다."""
         self._inner, self._limiter = inner, limiter
 
     def __getattr__(self, name: str) -> Any:
+        """주문 전송기의 호출 메서드를 최우선 한도기로 감싼다."""
         target = getattr(self._inner, name)
         if not callable(target):
             return target
 
         def call(*args: Any, **kwargs: Any) -> Any:
+            """한도 슬롯을 얻은 뒤 원래 메서드를 호출한다."""
             self._limiter.acquire(ORDER)
             return target(*args, **kwargs)
 
@@ -72,16 +76,19 @@ class RateLimitedBroker:
     """브로커 포트의 모든 조회·주문 호출을 한도기에 통과시키는 투명한 래퍼."""
 
     def __init__(self, inner: Any, limiter: PriorityRateLimiter) -> None:
+        """래핑할 브로커와 한도기를 보관한다."""
         self._inner, self._limiter = inner, limiter
         self.transport = _LimitedTransport(inner.transport, limiter)
         self.environment = inner.environment
 
     def __getattr__(self, name: str) -> Any:
+        """조회·주문 메서드를 우선순위에 맞춰 한도기로 감싼다."""
         target = getattr(self._inner, name)
         if name not in _PRIORITY or not callable(target):
             return target
 
         def call(*args: Any, **kwargs: Any) -> Any:
+            """우선순위 슬롯을 얻은 뒤 원래 메서드를 호출한다."""
             self._limiter.acquire(_PRIORITY[name])
             return target(*args, **kwargs)
 

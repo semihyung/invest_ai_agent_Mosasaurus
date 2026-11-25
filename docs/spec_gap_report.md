@@ -1,6 +1,6 @@
 # 명세 v3.7.5 ↔ 코드 격차 보고서 (S0.1–S8 완료 후 v3.7.5 정렬 반영)
 
-작성 기준: 자동 테스트 507개 통과(Phase 1 마무리 5차 후, 이전 422개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
+작성 기준: 자동 테스트 529개 통과(Phase 1 마무리 7차 후, 이전 422개)(`python -m unittest discover -s tests -t .`). **이 보고서는 "구현됨"과 "부품만 있고 아직 연결되지 않음"을 구분합니다.**
 실계좌·실서버 호출, 운영 서버 배포, 쉘 스크립트의 실제 실행(`sh -n` 문법 검사만 수행)은 하지 않았습니다.
 
 ## 1. 단계별 변경 요약
@@ -199,7 +199,7 @@ CLAUDE.md "명세와 코드가 충돌하면 임의로 판단하지 않는다" �
 
 | 분류 | 항목 | 비고 |
 | --- | --- | --- |
-| 명세 개정 필요(운영자 결정) | `PENDING_CONFIRMATION` 을 BUY=계좌 매수차단 / SELL=해당 티커만 으로 축소(현재는 전체 `SAFE_HALT` 라 다른 종목 스탑도 보호성 손절 원인 제한에 걸림) | 가장 영향이 큼 |
+| ✅ 개정·구현 완료(D3) | `PENDING_CONFIRMATION` 을 BUY=계좌 신규 매수 / SELL=해당 티커로 한정, `SAFE_HALT` 미생성(고아 주문만 `BOOT_RECOVERY_FAILED`) | 명세 0.3·4.3·6.3·7.1·7.3절, `order_executor`·`boot_recovery`·`daily_pipeline` |
 | 명세 개정 필요 | 취소 일괄 요청을 15:14:30~15:19:30 반복(`CANCEL_PENDING` 재요청), `PENDING_CONFIRMATION → EXPIRED` 전이 추가, 일시 거부(`EGW00201`) 재시도 허용 | 전이표 변경 |
 | 명세 개정 필요 | 슬롯 단위 매수 판단(의존 매도 미체결 시 그 슬롯만 생략), 교체 매도 미제출분 `ROTATION_EXIT` 의무화 | 5.3절 Step B 변경 |
 | 명세 개정 필요 | 소액 계좌 처리(`UNFILLABLE`, `min_trade_eff`), 파킹 현금화 N 정의(수수료·버퍼 포함), `459580` 전환 기준, 분배금 `distribution_receivables`·`/classify` 분할 | 5.1·5.4·2.2절 |
@@ -207,6 +207,21 @@ CLAUDE.md "명세와 코드가 충돌하면 임의로 판단하지 않는다" �
 | 명세 개정 필요 | `reconciliation_ok`·`data_status`·`order_intents.status` 중복 출처 정리 | 스키마 변경 → 마이그레이션 005 |
 | 호스트/배포(Pi 필요) | 토큰 갱신 여유(4h)·파일 권한 순서, 서명 검증·runner 신뢰 경계(수동 SSH 배포 권장), 롤백 데이터 손실·잠금 고착·백업 암호화, `run/` 마운트 분리, UPS RTC 재기동, 감시 데몬 오탐 기준 | 쉘·systemd·compose |
 | 보안 정책 결정 | Telegram 탈취 대응(`away_mode`·TOTP·DB 기반 차단), `/emergency` 1단계화 | 정책 결정 |
+
+### 4-8. 코드 리뷰 10건 수정 (마무리 7차)
+
+| # | 결함 | 수정 |
+| --- | --- | --- |
+| 1 | `reconciliation_ok=false` 가 주문 잡 전체를 영구 잠금(잠금을 푸는 대조 잡도 잠김) | 건강 판정에서 대조 상태 제외, 대조·동기화·취소 정리 잡은 잠금 면제, 대조 성공 시 잠금 자동 해제 |
+| 2 | 호가·잔고 조회 예외가 잡을 죽이고 의도를 `CREATED` 로 고착 | 의도 저장 전에 조회, 실패는 `BLOCKED:QUOTE_UNAVAILABLE`/`BROKER_UNAVAILABLE` 로 반환(다음 틱 재시도, 의무로 넘기지 않음), 기존 의도는 조회 없이 `DUPLICATE` |
+| 3 | `GLOBAL` 지역 전략 주문이 `ValueError` | 스프레드·iNAV 검증이 GLOBAL(한도 1.2%) 지원 |
+| 4 | 스탑 감시가 격리 종목을 무시 | 명세 4.2절대로 `TICKER_BLOCK` 종목은 가격 기반 자동 매도 보류(감사 2.2의 "스탑이 꺼진다" 우려는 명세 결정 사항으로 남음) |
+| 5 | PeakPrice 가 하루 늦게 갱신 | 마감 후 현재가(당일 종가)까지 반영 |
+| 6 | 스프레드에 막힌 교체 매도 미재평가 | 교체·Drift·파킹 매도를 계획으로 모아 30초 간격으로 15:06 까지 재평가, 미제출이면 위험자산 매수 생략 + 경고 |
+| 7 | 주간 교체 승계 무제한 | 프리뷰당 첫 개장일 + `weekly_rotation_carryover_days`(1)일까지만, 초과 시 `EXPIRED` |
+| 8 | 시세 조회 1회 실패가 당일 매수 차단으로 고착 | 일시 실패 표식(`TRANSIENT:`)이 붙은 STALE 은 다음 성공 조회(가드·폴러·15:00)에서 자동 해제 |
+| 9 | 주간 프리뷰 미발송·상태 미갱신 | 저장 후 Telegram 발송 → `SENT`/`DELIVERY_FAILED`, 10분 간격 6회 재시도, 발송 실패여도 집행 가능 |
+| 10 | 중첩 함수 Docstring 누락 | 한국어 Docstring 추가(AST 검사 0건 남음) |
 
 ## 5. 권고 다음 순서
 

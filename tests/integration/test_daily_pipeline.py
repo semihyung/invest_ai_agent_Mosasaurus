@@ -185,7 +185,7 @@ class PipelineTests(PipelineTestCase):
         self.assertEqual(broker.transport.calls, [])
 
     def test_safe_halt_skips_everything(self):
-        raise_flag(self.conn, "HALT", "PENDING_CONFIRMATION", now=T0)
+        raise_flag(self.conn, "HALT", "BOOT_RECOVERY_FAILED", now=T0)
         broker = PipelineBroker({"069500": 110, "360750": 110, "423160": 100})
         self.run_pipeline(broker)
         self.assertEqual(broker.transport.calls, [])

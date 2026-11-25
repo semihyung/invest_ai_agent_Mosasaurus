@@ -38,6 +38,7 @@ class KisBroker:
         self._account, self.environment, self._lookup = account_number, environment, order_lookup
 
     def _balance(self) -> tuple[list[dict], dict]:
+        """잔고 조회 결과(보유 목록, 요약 한 건)를 돌려준다."""
         holdings, summary = self._client.fetch_account_balance(self._account)
         return holdings, (summary[0] if isinstance(summary, list) and summary else summary)
 

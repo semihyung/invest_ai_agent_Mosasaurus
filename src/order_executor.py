@@ -9,7 +9,8 @@
   보호성 손절(`PROTECTIVE_EXIT_SELL`)만 예외입니다.
 - 위험 축소 매도는 Bid1 **한 번**만 냅니다(재가격 없음). 남은 수량은 `exit_obligations` 로 넘깁니다.
 - 같은 날 같은 종목의 같은 사유는 멱등키로 한 번만 만들어집니다.
-- 전송 결과가 불확실(타임아웃)하면 `PENDING_CONFIRMATION` 으로 두고 절대 재전송하지 않습니다.
+- 전송 결과가 불확실(타임아웃)하면 `PENDING_CONFIRMATION` 으로 두고 절대 재전송하지 않습니다. 영향 범위는 주문 방향별로 한정됩니다
+  (매수=계좌 신규 매수, 매도=해당 티커. `SAFE_HALT` 를 만들지 않음, 명세 v3.7.5 D3).
 """
 
 import hashlib
@@ -38,7 +39,7 @@ from src.order_manager import (
 )
 from src.order_policy import OrderKind, is_allowed
 from src.risk_manager import DrawdownMode, resolve_operating_mode
-from src.safety_flags import active_codes, load_risk_flags, raise_flag
+from src.safety_flags import active_codes, load_risk_flags
 
 KST = timezone(timedelta(hours=9), name="KST")
 
@@ -57,6 +58,10 @@ _STRATEGY_KINDS = {
 }
 _REDUCE_ONLY_KINDS = frozenset(_SELL_KINDS)
 SELL_ALREADY_ACTIVE = "BLOCKED:SELL_ALREADY_ACTIVE"
+# 증권사 조회 일시 실패: 의도를 만들지 않으므로 호출자가 다음 주기에 그대로 다시 시도한다(의무로 넘기지 않음).
+QUOTE_UNAVAILABLE = "BLOCKED:QUOTE_UNAVAILABLE"
+BROKER_UNAVAILABLE = "BLOCKED:BROKER_UNAVAILABLE"
+TRANSIENT_BLOCKS = frozenset({QUOTE_UNAVAILABLE, BROKER_UNAVAILABLE})
 
 
 class BrokerPort(Protocol):
@@ -157,7 +162,15 @@ def submit_order(
                       protective_exit_enabled=protective_enabled):
         return f"BLOCKED:MODE_{mode.value}"
 
-    sellable = broker.sellable_qty(request.ticker) if side is OrderSide.SELL else request.quantity
+    # 이미 만든 의도면 증권사 조회 없이 끝낸다(10초 주기 감시가 같은 호출을 반복하지 않게).
+    key = OrderIntent(cycle_id=request.cycle_id, intent_type=intent_type, slot_id=None, ticker=request.ticker,
+                      side=side, quantity=request.quantity, obligation_id=request.obligation_id).idempotency_key()
+    if connection.execute("SELECT 1 FROM order_intents WHERE idempotency_key = ?", (key,)).fetchone():
+        return "DUPLICATE"
+    try:
+        sellable = broker.sellable_qty(request.ticker) if side is OrderSide.SELL else request.quantity
+    except Exception:  # noqa: BLE001 - 네트워크·한도 오류는 예외로 퍼뜨리지 않는다(잡 오류 → 주문 잠금 방지)
+        return BROKER_UNAVAILABLE
     quantity = min(request.quantity, sellable)
     if quantity <= 0:
         return "BLOCKED:NO_SELLABLE_QTY"
@@ -168,6 +181,11 @@ def submit_order(
             "'PENDING_CONFIRMATION','ACCEPTED','PARTIALLY_FILLED','CANCEL_PENDING') LIMIT 1",
             (request.ticker,)).fetchone():
         return SELL_ALREADY_ACTIVE
+
+    try:
+        quote = broker.quote(request.ticker)  # 의도를 저장하기 전에 조회: 실패해도 의도가 CREATED 로 고착되지 않는다
+    except Exception:  # noqa: BLE001
+        return QUOTE_UNAVAILABLE
 
     intent = OrderIntent(
         cycle_id=request.cycle_id, intent_type=intent_type, slot_id=None,
@@ -183,7 +201,6 @@ def submit_order(
         return "DUPLICATE"
 
     try:
-        quote = broker.quote(request.ticker)
         if not reduce_only and not validate_spread_and_nav(quote, region=request.region):
             _close_intent(connection, result.parent_intent_id, now)
             return "BLOCKED:SPREAD_NAV"
@@ -198,8 +215,7 @@ def submit_order(
         operator_approval=operator_approval,
         reconciliation_ok=_state(connection, "reconciliation_ok") == "true",
         reconciliation_fresh=account_fresh,
-        unresolved_order_exists=connection.execute(
-            "SELECT 1 FROM orders WHERE status = 'PENDING_CONFIRMATION' LIMIT 1").fetchone() is not None,
+        unresolved_order_exists=_unresolved_order_exists(connection, request.ticker, side),
         unclassified_cash_flow_exists="UNCLASSIFIED_CASH_FLOW" in codes,
         token_valid=True, calendar_valid="CALENDAR_MISMATCH" not in codes,
         quote_valid=True, adjusted_data_valid=request.ticker not in _blocked_tickers(connection),
@@ -230,13 +246,10 @@ def submit_order(
         persist_order_transition(
             connection, order_id=order_id, new_status=OrderStatus.PENDING_CONFIRMATION, actor="order_executor",
             reason_code="SUBMIT_RESPONSE_UNCERTAIN", correlation_id=attempt_id, occurred_at=now)
-        raise_flag(connection, "HALT", "PENDING_CONFIRMATION", now=now, detail="SUBMIT_RESPONSE_UNCERTAIN")
         return "SUBMITTED"
     persist_order_transition(
         connection, order_id=order_id, new_status=outcome.status, actor="order_executor",
         reason_code="SUBMIT_RESULT", correlation_id=attempt_id, occurred_at=now)
-    if outcome.status is OrderStatus.PENDING_CONFIRMATION:
-        raise_flag(connection, "HALT", "PENDING_CONFIRMATION", now=now, detail="SUBMIT_TIMEOUT")
     if outcome.broker_order_number:
         with connection:
             connection.execute("UPDATE orders SET kis_order_no = ? WHERE order_id = ?",
@@ -244,12 +257,29 @@ def submit_order(
     return "SUBMITTED"
 
 
+def _unresolved_order_exists(connection: sqlite3.Connection, ticker: str, side: OrderSide) -> bool:
+    """7.1절 게이트 3(v3.7.5 D3): 불확실 주문의 영향 범위를 주문 방향별로 한정한다.
+
+    매수는 계좌 전체의 불확실 매수 주문 또는 같은 티커의 미확정·취소대기 주문이 있으면 막히고,
+    매도는 같은 티커의 불확실 주문만 막는다(다른 티커의 위험 축소 매도는 허용, 수량은 KIS 매도가능수량으로 제한).
+    """
+    same_ticker = ("SELECT 1 FROM orders WHERE ticker = ? AND status IN ('SUBMITTING', 'PENDING_CONFIRMATION'%s) LIMIT 1"
+                   % (", 'CANCEL_PENDING'" if side is OrderSide.BUY else ""))
+    if connection.execute(same_ticker, (ticker,)).fetchone():
+        return True
+    return side is OrderSide.BUY and connection.execute(
+        "SELECT 1 FROM orders WHERE side = 'BUY' AND status IN ('SUBMITTING', 'PENDING_CONFIRMATION') LIMIT 1"
+    ).fetchone() is not None
+
+
 def _state(connection: sqlite3.Connection, key: str) -> str | None:
+    """system_state 한 값을 읽는다(없으면 None)."""
     row = connection.execute('SELECT value FROM system_state WHERE "key" = ?', (key,)).fetchone()
     return row[0] if row else None
 
 
 def _blocked_tickers(connection: sqlite3.Connection) -> set[str]:
+    """활성 종목 격리(TICKER_BLOCK) 플래그가 걸린 티커 집합."""
     return {r[0] for r in connection.execute(
         "SELECT ticker FROM safety_flags WHERE flag_type = 'TICKER_BLOCK' AND cleared_at IS NULL")}
 

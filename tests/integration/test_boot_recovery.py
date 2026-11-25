@@ -121,7 +121,7 @@ class BootRecoveryTests(unittest.TestCase):
         self.assertNotIn("ACCOUNT_MISMATCH", result.failure_codes)
 
     def test_orphan_order_blocks_orders_cancels_and_never_resubmits(self):
-        """DB 에 없는 KIS 당일 주문은 PENDING_CONFIRMATION 으로 계좌를 막고 취소만 요청합니다."""
+        """DB 에 없는 KIS 당일 주문은 어떤 주문인지 알 수 없어 계좌 전체(BOOT_RECOVERY_FAILED)를 막고 취소만 요청합니다."""
         cancelled = []
         orphan = lambda: ReconciliationResult(  # noqa: E731
             False, (), (), ("ORPHAN_ORDER",), orphan_orders=("KIS-777",)
@@ -130,7 +130,7 @@ class BootRecoveryTests(unittest.TestCase):
         result = self._boot(reconcile=orphan, cancel_order=cancelled.append)
 
         self.assertEqual(cancelled, ["KIS-777"])
-        self.assertIn("PENDING_CONFIRMATION", result.failure_codes)
+        self.assertIn("BOOT_RECOVERY_FAILED", result.failure_codes)
         self.assertNotIn("ACCOUNT_MISMATCH", result.failure_codes)
         self.assertEqual(self.connection.execute(
             "SELECT COUNT(*) FROM system_events WHERE event_type = 'ORPHAN_ORDER' "
@@ -160,8 +160,11 @@ class BootRecoveryTests(unittest.TestCase):
 
         statuses = {r[0]: r[1] for r in c.execute("SELECT order_id, status FROM orders")}
         self.assertEqual(statuses, {"oa": "PENDING_CONFIRMATION", "ob": "EXPIRED"})
-        self.assertIn("PENDING_CONFIRMATION", result.failure_codes)
-        self.assertFalse(result.recovery_ok)
+        # v3.7.5 D3: 불확실 주문은 SAFE_HALT 를 만들지 않는다(방향별 게이트가 막고 경보만 남김).
+        self.assertEqual(result.failure_codes, ())
+        self.assertTrue(result.recovery_ok)
+        self.assertEqual(c.execute("SELECT COUNT(*) FROM system_events WHERE "
+                                   "event_type = 'PENDING_CONFIRMATION_REMAINS'").fetchone()[0], 1)
 
     def test_unclassified_cash_flow_blocks_buys_without_safe_halt(self):
         """미분류 현금흐름은 SAFE_HALT 가 아니라 매수 차단 플래그만 만듭니다."""

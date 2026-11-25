@@ -24,8 +24,10 @@ _ACTIVE = ("ACCEPTED", "PARTIALLY_FILLED", "CANCEL_PENDING", "PENDING_CONFIRMATI
 class SyncBroker(Protocol):
     """동기화에 필요한 조회 계약."""
 
-    def orders(self, trade_date: date) -> list[OrderSnapshot]: ...
-    def fill_prices(self, trade_date: date) -> dict[str, float]: ...
+    def orders(self, trade_date: date) -> list[OrderSnapshot]:
+        """지정 거래일의 주문 내역."""
+    def fill_prices(self, trade_date: date) -> dict[str, float]:
+        """주문번호 → 평균 체결가."""
 
 
 def apply_fill_to_position(
@@ -65,6 +67,7 @@ def apply_fill_to_position(
 
 
 def _close_intent(connection: sqlite3.Connection, order_id: str, status: str, now: datetime) -> None:
+    """주문의 부모 의도 상태를 갱신한다."""
     with connection:
         connection.execute(
             "UPDATE order_intents SET status = ?, updated_at = ? WHERE parent_intent_id = "

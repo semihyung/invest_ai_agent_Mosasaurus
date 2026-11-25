@@ -25,6 +25,70 @@ class SellMutualExclusionTests(HandlerTestCase):
         self.assertEqual(self.count("SELECT COUNT(*) FROM exit_obligations"), 0)
 
 
+class UncertainOrderScopeTests(HandlerTestCase):
+    """v3.7.5 D3: 접수 불확실 주문의 영향 범위는 주문 방향별로 한정된다."""
+
+    def setUp(self):
+        super().setUp()
+        self.conn.execute(
+            "INSERT INTO universe_assets (ticker, name, category, region, underlying_index, product_type,"
+            " replication_method, status, data_status, added_at, asset_class) VALUES ('360750','E','RISK_ASSET','US',"
+            "'K2','SPOT_ETF','PHYSICAL','ACTIVE','VALID','t','EQUITY')")
+        self.conn.execute(
+            "INSERT INTO positions (ticker, tracking_status, quantity, avg_buy_price, market_value, peak_price_adj,"
+            " last_synced_at) VALUES ('360750','MANAGED',10,100,1000,100,'t')")
+        self.conn.commit()
+
+    def broker(self):
+        from src.order_manager import Quote
+
+        class Broker(FakeBroker):
+            def quote(self, ticker):
+                return Quote(bid=100, ask=100, nav=100.0)
+
+            def sellable_qty(self, ticker):
+                return 10
+        return Broker()
+
+    def pending_buy(self, broker):
+        broker.transport.response = {}  # 타임아웃 → PENDING_CONFIRMATION
+        result = submit_order(self.conn, broker, SellRequest("069500", 5, OrderKind.PARKING_BUY, "B1", "T"),
+                              now=MORNING, account_fresh=True)
+        broker.transport.response = {"accepted": True, "order_number": "9"}
+        return result
+
+    def test_pending_buy_blocks_other_buys_but_not_risk_reduction_sells_elsewhere(self):
+        broker = self.broker()
+        self.pending_buy(broker)
+        self.assertEqual(self.count("SELECT COUNT(*) FROM orders WHERE status='PENDING_CONFIRMATION'"), 1)
+        again = submit_order(self.conn, broker, SellRequest("360750", 5, OrderKind.PARKING_BUY, "B2", "T"),
+                             now=MORNING, account_fresh=True)
+        self.assertEqual(again, "BLOCKED:GATE")  # 다른 티커 매수도 계좌 신규 매수 대기
+        sell = submit_order(self.conn, broker, SellRequest("360750", 10, OrderKind.REDUCE_ONLY_SELL, "S1", "STOP"),
+                            now=MORNING, account_fresh=True)
+        self.assertEqual(sell, "SUBMITTED")       # 다른 종목 스탑은 계속 동작
+
+    def test_pending_sell_blocks_only_its_own_ticker(self):
+        broker = self.broker()
+        broker.transport.response = {}
+        first = submit_order(self.conn, broker, SellRequest("069500", 10, OrderKind.REDUCE_ONLY_SELL, "S1", "STOP"),
+                             now=MORNING, account_fresh=True)
+        self.assertEqual(first, "SUBMITTED")
+        broker.transport.response = {"accepted": True, "order_number": "9"}
+        same = submit_order(self.conn, broker, SellRequest("069500", 10, OrderKind.RISK_ROTATION_SELL, "R1", "T"),
+                            now=MORNING, account_fresh=True)
+        self.assertEqual(same, SELL_ALREADY_ACTIVE)
+        other = submit_order(self.conn, broker, SellRequest("360750", 10, OrderKind.REDUCE_ONLY_SELL, "S2", "STOP"),
+                             now=MORNING, account_fresh=True)
+        self.assertEqual(other, "SUBMITTED")
+
+    def test_uncertain_orders_never_create_safe_halt(self):
+        from src.safety_flags import active_codes
+        broker = self.broker()
+        self.pending_buy(broker)
+        self.assertEqual(active_codes(self.conn, "HALT"), ())
+
+
 class GuardPollIntervalTests(HandlerTestCase):
     def test_interval_is_extended_and_recorded_when_holdings_exceed_the_rate_limit(self):
         from datetime import timedelta

@@ -111,6 +111,7 @@ def create_morning_prep_handler(
     """활성 종목마다 일봉을 받아 검사하고 갱신합니다. 한 종목의 실패가 다른 종목을 막지 않습니다."""
 
     def handler() -> None:
+        """활성 종목마다 일봉을 받아 검사·갱신하고 기업행위를 감지한다."""
         now = clock()
         connection = connection_factory()
         try:

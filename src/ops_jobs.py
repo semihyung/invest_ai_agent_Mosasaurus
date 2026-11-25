@@ -38,12 +38,14 @@ def build_notifier(
         return lambda severity, message: None
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    def notify(severity: str, message: str) -> None:
+    def notify(severity: str, message: str) -> bool:
+        """메시지를 보내고 성공 여부를 돌려준다(실패 세부는 URL 의 토큰이 섞일 수 있어 예외로 퍼뜨리지 않는다)."""
         text = sanitize_telegram_reply(f"{PREFIX} [{severity}] {message}")
         try:
             post(url, {"chat_id": chat_id, "text": text})
-        except Exception:  # noqa: BLE001 - 전송 실패 세부(URL 의 토큰 포함)를 예외로 퍼뜨리지 않는다
-            pass
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     return notify
 
@@ -83,6 +85,7 @@ def create_daily_briefing_handler(
     """18:05 브리핑을 만들어 `system_events` 에 기록하고 Telegram 으로 보낸다."""
 
     def handler() -> None:
+        """18:05 브리핑을 만들어 기록하고 발송한다."""
         now = clock()
         connection = connection_factory()
         try:
@@ -109,6 +112,7 @@ def create_weekly_maintenance_handler(
     """SQLite 일관 백업 → 무결성 검사 → 오래된 사본 정리. 검사 실패는 `DB_INTEGRITY` 정지 원인으로 올린다."""
 
     def handler() -> None:
+        """일요일 DB 백업과 무결성 검사를 수행한다."""
         now = clock()
         target_dir = Path(backup_dir)
         target_dir.mkdir(parents=True, exist_ok=True)

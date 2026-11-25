@@ -17,21 +17,23 @@ from src.cash_recon import (
     reconciliation_allowed, record_discrepancy, unexplained_cash_delta,
 )
 from src.order_executor import (
-    KST, SELL_ALREADY_ACTIVE, BrokerPort, SellRequest, obligation_cycle_id, open_exit_obligation, stop_cycle_id,
+    KST, SELL_ALREADY_ACTIVE, TRANSIENT_BLOCKS, BrokerPort, SellRequest, obligation_cycle_id, open_exit_obligation, stop_cycle_id,
     submit_sell,
 )
 from src.order_manager import OrderStatus, orders_due_for_cancel, persist_order_transition, void_exit_obligation
 from src.order_policy import OrderKind
 from src.order_sync import sync_orders
 from src.rate_limit import guard_poll_interval
+from src.scheduler_jobs import deliver_previews
 from src.performance import (
     PerformanceState, TWRQualityStatus, initialize_flow_adjusted_performance, rebase_hwm,
     update_flow_adjusted_performance,
 )
 from src.reconciliation import OrderSnapshot, Position, persist_reconciliation_result, reconcile_account_state
+from src.scheduler import is_order_scheduler_locked, set_order_scheduler_lock
 from src.risk_manager import DrawdownMode, next_drawdown_stage, should_trailing_sell
 from src.safety_flags import (
-    active_codes, due_unresolved_halt_alerts, load_risk_flags, raise_flag,
+    active_codes, clear_flag, due_unresolved_halt_alerts, load_risk_flags, raise_flag, ticker_is_blocked,
     sync_host_state_flags,
 )
 
@@ -41,12 +43,18 @@ Notify = Callable[[str, str], None]  # (severity, message) → Telegram 등. 실
 class AccountBrokerPort(BrokerPort, Protocol):
     """조회 계약 추가분: 잔고·주문·시세 조회."""
 
-    def last_price(self, ticker: str) -> float: ...
-    def positions(self) -> list[Position]: ...
-    def orders(self, trade_date: date) -> list[OrderSnapshot]: ...
-    def cash_d2(self) -> int: ...
-    def total_equity(self) -> int: ...
-    def cancel_order(self, kis_order_no: str, ticker: str) -> bool: ...
+    def last_price(self, ticker: str) -> float:
+        """종목 현재가(원주가)."""
+    def positions(self) -> list[Position]:
+        """증권사 보유 종목·수량."""
+    def orders(self, trade_date: date) -> list[OrderSnapshot]:
+        """지정 거래일의 주문·체결 내역(정규화된 상태)."""
+    def cash_d2(self) -> int:
+        """D+2 정산 예수금."""
+    def total_equity(self) -> int:
+        """총평가금액."""
+    def cancel_order(self, kis_order_no: str, ticker: str) -> bool:
+        """미체결 주문 취소를 요청하고 접수 여부를 돌려준다."""
 
 
 def _noop(_severity: str, _message: str) -> None:
@@ -78,9 +86,21 @@ def _adjust_factor(connection: sqlite3.Connection, ticker: str) -> float | None:
     return float(row[0]) / float(row[1]) if row and row[1] else None
 
 
+TRANSIENT_PREFIX = "TRANSIENT:"
+
+
 def _mark_stale(connection: sqlite3.Connection, now: datetime, why: str) -> None:
-    """조회 실패는 불일치가 아니다: 신규 매수만 막고 경보한다."""
-    raise_flag(connection, "BUY_BLOCK", "ACCOUNT_DATA_STALE", now=now, detail=why[:200])
+    """조회 실패는 불일치가 아니다: 신규 매수만 막고 경보한다(일시 실패 표식 → 다음 성공 조회에서 자동 해제)."""
+    raise_flag(connection, "BUY_BLOCK", "ACCOUNT_DATA_STALE", now=now, detail=(TRANSIENT_PREFIX + why)[:200])
+
+
+def _clear_transient_stale(connection: sqlite3.Connection, now: datetime) -> None:
+    """조회가 다시 성공했으면 일시 실패로 걸린 `ACCOUNT_DATA_STALE` 만 해제한다(대조 불일치 대기 플래그는 건드리지 않음)."""
+    row = connection.execute(
+        "SELECT detail_sanitized FROM safety_flags WHERE flag_type = 'BUY_BLOCK' AND code = 'ACCOUNT_DATA_STALE' "
+        "AND cleared_at IS NULL").fetchone()
+    if row is not None and (row[0] or "").startswith(TRANSIENT_PREFIX):
+        clear_flag(connection, "BUY_BLOCK", "ACCOUNT_DATA_STALE", now=now, cleared_by="SYSTEM")
 
 
 def _set_guard_interval(connection: sqlite3.Connection, interval: int, now: datetime) -> None:
@@ -117,6 +137,7 @@ def create_intraday_guard_handler(
     last_run: list[datetime] = []
 
     def handler() -> None:
+        """스탑 감시 한 틱: 보유 종목을 점검하고 스탑 도달 시 매도 또는 의무 기록을 한다."""
         now = clock()
         connection = connection_factory()
         try:
@@ -134,8 +155,11 @@ def create_intraday_guard_handler(
             rows = connection.execute(
                 "SELECT ticker, quantity, peak_price_adj FROM positions "
                 "WHERE tracking_status = 'MANAGED' AND quantity > 0").fetchall()
+            failed = False
             for row in rows:
                 ticker, quantity, peak = row["ticker"], row["quantity"], row["peak_price_adj"]
+                if ticker_is_blocked(connection, ticker):
+                    continue  # 4.2절: 격리(기업행위 미검증·호가 무효 등) 중에는 가격 기반 자동 매도를 보류한다
                 if peak is None:
                     continue  # 고점 기록 없는 보유분은 대상 제외(스탑 감시 불가 → 별도 경보 대상)
                 if connection.execute("SELECT 1 FROM exit_obligations WHERE ticker=? AND status='OPEN'",
@@ -148,6 +172,7 @@ def create_intraday_guard_handler(
                     price = broker.last_price(ticker)
                 except Exception as error:  # noqa: BLE001 - 조회 실패는 STALE 처리
                     _mark_stale(connection, now, f"last_price:{type(error).__name__}")
+                    failed = True
                     continue
                 if not should_trailing_sell(price * factor, float(peak), training_mode=flags.training_mode):
                     continue
@@ -164,8 +189,8 @@ def create_intraday_guard_handler(
                     connection, broker,
                     SellRequest(ticker, quantity, kind, stop_cycle_id(ticker, trade_date), "TRAILING_STOP"),
                     now=now, account_fresh=True, protective_enabled=protective_enabled)
-                if result == SELL_ALREADY_ACTIVE:
-                    continue  # 이미 나간 매도가 진행 중: 의무·경보를 만들지 않는다
+                if result == SELL_ALREADY_ACTIVE or result in TRANSIENT_BLOCKS:
+                    continue  # 진행 중이거나 조회 일시 실패: 의무·경보 없이 다음 틱에 다시 시도한다
                 if result.startswith("BLOCKED") or result == "ANOMALY":
                     # 못 낸 매도는 사라지지 않게 의무로 남긴다(익일 09:10 재시도).
                     open_exit_obligation(connection, ticker=ticker, quantity=quantity,
@@ -174,6 +199,8 @@ def create_intraday_guard_handler(
                     msg = f"{ticker} 트레일링 스탑 → {result}"
                     _log(connection, "intraday_guard", "STOP_TRIGGERED", "CRITICAL", msg, now)
                     _safe_notify(notify, "CRITICAL", msg)
+            if rows and not failed:
+                _clear_transient_stale(connection, now)
         finally:
             connection.close()
 
@@ -197,6 +224,7 @@ def create_open_checkpoint_handler(
     """
 
     def handler() -> None:
+        """09:10 점검: 열린 매도 의무를 재매도하거나 보유가 없으면 닫는다."""
         now = clock()
         connection = connection_factory()
         try:
@@ -249,6 +277,7 @@ def create_order_cancel_sweep_handler(
     """
 
     def handler() -> None:
+        """15:14:30 취소 정리: 활성 주문 취소를 요청하고 미체결 위험 축소 매도를 의무로 넘긴다."""
         now = clock()
         connection = connection_factory()
         try:
@@ -351,8 +380,17 @@ def save_daily_snapshot(connection: sqlite3.Connection, *, trade_date: str, tota
     return stage.value
 
 
-def _update_peaks(connection: sqlite3.Connection, now: datetime) -> None:
-    """`PeakPrice` 일 1회 갱신: 보유 종목의 최신 수정 종가로 단조 증가시킨다(6.1절)."""
+def _update_peaks(connection: sqlite3.Connection, now: datetime, live_closes: dict[str, float] | None = None) -> None:
+    """`PeakPrice` 일 1회 갱신: 보유 종목의 최신 수정 종가로 단조 증가시킨다(6.1절).
+
+    DB 일봉은 다음 날 아침에야 적재되므로, 마감 후에는 당일 종가(= 마감 후 현재가 × 조정계수)를 함께 반영해
+    고점이 하루 늦어지지 않게 한다(`live_closes`: 티커 → 마감 후 현재가).
+    """
+    for ticker, close in (live_closes or {}).items():
+        factor = _adjust_factor(connection, ticker) or 1.0
+        with connection:
+            connection.execute("UPDATE positions SET peak_price_adj = MAX(peak_price_adj, ?) "
+                               "WHERE ticker = ? AND peak_price_adj IS NOT NULL", (close * factor, ticker))
     with connection:
         connection.execute(
             """
@@ -426,6 +464,7 @@ def create_post_close_reconcile_handler(
     """
 
     def handler() -> None:
+        """마감 후 대조: 주문 동기화, 계좌 대조, 예수금 대사, 최고가 갱신, 일간 스냅샷을 순서대로 수행한다."""
         now = clock()
         connection = connection_factory()
         try:
@@ -465,12 +504,24 @@ def create_post_close_reconcile_handler(
                 quiescent=quiescent)
             if verdict == "CONFIRMED":
                 _safe_notify(notify, "CRITICAL", "계좌 불일치 확정 → SAFE_HALT(ACCOUNT_MISMATCH)")
+            if result.reconciliation_ok and is_order_scheduler_locked(connection):
+                try:  # 대조 성공 + SAFE_HALT 없음이면 잠금을 푼다(조건은 set_order_scheduler_lock 이 검증)
+                    set_order_scheduler_lock(connection, locked=False, reason="RECONCILIATION_REQUIRED", occurred_at=now)
+                except PermissionError:
+                    pass
             if not quiescent:
                 return  # 진행 중인 주문이 있으면 예수금 대사·스냅샷도 다음 주기로 미룬다.
             reconcile_cash(connection, current_cash=current_cash, now=now, trade_day=trade_day,
                            advance_baseline=True, first_run_date=first_run_date, tolerance_krw=cash_tolerance_krw,
                            confirm_interval_seconds=confirm_interval_seconds)
-            _update_peaks(connection, now)
+            live_closes: dict[str, float] = {}
+            for r in connection.execute("SELECT ticker FROM positions WHERE tracking_status = 'MANAGED' "
+                                        "AND quantity > 0").fetchall():
+                try:
+                    live_closes[r["ticker"]] = broker.last_price(r["ticker"])
+                except Exception:  # noqa: BLE001 - 종가 조회 실패 종목은 DB 일봉 기준 갱신만
+                    continue
+            _update_peaks(connection, now, live_closes)
             try:
                 save_daily_snapshot(connection, trade_date=trade_day.isoformat(), total_equity=equity,
                                     cash=current_cash, now=now)
@@ -494,6 +545,7 @@ def create_safety_maintenance_handler(
     """10분마다: 호스트 상태 파일로 UPS·시각 플래그를 갱신하고, 24시간 이상 풀리지 않은 HALT 를 재경보합니다."""
 
     def handler() -> None:
+        """활성 주문이 있을 때만 브로커 상태를 DB 에 반영한다."""
         now = clock()
         connection = connection_factory()
         try:
@@ -506,6 +558,7 @@ def create_safety_maintenance_handler(
                                        "ELSE '' END, updated_at = ? WHERE \"key\" IN ('training_mode','training_until')",
                                        (now.isoformat(),))
                 _safe_notify(notify, "INFO", "훈련 모드 종료일이 지나 자동 해제되었습니다.")
+            deliver_previews(connection, notify, now)  # 발송 실패한 주간 프리뷰 재시도(10분 간격, 최대 6회)
             for code in due_unresolved_halt_alerts(connection, now=now):
                 _safe_notify(notify, "CRITICAL", f"{code} 미해결 24시간 이상: 운영자 조치 필요")
         finally:
@@ -526,6 +579,7 @@ def create_pending_confirmation_poller(
     """활성 주문이 있을 때만 브로커 상태를 체결·접수·취소로 반영합니다(장중에는 미접수 확정 안 함)."""
 
     def handler() -> None:
+        """10분 주기 안전 점검: 호스트 상태 플래그, 훈련 종료, 프리뷰 재발송, 미해결 정지 재경보."""
         now = clock()
         connection = connection_factory()
         try:
@@ -537,6 +591,7 @@ def create_pending_confirmation_poller(
             except Exception as error:  # noqa: BLE001 - 조회 실패는 STALE(매수 차단)로만 처리
                 _mark_stale(connection, now, f"sync:{type(error).__name__}")
                 return
+            _clear_transient_stale(connection, now)
             if result["filled"]:
                 _safe_notify(notify, "INFO", f"체결 {result['filled']}건 반영")
         finally:

@@ -51,6 +51,7 @@ def not_implemented_handler(
     """주문 없이 `JOB_NOT_IMPLEMENTED` 경고만 남기는 안전한 자리표시 핸들러."""
 
     def handler() -> None:
+        """미구현 잡이 호출되면 경고 이벤트만 기록한다."""
         connection = connection_factory()
         try:
             with connection:
@@ -82,6 +83,7 @@ def build_dependencies(
     connection_factory = lambda: connect_database(db_path)
 
     def token() -> str:
+        """유효한 KIS 접근 토큰을 돌려준다(없거나 만료면 예외)."""
         cached = token_cache.load()
         if cached is None or cached.expires_at <= datetime.now(timezone.utc):
             raise RuntimeError("KIS token is missing or expired.")
@@ -169,7 +171,7 @@ def build_dependencies(
             scheduled_ex_dates=scheduled_dates),  # type: ignore[index]
         ScheduleJob.PENDING_CONFIRMATION_POLLER: create_pending_confirmation_poller(connection_factory, broker),
         ScheduleJob.WEEKLY_RANKING_PREVIEW: create_weekly_preview_handler(
-            connection_factory, cfg),  # type: ignore[arg-type]
+            connection_factory, cfg, notify=notify),  # type: ignore[arg-type]
     }
     for job in NOT_IMPLEMENTED_JOBS:
         handlers[job] = not_implemented_handler(connection_factory, job)
@@ -178,14 +180,9 @@ def build_dependencies(
         """DB·토큰·대조 상태만 실측한다(CPU·디스크·온도는 라즈베리파이에서 연결, 지금은 정상 기본값)."""
         now = datetime.now(timezone.utc)
         cached = token_cache.load()
-        connection = connection_factory()
-        try:
-            ok = connection.execute(
-                "SELECT value FROM system_state WHERE \"key\" = 'reconciliation_ok'").fetchone()
-        finally:
-            connection.close()
-        return HealthSnapshot(True, True, cached is not None and cached.expires_at > now,
-                              ok is not None and ok[0] == "true", 0.0, 0.0, 0.0, now)
+        # 대조 상태(reconciliation_ok)는 건강 판정에 넣지 않는다: 매수 차단 수준의 사유로도 스탑 감시까지 잠기고,
+        # 잠금을 푸는 대조 잡마저 잠겨 재시작 전에는 복구되지 않기 때문이다. 대조 결과는 주문 게이트가 직접 본다.
+        return HealthSnapshot(True, True, cached is not None and cached.expires_at > now, True, 0.0, 0.0, 0.0, now)
 
     return RuntimeDependencies(
         reconcile_account=reconcile_account,
