@@ -122,6 +122,6 @@ class KisBroker:
         if info is None:
             return False
         org_no, remaining, price = info
-        ack = self.transport.cancel_or_modify(
-            mode="CANCEL", org_number=org_no, order_number=kis_order_no, quantity=remaining, price=price)
+        ack = self.transport.cancel_order(
+            org_number=org_no, order_number=kis_order_no, quantity=remaining, price=price)
         return bool(getattr(ack, "accepted", False))

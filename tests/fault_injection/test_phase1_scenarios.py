@@ -13,11 +13,11 @@ from src.order_manager import (
     transition_order_status,
     validate_spread_and_nav,
 )
+from src.deployment import is_deployment_blocked
 from src.portfolio_manager import (
     SlotCandidate,
     assign_risk_slots,
-    detect_external_deposit,
-    resolve_live_slots,
+    select_final_slots,
 )
 from src.reconciliation import Position, reconcile_positions
 from src.risk_manager import (
@@ -26,7 +26,6 @@ from src.risk_manager import (
     resolve_operating_mode,
     should_trailing_sell,
 )
-from src.scheduler import is_order_window
 from src.telegram_bot import TelegramCommandHandler
 from src.kis_client import CachedAccessToken, RefreshTrigger, TokenRefreshPolicy, should_refresh_access_token
 from datetime import datetime, timedelta, timezone
@@ -126,10 +125,8 @@ class Phase1ScenarioTests(unittest.TestCase):
         )
 
     def test_09_bear_market_slots_fall_back_to_parking(self):
-        assignments = resolve_live_slots([], set(), "423160")
-        self.assertTrue(
-            all(assignment.ticker == "423160" for assignment in assignments)
-        )
+        assignments = select_final_slots([])
+        self.assertTrue(all(assignment.ticker == "" for assignment in assignments))  # 빈 칸은 파킹으로 채운다
 
     def test_10_top_three_outside_candidates_are_replaced(self):
         assignments = assign_risk_slots(
@@ -145,10 +142,8 @@ class Phase1ScenarioTests(unittest.TestCase):
         )
 
     def test_11_live_top_candidate_failure_succeeds_by_fourth_rank(self):
-        assignments = resolve_live_slots(
-            ["A", "B", "C", "D"],
-            {"B", "C", "D"},
-            "423160",
+        assignments = select_final_slots(
+            [SlotCandidate(t, r, t) for t, r in (("B", "KR"), ("C", "US"), ("D", "KR"))]
         )
         self.assertEqual(
             [assignment.ticker for assignment in assignments[:3]],
@@ -156,22 +151,14 @@ class Phase1ScenarioTests(unittest.TestCase):
         )
 
     def test_12_existing_fourth_rank_survival_prevents_sell(self):
-        assignments = resolve_live_slots(
-            ["A", "B", "C", "D"],
-            {"C", "D"},
-            "423160",
-            existing_holdings={"D"},
+        assignments = select_final_slots(
+            [SlotCandidate("C", "US", "c"), SlotCandidate("D", "KR", "d")], held_tickers={"D"}
         )
         self.assertIn("D", [assignment.ticker for assignment in assignments])
 
     def test_13_holding_turnover_exception_is_not_forced_sell(self):
-        self.assertTrue(
-            resolve_live_slots(
-                ["A", "D"],
-                {"D"},
-                "423160",
-                existing_holdings={"D"},
-            )[0].ticker in {"D", "423160"}
+        self.assertEqual(
+            select_final_slots([SlotCandidate("D", "KR", "d")], held_tickers={"D"})[0].ticker, "D"
         )
 
     def test_14_region_concentration_skips_third_us_asset(self):
@@ -194,19 +181,9 @@ class Phase1ScenarioTests(unittest.TestCase):
             [Position("423160", 10)],
         )
         self.assertTrue(result.reconciliation_ok)
-        self.assertEqual(
-            detect_external_deposit(
-                current_cash=1_600_000,
-                prior_cash=1_000_000,
-                sell_fills=100_000,
-                buy_fills=50_000,
-                fees=10_000,
-            ),
-            560_000,
-        )
 
     def test_16_smoke_test_mode_minimum_amount_exception_is_external_setting(self):
-        self.assertFalse(is_order_window(datetime(2026, 11, 22, 23, 0, tzinfo=UTC)))
+        self.assertFalse(is_deployment_blocked(datetime(2026, 11, 22, 23, 0, tzinfo=UTC)))
 
     def test_17_drawdown_critical_is_emergency(self):
         self.assertEqual(
@@ -223,7 +200,7 @@ class Phase1ScenarioTests(unittest.TestCase):
 
     def test_20_temporary_holiday_uses_next_open_day(self):
         now = datetime(2026, 11, 23, 6, 0, tzinfo=UTC)
-        self.assertTrue(is_order_window(now))
+        self.assertTrue(is_deployment_blocked(now))
 
     def test_21_training_emergency_recovery_keeps_training(self):
         flags = RiskFlags(emergency_mode=True, training_mode=True)
@@ -259,4 +236,4 @@ class Phase1ScenarioTests(unittest.TestCase):
 
     def test_25_deployment_is_blocked_during_order_window(self):
         now = datetime(2026, 11, 23, 3, 0, tzinfo=UTC)
-        self.assertTrue(is_order_window(now))
+        self.assertTrue(is_deployment_blocked(now))

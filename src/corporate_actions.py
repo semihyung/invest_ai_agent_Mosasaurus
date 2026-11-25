@@ -27,34 +27,3 @@ class CorporateAction:
             raise ValueError("Adjustment factor must be a finite positive number.")
         if not isinstance(self.verified, bool):
             raise ValueError("verified must be a boolean.")
-
-
-def apply_adjustment_once(
-    adjusted_price: float,
-    action: CorporateAction,
-) -> float:
-    if (
-        isinstance(adjusted_price, bool)
-        or not isinstance(adjusted_price, (int, float))
-        or not math.isfinite(adjusted_price)
-        or adjusted_price <= 0
-    ):
-        raise ValueError("Adjusted price must be positive.")
-    if not isinstance(action, CorporateAction):
-        raise TypeError("action must be a CorporateAction.")
-    if not action.verified:
-        raise ValueError("Corporate action must be verified before adjustment.")
-    return adjusted_price * action.adjustment_factor
-
-
-def adjustment_factor_for_verified_actions(actions: list[CorporateAction]) -> float:
-    factor = 1.0
-    for action in actions:
-        if not isinstance(action, CorporateAction):
-            raise TypeError("actions must contain only CorporateAction values.")
-        if not action.verified:
-            raise ValueError("All corporate actions must be verified before adjustment.")
-        factor *= action.adjustment_factor
-        if not math.isfinite(factor) or factor <= 0:
-            raise ValueError("Combined adjustment factor is invalid.")
-    return factor

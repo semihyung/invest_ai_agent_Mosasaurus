@@ -46,8 +46,6 @@ RVSECNCL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 LIMIT_ORDER_DIVISION = "00"  # 지정가. 시장가("01") 등 다른 값은 만들 수 없습니다.
 
 _TICKER = re.compile(r"\d{6}")
-_CANO = re.compile(r"\d{8}")
-_PRDT = re.compile(r"\d{2}")
 
 # (url, headers, body, timeout_seconds) -> (http_status, parsed_json_or_None)
 HttpPost = Callable[[str, Mapping[str, str], Mapping[str, str], float], tuple[int, Any]]
@@ -174,19 +172,15 @@ class KisOrderAdapter:
         }
         return TR_IDS[self._environment][side], body
 
-    def build_rvsecncl_request(
+    def build_cancel_request(
         self,
         *,
-        mode: str,
         org_number: str,
         order_number: str,
         quantity: int,
         price: int,
-        all_remaining: bool,
     ) -> tuple[str, dict[str, str]]:
-        """정정(`MODIFY`)·취소(`CANCEL`) 요청의 (TR ID, body) 를 만듭니다."""
-        if mode not in ("MODIFY", "CANCEL"):
-            raise OrderRequestError("mode must be MODIFY or CANCEL.")
+        """취소 요청의 (TR ID, body) 를 만듭니다. 정정(재가격)은 v3.7.5 D2 에서 삭제되어 만들 수 없습니다."""
         for name, value in (("org_number", org_number), ("order_number", order_number)):
             if not isinstance(value, str) or not value.strip():
                 raise OrderRequestError(f"{name} is required.")
@@ -198,10 +192,10 @@ class KisOrderAdapter:
             "KRX_FWDG_ORD_ORGNO": org_number,
             "ORGN_ODNO": order_number,
             "ORD_DVSN": LIMIT_ORDER_DIVISION,
-            "RVSE_CNCL_DVSN_CD": "01" if mode == "MODIFY" else "02",
+            "RVSE_CNCL_DVSN_CD": "02",
             "ORD_QTY": str(quantity),
             "ORD_UNPR": str(price),
-            "QTY_ALL_ORD_YN": "Y" if all_remaining else "N",
+            "QTY_ALL_ORD_YN": "Y",
             "EXCG_ID_DVSN_CD": "KRX",
             "CNDT_PRIC": "",
         }
@@ -269,25 +263,17 @@ class KisOrderAdapter:
             }
         return {"rejected": True, "message_code": ack.message_code}
 
-    def cancel_or_modify(
+    def cancel_order(
         self,
         *,
-        mode: str,
         org_number: str,
         order_number: str,
         quantity: int,
         price: int,
-        all_remaining: bool = True,
     ) -> OrderAck:
-        """정정·취소 1건을 전송합니다(자동 재시도 없음)."""
-        tr_id, body = self.build_rvsecncl_request(
-            mode=mode,
-            org_number=org_number,
-            order_number=order_number,
-            quantity=quantity,
-            price=price,
-            all_remaining=all_remaining,
-        )
+        """미체결 잔량 전부 취소 1건을 전송합니다(자동 재시도 없음)."""
+        tr_id, body = self.build_cancel_request(
+            org_number=org_number, order_number=order_number, quantity=quantity, price=price)
         return self._post(RVSECNCL_PATH, tr_id, body)
 
 

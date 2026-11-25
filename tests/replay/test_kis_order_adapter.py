@@ -17,7 +17,6 @@ from src.db import initialize_database
 from src.order_manager import (
     OrderSide,
     OrderStatus,
-    Quote,
     RealOrderGateContext,
     apply_late_fill_correction,
     cancel_can_finalize,
@@ -136,16 +135,14 @@ class AdapterContractTests(unittest.TestCase):
             ticker="423160", side=OrderSide.BUY, quantity=1, price=1000)
         self.assertEqual(result.status, OrderStatus.PENDING_CONFIRMATION)
 
-    def test_cancel_and_modify_use_rvsecncl_tr_and_codes(self):
-        http = RecordingHttp(ACCEPTED, ACCEPTED)
+    def test_cancel_uses_rvsecncl_tr_and_cancel_code(self):
+        http = RecordingHttp(ACCEPTED)
         adapter = make_adapter(http, "REAL")
-        adapter.cancel_or_modify(mode="CANCEL", org_number="91252", order_number="0000123",
-                                 quantity=5, price=1000)
-        adapter.cancel_or_modify(mode="MODIFY", org_number="91252", order_number="0000123",
-                                 quantity=5, price=995, all_remaining=False)
-        self.assertEqual([c[1]["tr_id"] for c in http.calls], ["TTTC0013U", "TTTC0013U"])
-        self.assertEqual([c[2]["RVSE_CNCL_DVSN_CD"] for c in http.calls], ["02", "01"])
-        self.assertEqual([c[2]["QTY_ALL_ORD_YN"] for c in http.calls], ["Y", "N"])
+        adapter.cancel_order(org_number="91252", order_number="0000123", quantity=5, price=1000)
+        self.assertEqual([c[1]["tr_id"] for c in http.calls], ["TTTC0013U"])
+        self.assertEqual([c[2]["RVSE_CNCL_DVSN_CD"] for c in http.calls], ["02"])
+        self.assertEqual([c[2]["QTY_ALL_ORD_YN"] for c in http.calls], ["Y"])
+        self.assertFalse(hasattr(adapter, "cancel_or_modify"))  # 정정(재가격)은 존재하지 않는다
 
     def test_credentials_never_appear_in_repr_or_errors(self):
         adapter = make_adapter(RecordingHttp())

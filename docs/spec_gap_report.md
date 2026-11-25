@@ -119,7 +119,7 @@
 | D2 비상 재가격 삭제 | 재가격 함수·`replaces_order_id`·정정 인덱스·`execution.emergency` 삭제, `ux_orders_one_active_attempt` 1개 | — |
 | V-B2 종결 트리거 | `trg_terminal_immutable`(체결 증가+잔량 0만), `LATE_FILL_CORRECTION` 잔량 0 고정 | — |
 | V-B3 의무 수량 불변 | `trg_obligation_required_immutable`, `order_intents.obligation_id`, 체결 집계 동기화, 보유 0 → `VOIDED`, 활성 주문 있으면 대체 거부 | 09:10 검문소 잡이 의무 의도를 만드는 호출부 |
-| D1 보호성 손절 | `PROTECTIVE_EXIT_REASONS`·`should_protective_stop`·`OrderKind/RiskAction.PROTECTIVE_EXIT_SELL`·게이트 `protective_exit`·미해결 재경보 | **스탑 감시 잡(위험 축소 매도 생성)과 재경보 잡 호출부**, 설정 `protective_exit.enabled` 를 `load_risk_flags` 에 전달하는 연결 |
+| D1 보호성 손절 | `PROTECTIVE_EXIT_REASONS`·`should_protective_stop`·`OrderKind.PROTECTIVE_EXIT_SELL`·게이트 `protective_exit`·미해결 재경보 | **스탑 감시 잡(위험 축소 매도 생성)과 재경보 잡 호출부**, 설정 `protective_exit.enabled` 를 `load_risk_flags` 에 전달하는 연결 |
 | V-B5 대사 오탐 | 정지 상태 판정(`reconciliation_allowed`), `PROVISIONAL` 2단계, 조회 실패≠불일치, 허용 오차 1,000원, 고아 주문 처리 | 대사 실행 잡(체결 대금·잔고 조회 연결) |
 | V-B6 회계 오염 | 오염 제거 단위가격, 늦은 분류 재계산 순수 함수(`restate_after_late_flow`), 악화 전이 비동결 | `daily_portfolio` 를 쓰는 마감 스냅샷 잡과 `/classify` 후 재계산 호출 |
 | V-B7 파킹 결함 | 주간 프리뷰가 파킹 결함 시 `RF_INVALID` 프리뷰를 저장하고 교체 생략 | 15:00 Step B 가 `RF_INVALID` 를 읽어 교체를 건너뛰는 처리 |

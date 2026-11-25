@@ -29,6 +29,7 @@ from src.scheduler import (
     build_scheduler,
     set_order_scheduler_lock,
 )
+from src.telegram_bot import telegram_credentials
 from src.universe import load_universe_allowlist, sync_universe_allowlist
 
 
@@ -228,7 +229,7 @@ def _telegram_settings(environ: Mapping[str, str]) -> dict | None:
 
     명세 6.4절: 채팅 ID **와** 사용자 ID 를 모두 검증해야 하므로 사용자 ID 가 없으면 명령을 받지 않는다(fail-closed).
     """
-    token, chat = environ.get("TELEGRAM_BOT_TOKEN", "").strip(), environ.get("ALLOWED_CHAT_ID", "").strip()
+    token, chat = telegram_credentials(environ)
     user = environ.get("ALLOWED_USER_ID", "").strip()
     if not token or not chat:
         return None

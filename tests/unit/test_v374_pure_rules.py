@@ -2,7 +2,6 @@
 
 import itertools
 import math
-import re
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path

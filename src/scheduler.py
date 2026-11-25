@@ -127,14 +127,6 @@ _REQUIRED_HANDLERS = frozenset(
 )
 
 
-def is_order_window(now: datetime) -> bool:
-    """KST 배포 차단 시간대인지 판정합니다."""
-    if not isinstance(now, datetime):
-        raise TypeError("now must be a datetime.")
-    kst_now = now.astimezone(KST) if now.tzinfo is not None else now.replace(tzinfo=KST)
-    return time(8, 50) <= kst_now.time() <= time(15, 25)
-
-
 def jobs_due_now(
     now: datetime,
     *,

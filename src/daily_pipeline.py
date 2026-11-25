@@ -25,6 +25,7 @@ from src.order_manager import OrderSide, calculate_limit_price
 from src.order_policy import OrderKind
 from src.order_sync import sync_orders
 from src.portfolio_manager import SlotCandidate, select_final_slots
+from src.quant_engine import is_above_sma120
 from src.risk_manager import should_trailing_sell
 from src.safety_flags import has_buy_block, is_safe_halt, load_risk_flags, ticker_is_blocked
 
@@ -88,11 +89,11 @@ def buy_quantity(*, target: int, held_value: int, active_buy_value: int, limit_p
     return max(0, min(by_target, by_cash))
 
 
-def _sma120(connection: sqlite3.Connection, ticker: str) -> float | None:
-    """가장 최근 완료 거래일을 포함한 직전 120개 수정 종가의 단순평균(부족하면 None → 판정 불가)."""
+def _above_sma120(connection: sqlite3.Connection, ticker: str, price: float) -> bool | None:
+    """직전 완료 수정 종가 120개의 평균 위인지 본다(120개 미만이면 None → 판정 불가)."""
     rows = connection.execute("SELECT adjusted_close FROM daily_candles WHERE ticker = ? "
                               "ORDER BY trade_date DESC LIMIT 120", (ticker,)).fetchall()
-    return sum(r[0] for r in rows) / 120 if len(rows) == 120 else None
+    return is_above_sma120(price, [r[0] for r in rows]) if len(rows) == 120 else None
 
 
 def db_correlation(connection: sqlite3.Connection) -> Callable[[str, str], float | None]:
@@ -251,10 +252,10 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
             price = broker.last_price(ticker)
         except Exception:  # noqa: BLE001
             continue
-        sma = _sma120(connection, ticker)
+        above = _above_sma120(connection, ticker, price)
         stop = position[1] is not None and should_trailing_sell(price, float(position[1]),
                                                                 training_mode=flags.training_mode)
-        if info["classification_verified"] != 1 or stop or (sma is not None and price <= sma):
+        if info["classification_verified"] != 1 or stop or above is False:
             result = submit_order(connection, broker, SellRequest(ticker, qty, OrderKind.REDUCE_ONLY_SELL,
                                   risk_cycle_id(day, "MA120"), "MA120_EXIT"), now=now,
                                   protective_enabled=protective_enabled)
@@ -281,12 +282,11 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
                 continue
             if ticker_is_blocked(connection, t) or t in exited or not _passes_live_filters(connection, t, cfg):
                 continue
-            sma = _sma120(connection, t)
             try:
                 live = broker.last_price(t)
             except Exception:  # noqa: BLE001
                 continue
-            if sma is None or live <= sma:
+            if _above_sma120(connection, t, live) is not True:
                 continue
             eligible.append(SlotCandidate(t, item["region"], item["underlying_index"],
                                           item.get("underlying_index_family", "")))
@@ -352,7 +352,7 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
 
     # 3. 매도 선행: 계획한 매도를 제출한다. 스프레드·iNAV 에 막힌 매도는 30초 간격으로 시한까지 다시 평가한다(5.3절 5번).
     deadline = datetime.combine(now.astimezone(KST).date(), cfg.sell_first_deadline, tzinfo=KST)
-    todo, attempt = planned_sells, 0
+    todo = planned_sells
     while todo:
         blocked = []
         for request in todo:
@@ -367,7 +367,6 @@ def _run(connection, broker, cfg, now, clock, sleep, notify, correlation, protec
         if not todo or clock() >= deadline:
             break
         sleep(30)
-        attempt += 1
     if todo:  # 시한까지 제출하지 못한 교체 매도: 이월하지 않는다. 슬롯 밖 종목이 남으므로 위험자산 신규 매수는 하지 않는다.
         _log(connection, "daily_pipeline", "ROTATION_SELL_UNSUBMITTED", "WARN",
              ",".join(r.ticker for r in todo) + " 교체 매도 미제출: 위험자산 매수 생략", now)

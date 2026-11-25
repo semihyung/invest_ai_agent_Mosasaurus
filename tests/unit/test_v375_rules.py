@@ -16,7 +16,7 @@ from src.cash_recon import (
     unexplained_cash_delta,
 )
 from src.config import ConfigError, load_config, validate_config
-from src.db import connect_database, initialize_database
+from src.db import initialize_database
 from src.order_manager import (
     OrderIntentType,
     RealOrderGateContext,
@@ -29,12 +29,11 @@ from src.performance import (
     update_flow_adjusted_performance,
 )
 from src.risk_manager import (
-    DrawdownMode,
-    RiskAction,
     RiskFlags,
-    is_action_allowed,
+    resolve_operating_mode,
     protective_exit_permitted,
 )
+from src.order_policy import OrderKind, is_allowed
 from src.safety_flags import active_codes, load_risk_flags, raise_flag
 
 UTC = timezone.utc
@@ -47,30 +46,25 @@ class ProtectiveExitGateTests(unittest.TestCase):
     def flags(self, reasons, **kwargs):
         return RiskFlags(is_safe_halt=True, halt_reasons=frozenset(reasons), **kwargs)
 
-    def test_only_trailing_stop_with_passed_gates_is_allowed_under_safe_halt(self):
+    @staticmethod
+    def allowed(flags, kind):
+        return is_allowed(resolve_operating_mode(flags), flags.drawdown_mode, kind,
+                          halt_reasons=flags.halt_reasons, protective_exit_enabled=flags.protective_exit_enabled)
+
+    def test_only_trailing_stop_is_allowed_under_safe_halt(self):
         flags = self.flags({"ACCOUNT_MISMATCH"})
-        allowed = is_action_allowed(
-            flags, RiskAction.PROTECTIVE_EXIT_SELL, hard_stop_triggered=True, safety_gates_passed=True)
-        self.assertTrue(allowed)
-        for kwargs in ({"hard_stop_triggered": False, "safety_gates_passed": True},
-                       {"hard_stop_triggered": True, "safety_gates_passed": False}):
-            self.assertFalse(is_action_allowed(flags, RiskAction.PROTECTIVE_EXIT_SELL, **kwargs))
+        self.assertTrue(self.allowed(flags, OrderKind.PROTECTIVE_EXIT_SELL))
         # 일반 위험 축소 매도·신규 매수는 여전히 전면 차단.
-        self.assertFalse(is_action_allowed(
-            flags, RiskAction.REDUCE_ONLY_SELL, hard_stop_triggered=True, safety_gates_passed=True))
-        self.assertFalse(is_action_allowed(flags, RiskAction.BUY_RISK_ASSET))
+        self.assertFalse(self.allowed(flags, OrderKind.REDUCE_ONLY_SELL))
+        self.assertFalse(self.allowed(flags, OrderKind.RISK_BUY))
 
     def test_forbidden_reason_or_disabled_switch_or_invalid_data_blocks_everything(self):
         for reasons in ({"PENDING_CONFIRMATION"}, {"UPS_LOW", "CREDENTIALS_UNAVAILABLE"}, {"DB_INTEGRITY"}):
-            self.assertFalse(is_action_allowed(
-                self.flags(reasons), RiskAction.PROTECTIVE_EXIT_SELL,
-                hard_stop_triggered=True, safety_gates_passed=True), reasons)
-        self.assertFalse(is_action_allowed(
-            self.flags({"UPS_LOW"}, protective_exit_enabled=False), RiskAction.PROTECTIVE_EXIT_SELL,
-            hard_stop_triggered=True, safety_gates_passed=True))
-        self.assertFalse(is_action_allowed(
-            RiskFlags(is_safe_halt=False, data_invalid=True), RiskAction.PROTECTIVE_EXIT_SELL,
-            hard_stop_triggered=True, safety_gates_passed=True))
+            self.assertFalse(self.allowed(self.flags(reasons), OrderKind.PROTECTIVE_EXIT_SELL), reasons)
+        self.assertFalse(self.allowed(self.flags({"UPS_LOW"}, protective_exit_enabled=False),
+                                      OrderKind.PROTECTIVE_EXIT_SELL))
+        self.assertFalse(self.allowed(RiskFlags(is_safe_halt=False, data_invalid=True),
+                                      OrderKind.PROTECTIVE_EXIT_SELL))
         self.assertFalse(protective_exit_permitted(set()))
 
     def test_flags_loaded_from_db_carry_active_halt_reasons(self):
@@ -80,9 +74,7 @@ class ProtectiveExitGateTests(unittest.TestCase):
                 raise_flag(connection, "HALT", "DEPLOY_ROLLBACK", now=T0)
                 flags = load_risk_flags(connection)
                 self.assertEqual(flags.halt_reasons, frozenset({"DEPLOY_ROLLBACK"}))
-                self.assertTrue(is_action_allowed(
-                    flags, RiskAction.PROTECTIVE_EXIT_SELL,
-                    hard_stop_triggered=True, safety_gates_passed=True))
+                self.assertTrue(self.allowed(flags, OrderKind.PROTECTIVE_EXIT_SELL))
             finally:
                 connection.close()
 

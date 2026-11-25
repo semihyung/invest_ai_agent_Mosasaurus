@@ -650,6 +650,33 @@ def round_down_to_tick(price: int, tick: int | None = None) -> int:
     return price - price % size
 
 
+def request_order_cancel(
+    connection: sqlite3.Connection,
+    broker: Any,
+    *,
+    order_id: str,
+    kis_order_no: str,
+    ticker: str,
+    attempt_id: str,
+    actor: str,
+    reason_code: str,
+    now: datetime,
+) -> bool:
+    """취소 1건을 요청하고 접수되면 `CANCEL_PENDING` 으로 전이합니다(취소 전송의 유일한 진입점).
+
+    응답이 유실되면(예외) 상태를 그대로 두고 False 를 반환합니다: 종결은 이후 대조가 확정합니다.
+    """
+    try:
+        accepted = broker.cancel_order(kis_order_no, ticker)
+    except Exception:  # noqa: BLE001 - 취소 응답 유실: 상태 유지, 다음 틱/마감 후 대조가 확정
+        return False
+    if accepted:
+        persist_order_transition(
+            connection, order_id=order_id, new_status=OrderStatus.CANCEL_PENDING,
+            actor=actor, reason_code=reason_code, correlation_id=attempt_id, occurred_at=now)
+    return bool(accepted)
+
+
 def cancel_can_finalize(
     *,
     consecutive_matches: int,

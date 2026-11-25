@@ -83,10 +83,20 @@ class CodeConstantParityTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "trailing_stop.normal must equal"):
             validate_config(changed)
 
+    def test_phase2_flags_are_rejected_while_phase2_is_not_implemented(self):
+        import copy
+
+        from src.config import ConfigError, load_config, validate_config
+
+        config = copy.deepcopy(load_config())
+        config["features"]["enable_llm_risk_engine"] = True
+        with self.assertRaisesRegex(ConfigError, "enable_llm_risk_engine must be false"):
+            validate_config(config)
+
     def test_every_pinned_value_matches_the_code(self):
-        from src import db, net_watchdog, order_executor, order_manager, safety_flags, telegram_bot
+        from src import cash_recon, db, market_data, net_watchdog, reconciliation, order_executor, order_manager, safety_flags, telegram_bot
         from src.config import _CODE_CONSTANTS
-        from src.risk_manager import get_drawdown_mode, next_drawdown_stage, trailing_stop_ratio, DrawdownMode
+        from src.risk_manager import get_drawdown_mode, next_drawdown_stage, trailing_stop_ratio
         import inspect
 
         actual = {
@@ -114,6 +124,11 @@ class CodeConstantParityTests(unittest.TestCase):
             "ups.halt_ratio": inspect.signature(safety_flags.sync_host_state_flags).parameters["ups_halt_ratio"].default,
             "ups.clear_ratio_margin": inspect.signature(safety_flags.sync_host_state_flags).parameters["ups_clear_margin"].default,
             "net_watchdog.max_reboots_per_hour": inspect.signature(net_watchdog.decide_action).parameters["max_reboots_per_hour"].default,
+            "accounting.cash_tolerance_krw": inspect.signature(cash_recon.unexplained_cash_delta).parameters["tolerance_krw"].default,
+            "accounting.recon_confirm_interval_seconds": inspect.signature(reconciliation.evaluate_account_mismatch).parameters["confirm_interval_seconds"].default,
+            "execution.late_fill_grace_seconds": inspect.signature(cash_recon.reconciliation_allowed).parameters["grace_seconds"].default,
+            "ttl_seconds.intraday_quote": inspect.signature(market_data.validate_quote).parameters["ttl_seconds"].default,
+            "clock.max_offset_seconds": inspect.signature(safety_flags.sync_host_state_flags).parameters["clock_max_offset_seconds"].default,
             "execution.new_order_cutoff": order_executor.ORDER_WINDOW[1].strftime("%H:%M:%S"),
             "market.regular_open": order_executor.ORDER_WINDOW[0].strftime("%H:%M:%S"),
         }

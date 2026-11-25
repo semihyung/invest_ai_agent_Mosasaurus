@@ -153,41 +153,6 @@ def find_orphan_orders(
     return tuple(sorted(set(broker) - set(sqlite)))
 
 
-def reconciliation_safe_halt(
-    *,
-    position_result: ReconciliationResult,
-    unknown_order_exists: bool,
-    stale_account_data: bool,
-    order_mismatches: Iterable[str] = (),
-    unclassified_cash_flow_exists: bool = False,
-    data_invalid: bool = False,
-) -> bool:
-    """불일치·미확정 주문·오래된 데이터·미분류 현금흐름을 안전정지 사유로 묶습니다."""
-    if not isinstance(position_result, ReconciliationResult):
-        raise TypeError("position_result must be a ReconciliationResult.")
-    flags = (
-        unknown_order_exists,
-        stale_account_data,
-        unclassified_cash_flow_exists,
-        data_invalid,
-    )
-    if any(not isinstance(value, bool) for value in flags):
-        raise ValueError("Reconciliation flags must be booleans.")
-    mismatches = tuple(order_mismatches)
-    if any(not isinstance(value, str) or not value for value in mismatches):
-        raise ValueError("Order mismatch identifiers must be non-empty strings.")
-    return (
-        not position_result.reconciliation_ok
-        or bool(position_result.order_mismatches)
-        or bool(mismatches)
-        or bool(position_result.failure_codes)
-        or unknown_order_exists
-        or stale_account_data
-        or unclassified_cash_flow_exists
-        or data_invalid
-    )
-
-
 def reconcile_account_state(
     *,
     broker_positions: list[Position],

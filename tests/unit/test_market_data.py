@@ -3,8 +3,6 @@ from datetime import date, datetime, timedelta, timezone
 
 from src.corporate_actions import (
     CorporateAction,
-    adjustment_factor_for_verified_actions,
-    apply_adjustment_once,
 )
 from src.market_data import (
     DataQualityGate,
@@ -409,74 +407,10 @@ class MarketDataTests(unittest.TestCase):
 
 
 class CorporateActionTests(unittest.TestCase):
-    def test_verified_action_adjusts_price_once(self):
-        action = CorporateAction(
-            ticker="423160",
-            action_type="DISTRIBUTION",
-            ex_date=date(2026, 11, 20),
-            adjustment_factor=0.9,
-            verified=True,
-        )
-
-        self.assertAlmostEqual(apply_adjustment_once(100.0, action), 90.0)
-
-    def test_unverified_action_is_rejected(self):
-        action = CorporateAction(
-            ticker="423160",
-            action_type="SPLIT",
-            ex_date=date(2026, 11, 20),
-            adjustment_factor=0.5,
-            verified=False,
-        )
-
-        with self.assertRaisesRegex(ValueError, "verified"):
-            apply_adjustment_once(100.0, action)
-
-    def test_combines_verified_actions_without_manual_double_adjustment(self):
-        actions = [
-            CorporateAction(
-                ticker="423160",
-                action_type="DISTRIBUTION",
-                ex_date=date(2026, 11, 20),
-                adjustment_factor=0.9,
-                verified=True,
-            ),
-            CorporateAction(
-                ticker="423160",
-                action_type="SPLIT",
-                ex_date=date(2026, 11, 21),
-                adjustment_factor=0.5,
-                verified=True,
-            ),
-        ]
-
-        self.assertAlmostEqual(
-            adjustment_factor_for_verified_actions(actions),
-            0.45,
-        )
-
-    def test_reverse_split_factor_greater_than_one_is_supported(self):
-        action = CorporateAction(
-            ticker="423160",
-            action_type="REVERSE_SPLIT",
-            ex_date=date(2026, 11, 20),
-            adjustment_factor=2.0,
-            verified=True,
-        )
-
-        self.assertEqual(apply_adjustment_once(100.0, action), 200.0)
-
-    def test_unverified_action_fails_closed_when_combining_factors(self):
-        action = CorporateAction(
-            ticker="423160",
-            action_type="SPLIT",
-            ex_date=date(2026, 11, 20),
-            adjustment_factor=0.5,
-            verified=False,
-        )
-
-        with self.assertRaisesRegex(ValueError, "must be verified"):
-            adjustment_factor_for_verified_actions([action])
+    def test_action_requires_positive_finite_factor(self):
+        CorporateAction("423160", "SPLIT", date(2026, 11, 20), adjustment_factor=2.0, verified=True)
+        with self.assertRaisesRegex(ValueError, "finite positive"):
+            CorporateAction("423160", "SPLIT", date(2026, 11, 20), adjustment_factor=0.0)
 
 
 if __name__ == "__main__":

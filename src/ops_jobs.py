@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from src.safety_flags import raise_flag
-from src.telegram_bot import sanitize_telegram_reply
+from src.telegram_bot import sanitize_telegram_reply, telegram_credentials
 
 KST = timezone(timedelta(hours=9), name="KST")
 PREFIX = "[모사사우르스]"
@@ -33,7 +33,7 @@ def build_notifier(
     post: Callable[[str, Mapping[str, str]], None] = _urllib_post_json,
 ) -> Callable[[str, str], None]:
     """`(심각도, 메시지)` → Telegram. 토큰·채팅 ID 가 없으면 아무것도 보내지 않는 함수를 돌려준다."""
-    token, chat_id = environ.get("TELEGRAM_BOT_TOKEN", "").strip(), environ.get("ALLOWED_CHAT_ID", "").strip()
+    token, chat_id = telegram_credentials(environ)
     if not token or not chat_id:
         return lambda severity, message: None
     url = f"https://api.telegram.org/bot{token}/sendMessage"

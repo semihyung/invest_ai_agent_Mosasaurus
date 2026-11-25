@@ -6,7 +6,6 @@ from src.performance import (
     CashFlowType,
     TWRQualityStatus,
     apply_cash_flow,
-    apply_external_cash_flow,
     classify_cash_flow,
     initialize_flow_adjusted_performance,
     update_flow_adjusted_performance,
@@ -35,7 +34,7 @@ class FlowAdjustedPerformanceTests(unittest.TestCase):
 
     def test_deposit_does_not_change_unit_nav_or_fake_a_return(self):
         state = self.initialize()
-        state = apply_external_cash_flow(
+        state = apply_cash_flow(
             state,
             cash_flow=1_000_000,
             flow_type=CashFlowType.DEPOSIT,
@@ -55,7 +54,7 @@ class FlowAdjustedPerformanceTests(unittest.TestCase):
         self.assertEqual(updated.hwm, 100.0)
 
     def test_withdrawal_reduces_units_without_changing_unit_nav(self):
-        state = apply_external_cash_flow(
+        state = apply_cash_flow(
             self.initialize(),
             cash_flow=-1_000_000,
             flow_type=CashFlowType.WITHDRAWAL,
@@ -79,7 +78,7 @@ class FlowAdjustedPerformanceTests(unittest.TestCase):
         )
         self.assertEqual(state.hwm, 120.0)
 
-        state = apply_external_cash_flow(
+        state = apply_cash_flow(
             state,
             cash_flow=1_000_000,
             flow_type=CashFlowType.DEPOSIT,

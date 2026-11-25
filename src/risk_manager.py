@@ -49,19 +49,6 @@ class OperatingMode(str, Enum):
     NORMAL = "NORMAL"
 
 
-class RiskAction(str, Enum):
-    """위험 정책이 허용 여부를 판단하는 주문·조회 행위입니다."""
-
-    BUY_RISK_ASSET = "BUY_RISK_ASSET"
-    SMART_DCA_BUY = "SMART_DCA_BUY"
-    BUY_PARKING = "BUY_PARKING"
-    REDUCE_ONLY_SELL = "REDUCE_ONLY_SELL"
-    PROTECTIVE_EXIT_SELL = "PROTECTIVE_EXIT_SELL"  # SAFE_HALT 중 트레일링 스탑 한정 매도(6.3절)
-    QUERY = "QUERY"
-    RECONCILE = "RECONCILE"
-    CANCEL = "CANCEL"
-
-
 @dataclass(frozen=True)
 class RiskFlags:
     """DB에서 읽은 운영 플래그와 계좌 낙폭 단계를 보관합니다."""
@@ -153,22 +140,6 @@ def should_protective_stop(
         normal_threshold=PROTECTIVE_STOP_NORMAL,
         training_threshold=PROTECTIVE_STOP_TRAINING,
     )
-
-
-def update_adjusted_peak_price(
-    previous_peak: float,
-    current_adjusted_price: float,
-) -> float:
-    """유효한 수정주가 최고가만 단조 증가 방향으로 갱신합니다."""
-    for price in (previous_peak, current_adjusted_price):
-        if (
-            isinstance(price, bool)
-            or not isinstance(price, (int, float))
-            or not math.isfinite(price)
-            or price <= 0
-        ):
-            raise ValueError("Adjusted prices must be finite positive numbers.")
-    return max(previous_peak, current_adjusted_price)
 
 
 def calculate_drawdown(current_equity: float, hwm_equity: float) -> float:
@@ -285,86 +256,3 @@ def resolve_operating_mode(flags: RiskFlags) -> OperatingMode:
     if flags.training_mode:
         return OperatingMode.TRAINING
     return OperatingMode.NORMAL
-
-
-def is_action_allowed(
-    flags: RiskFlags,
-    action: RiskAction,
-    *,
-    hard_stop_triggered: bool = False,
-    safety_gates_passed: bool = False,
-) -> bool:
-    """단일 정책으로 운영 모드·낙폭·축소매도 안전 게이트를 판정합니다."""
-    if not isinstance(flags, RiskFlags):
-        raise TypeError("flags must be a RiskFlags value.")
-    if not isinstance(action, RiskAction):
-        raise ValueError("action must be a RiskAction value.")
-    if not isinstance(hard_stop_triggered, bool) or not isinstance(
-        safety_gates_passed,
-        bool,
-    ):
-        raise ValueError("Risk action gate inputs must be booleans.")
-    mode = resolve_operating_mode(flags)
-
-    if action in (RiskAction.QUERY, RiskAction.RECONCILE, RiskAction.CANCEL):
-        return True
-    if mode is OperatingMode.SAFE_HALT:
-        # 유일한 예외(6.3절 D1): 허용 원인뿐일 때 트레일링 스탑 매도. 데이터 무효는 원인 코드가 없어 제외된다.
-        return (
-            action is RiskAction.PROTECTIVE_EXIT_SELL
-            and not flags.data_invalid
-            and protective_exit_permitted(
-                flags.halt_reasons, enabled=flags.protective_exit_enabled
-            )
-            and hard_stop_triggered
-            and safety_gates_passed
-        )
-    if action is RiskAction.BUY_RISK_ASSET:
-        return (
-            mode is OperatingMode.NORMAL
-            and flags.drawdown_mode
-            in (DrawdownMode.NORMAL, DrawdownMode.CAUTION)
-        )
-    if action is RiskAction.SMART_DCA_BUY:
-        return (
-            mode is OperatingMode.NORMAL
-            and flags.drawdown_mode is DrawdownMode.NORMAL
-        )
-    if action is RiskAction.BUY_PARKING:
-        return mode in (
-            OperatingMode.NORMAL,
-            OperatingMode.TRAINING,
-        ) and flags.drawdown_mode is not DrawdownMode.CRITICAL
-    if action in (RiskAction.REDUCE_ONLY_SELL, RiskAction.PROTECTIVE_EXIT_SELL):
-        return hard_stop_triggered and safety_gates_passed
-    return False
-
-
-def allows_risk_asset_buy(flags: RiskFlags) -> bool:
-    """위험자산 매수 권한을 공통 정책 판정기에 위임합니다."""
-    return is_action_allowed(flags, RiskAction.BUY_RISK_ASSET)
-
-
-def allows_parking_buy(flags: RiskFlags) -> bool:
-    """파킹 자산 매수 권한을 공통 정책 판정기에 위임합니다."""
-    return is_action_allowed(flags, RiskAction.BUY_PARKING)
-
-
-def allows_smart_dca_buy(flags: RiskFlags) -> bool:
-    """낙폭 CAUTION 이상에서 중단해야 하는 Smart DCA 매수를 판정합니다."""
-    return is_action_allowed(flags, RiskAction.SMART_DCA_BUY)
-
-
-def allows_reduce_only_sell(
-    flags: RiskFlags,
-    *,
-    hard_stop_triggered: bool = False,
-    safety_gates_passed: bool = False,
-) -> bool:
-    """유효한 하드 스탑과 주문 안전 게이트가 모두 통과한 축소 매도만 허용합니다."""
-    return is_action_allowed(
-        flags,
-        RiskAction.REDUCE_ONLY_SELL,
-        hard_stop_triggered=hard_stop_triggered,
-        safety_gates_passed=safety_gates_passed,
-    )

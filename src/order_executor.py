@@ -32,6 +32,7 @@ from src.order_manager import (
     calculate_limit_price,
     etf_tick_size,
     first_failed_gate,
+    spread_ratio,
     validate_spread_and_nav,
     persist_order_intent,
     persist_order_transition,
@@ -58,7 +59,6 @@ _STRATEGY_KINDS = {
     OrderKind.PARKING_BUY: (OrderIntentType.PARKING_ALLOCATION, OrderSide.BUY),
     OrderKind.PARKING_SELL: (OrderIntentType.PARKING_ALLOCATION, OrderSide.SELL),
 }
-_REDUCE_ONLY_KINDS = frozenset(_SELL_KINDS)
 SELL_ALREADY_ACTIVE = "BLOCKED:SELL_ALREADY_ACTIVE"
 # 증권사 조회 일시 실패: 의도를 만들지 않으므로 호출자가 다음 주기에 그대로 다시 시도한다(의무로 넘기지 않음).
 QUOTE_UNAVAILABLE = "BLOCKED:QUOTE_UNAVAILABLE"
@@ -226,7 +226,7 @@ def submit_order(
         return QUOTE_INVALID  # 의도는 만들지 않는다: 호가가 정상으로 돌아오면 다음 틱에 그대로 시도된다
 
     # 스프레드 검증은 의도를 만들기 전에 한다: 보류된 주문은 같은 cycle 로 다음 평가에서 그대로 다시 시도된다.
-    spread = (quote.ask - quote.bid) / ((quote.ask + quote.bid) / 2)
+    spread = spread_ratio(quote.bid, quote.ask)
     if reduce_only:
         if spread > MAX_SPREAD_REDUCE_ONLY:
             return SPREAD_WIDE

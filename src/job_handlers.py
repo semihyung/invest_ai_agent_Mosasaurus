@@ -22,7 +22,7 @@ from src.order_executor import (
     risk_cycle_id, stop_cycle_id,
     submit_sell,
 )
-from src.order_manager import OrderStatus, orders_due_for_cancel, persist_order_transition, void_exit_obligation
+from src.order_manager import orders_due_for_cancel, request_order_cancel, void_exit_obligation
 from src.order_policy import OrderKind
 from src.order_sync import sync_orders
 from src.rate_limit import guard_poll_interval
@@ -33,7 +33,7 @@ from src.performance import (
 )
 from src.reconciliation import OrderSnapshot, Position, ReconciliationResult, persist_reconciliation_result, reconcile_account_state
 from src.scheduler import is_order_scheduler_locked, set_order_scheduler_lock
-from src.risk_manager import DrawdownMode, get_drawdown_mode, next_drawdown_stage, should_trailing_sell
+from src.risk_manager import DrawdownMode, calculate_drawdown, get_drawdown_mode, next_drawdown_stage, should_protective_stop, should_trailing_sell
 from src.safety_flags import (
     active_codes, clear_flag, due_unresolved_halt_alerts, load_risk_flags, raise_flag, ticker_is_blocked,
     sync_host_state_flags,
@@ -152,7 +152,7 @@ def intraday_drawdown(connection: sqlite3.Connection, equity: int) -> float | No
     if row is None or row["units_outstanding"] <= 0 or row["hwm_flow_adjusted"] <= 0:
         return None
     unit_nav = max(0.0, equity - row["unclassified_excluded_amount"]) / row["units_outstanding"]
-    return min(0.0, unit_nav / row["hwm_flow_adjusted"] - 1.0)
+    return min(0.0, calculate_drawdown(unit_nav, row["hwm_flow_adjusted"]))
 
 
 def _emergency_by_drawdown(connection: sqlite3.Connection) -> bool:
@@ -256,7 +256,9 @@ def create_intraday_guard_handler(
                     _mark_stale(connection, now, f"last_price:{type(error).__name__}")
                     failed = True
                     continue
-                if not should_trailing_sell(price * factor, float(peak), training_mode=flags.training_mode):
+                # SAFE_HALT 중에는 설정과 무관한 코드 상수 스탑(6.3절 D1), 평시에는 일반 트레일링 스탑을 쓴다.
+                stop_hit = should_protective_stop if flags.is_safe_halt else should_trailing_sell
+                if not stop_hit(price * factor, float(peak), training_mode=flags.training_mode):
                     continue
                 event_id = stop_cycle_id(ticker, trade_date)
                 if alert_only:
@@ -376,15 +378,9 @@ def create_order_cancel_sweep_handler(
                     (order_id,)).fetchone()
                 if not row["kis_order_no"]:
                     continue
-                try:
-                    accepted = broker.cancel_order(row["kis_order_no"], row["ticker"])
-                except Exception:  # noqa: BLE001 - 취소 응답 유실: 상태 유지, 마감 후 대조가 확정
-                    accepted = False
-                if accepted:
-                    persist_order_transition(
-                        connection, order_id=order_id, new_status=OrderStatus.CANCEL_PENDING,
-                        actor="cancel_sweep", reason_code="PRE_CLOSE_CANCEL", correlation_id=row["attempt_id"],
-                        occurred_at=now)
+                request_order_cancel(
+                    connection, broker, order_id=order_id, kis_order_no=row["kis_order_no"], ticker=row["ticker"],
+                    attempt_id=row["attempt_id"], actor="cancel_sweep", reason_code="PRE_CLOSE_CANCEL", now=now)
                 if row["side"] == "SELL" and row["intent_type"] in ("RISK_REDUCTION", "EXIT_OBLIGATION_RETRY"):
                     open_exit_obligation(
                         connection, ticker=row["ticker"], quantity=row["remaining_qty"],
@@ -407,7 +403,7 @@ def _load_performance(connection: sqlite3.Connection) -> tuple[PerformanceState 
         return None, DrawdownMode(row["drawdown_stage"])
     state = PerformanceState(
         unit_nav=nav, units=row["units_outstanding"], hwm=row["hwm_flow_adjusted"],
-        twr_cumulative=row["twr_cumulative"], drawdown=min(0.0, nav / row["hwm_flow_adjusted"] - 1.0),
+        twr_cumulative=row["twr_cumulative"], drawdown=min(0.0, calculate_drawdown(nav, row["hwm_flow_adjusted"])),
         as_of=datetime.fromisoformat(row["snapshot_date"] + "T00:00:00+09:00"), last_close_unit_nav=nav,
         epoch=row["performance_epoch"], twr_quality_status=TWRQualityStatus(row["twr_quality_status"]))
     return state, DrawdownMode(row["drawdown_stage"])
@@ -587,14 +583,9 @@ def cancel_active_buys(connection: sqlite3.Connection, broker: AccountBrokerPort
     for row in connection.execute(
             "SELECT order_id, kis_order_no, ticker, attempt_id FROM orders WHERE side = 'BUY' AND kis_order_no IS NOT NULL "
             "AND status IN ('ACCEPTED', 'PARTIALLY_FILLED') AND remaining_qty > 0").fetchall():
-        try:
-            accepted = broker.cancel_order(row["kis_order_no"], row["ticker"])
-        except Exception:  # noqa: BLE001 - 취소 응답 유실: 상태 유지, 다음 틱에 다시 요청(취소는 사실상 멱등)
-            continue
-        if accepted:
-            persist_order_transition(connection, order_id=row["order_id"], new_status=OrderStatus.CANCEL_PENDING,
-                                     actor="emergency", reason_code="EMERGENCY_CANCEL_BUYS",
-                                     correlation_id=row["attempt_id"], occurred_at=now)
+        if request_order_cancel(
+                connection, broker, order_id=row["order_id"], kis_order_no=row["kis_order_no"], ticker=row["ticker"],
+                attempt_id=row["attempt_id"], actor="emergency", reason_code="EMERGENCY_CANCEL_BUYS", now=now):
             cancelled += 1
     return cancelled
 

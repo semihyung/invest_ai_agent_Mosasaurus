@@ -35,7 +35,7 @@ class FakeTransport:
     def __init__(self):
         self.calls = []
 
-    def cancel_or_modify(self, **kwargs):
+    def cancel_order(self, **kwargs):
         self.calls.append(kwargs)
         return Ack()
 

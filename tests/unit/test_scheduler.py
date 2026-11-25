@@ -15,7 +15,6 @@ from src.scheduler import (
     _make_event_listener,
     build_scheduler,
     is_order_scheduler_locked,
-    is_order_window,
     jobs_due_now,
     set_order_scheduler_lock,
 )
@@ -76,13 +75,6 @@ class SchedulerTests(unittest.TestCase):
             ScheduleJob.DAILY_PIPELINE,
             jobs_due_now(now, weekday_is_open=False),
         )
-
-    def test_order_window_matches_deployment_guard_hours(self):
-        in_window = datetime(2026, 11, 23, 3, 0, tzinfo=UTC)
-        outside_window = datetime(2026, 11, 22, 23, 0, tzinfo=UTC)
-
-        self.assertTrue(is_order_window(in_window))
-        self.assertFalse(is_order_window(outside_window))
 
     def test_build_scheduler_registers_all_jobs_and_exact_grace_periods(self):
         """예약 작업을 모두 등록하고 마감 민감 작업의 지연 한도를 적용합니다."""

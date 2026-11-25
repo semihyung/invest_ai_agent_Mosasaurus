@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from enum import Enum
 import math
 
+from src.risk_manager import calculate_drawdown
+
 
 class CashFlowType(str, Enum):
     """계좌 현금 변동을 성과 반영 방식에 따라 분류합니다."""
@@ -233,22 +235,6 @@ def apply_cash_flow(
     )
 
 
-def apply_external_cash_flow(
-    state: PerformanceState,
-    *,
-    cash_flow: float | None,
-    flow_type: str | CashFlowType,
-    occurred_at: datetime | None,
-) -> PerformanceState:
-    """기존 호출 이름을 유지하며 분류된 현금흐름 처리를 위임합니다."""
-    return apply_cash_flow(
-        state,
-        cash_flow=cash_flow,
-        flow_type=flow_type,
-        occurred_at=occurred_at,
-    )
-
-
 def update_flow_adjusted_performance(
     state: PerformanceState,
     *,
@@ -323,7 +309,7 @@ def update_flow_adjusted_performance(
     update_hwm = close_snapshot and not freeze
     hwm = max(state.hwm, unit_nav) if update_hwm else state.hwm
     twr_cumulative = unit_nav / 100.0 - 1.0
-    drawdown = min(0.0, unit_nav / hwm - 1.0)
+    drawdown = min(0.0, calculate_drawdown(unit_nav, hwm))
     if not all(math.isfinite(value) for value in (unit_nav, hwm, twr_cumulative, drawdown)):
         raise ValueError("Performance calculation returned a non-finite value.")
     return PerformanceState(

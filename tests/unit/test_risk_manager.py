@@ -4,19 +4,20 @@ import unittest
 from src.risk_manager import (
     DrawdownMode,
     OperatingMode,
-    RiskAction,
     RiskFlags,
-    allows_parking_buy,
-    allows_reduce_only_sell,
-    allows_risk_asset_buy,
-    allows_smart_dca_buy,
     calculate_drawdown,
     get_drawdown_mode,
-    is_action_allowed,
     resolve_operating_mode,
     should_trailing_sell,
-    update_adjusted_peak_price,
 )
+from src.order_policy import OrderKind, is_allowed
+
+
+def _allowed(flags: RiskFlags, kind: OrderKind) -> bool:
+    """플래그에서 모드를 정한 뒤 0.6절 진리표(`order_policy.is_allowed`) 하나로 판정한다."""
+    return is_allowed(
+        resolve_operating_mode(flags), flags.drawdown_mode, kind,
+        halt_reasons=flags.halt_reasons, protective_exit_enabled=flags.protective_exit_enabled)
 
 
 class RiskManagerTests(unittest.TestCase):
@@ -38,10 +39,6 @@ class RiskManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "between -1 and 0"):
             get_drawdown_mode(0.01)
 
-    def test_adjusted_peak_price_only_moves_up(self):
-        self.assertEqual(update_adjusted_peak_price(100.0, 95.0), 100.0)
-        self.assertEqual(update_adjusted_peak_price(100.0, 105.0), 105.0)
-
     def test_drawdown_boundaries_use_inclusive_thresholds(self):
         self.assertEqual(get_drawdown_mode(-0.069), DrawdownMode.NORMAL)
         self.assertEqual(get_drawdown_mode(-0.07), DrawdownMode.CAUTION)
@@ -61,88 +58,50 @@ class RiskManagerTests(unittest.TestCase):
             -0.15,
         )
 
-    def test_safe_halt_has_highest_priority_and_only_allows_recovery_actions(self):
-        flags = RiskFlags(
-            is_safe_halt=True,
-            emergency_mode=True,
-            is_paused=True,
-            training_mode=True,
-        )
+    def test_safe_halt_has_highest_priority_and_only_allows_cancel(self):
+        flags = RiskFlags(is_safe_halt=True, emergency_mode=True, is_paused=True, training_mode=True)
 
-        self.assertEqual(
-            resolve_operating_mode(flags),
-            OperatingMode.SAFE_HALT,
-        )
-        self.assertFalse(allows_risk_asset_buy(flags))
-        self.assertFalse(allows_parking_buy(flags))
-        self.assertFalse(
-            allows_reduce_only_sell(
-                flags,
-                hard_stop_triggered=True,
-                safety_gates_passed=True,
-            )
-        )
-        self.assertTrue(is_action_allowed(flags, RiskAction.QUERY))
-        self.assertTrue(is_action_allowed(flags, RiskAction.RECONCILE))
-        self.assertTrue(is_action_allowed(flags, RiskAction.CANCEL))
+        self.assertEqual(resolve_operating_mode(flags), OperatingMode.SAFE_HALT)
+        for kind in OrderKind:
+            self.assertEqual(_allowed(flags, kind), kind is OrderKind.CANCEL, kind)
 
     def test_invalid_performance_data_automatically_resolves_to_safe_halt(self):
         flags = RiskFlags(data_invalid=True)
 
         self.assertEqual(resolve_operating_mode(flags), OperatingMode.SAFE_HALT)
-        self.assertFalse(allows_risk_asset_buy(flags))
-        self.assertFalse(allows_reduce_only_sell(flags))
+        self.assertFalse(_allowed(flags, OrderKind.RISK_BUY))
+        self.assertFalse(_allowed(flags, OrderKind.REDUCE_ONLY_SELL))
 
     def test_training_allows_parking_only(self):
         flags = RiskFlags(training_mode=True)
 
         self.assertEqual(resolve_operating_mode(flags), OperatingMode.TRAINING)
-        self.assertFalse(allows_risk_asset_buy(flags))
-        self.assertTrue(allows_parking_buy(flags))
+        self.assertFalse(_allowed(flags, OrderKind.RISK_BUY))
+        self.assertTrue(_allowed(flags, OrderKind.PARKING_BUY))
 
     def test_drawdown_caution_warning_and_critical_control_buys(self):
         caution = RiskFlags(drawdown_mode=DrawdownMode.CAUTION)
         warning = RiskFlags(drawdown_mode=DrawdownMode.WARNING)
         critical = RiskFlags(drawdown_mode=DrawdownMode.CRITICAL)
 
-        self.assertTrue(allows_risk_asset_buy(caution))
-        self.assertFalse(allows_smart_dca_buy(caution))
-        self.assertTrue(allows_parking_buy(caution))
-        self.assertFalse(allows_risk_asset_buy(warning))
-        self.assertFalse(allows_smart_dca_buy(warning))
-        self.assertTrue(allows_parking_buy(warning))
+        self.assertTrue(_allowed(caution, OrderKind.RISK_BUY))
+        self.assertFalse(_allowed(caution, OrderKind.RISK_TOP_UP_BUY))  # Drift 보충 매수는 CAUTION 부터 금지
+        self.assertTrue(_allowed(caution, OrderKind.PARKING_BUY))
+        self.assertFalse(_allowed(warning, OrderKind.RISK_BUY))
+        self.assertTrue(_allowed(warning, OrderKind.PARKING_BUY))
         self.assertEqual(resolve_operating_mode(critical), OperatingMode.EMERGENCY)
-        self.assertFalse(allows_parking_buy(critical))
+        self.assertFalse(_allowed(critical, OrderKind.PARKING_BUY))
 
-    def test_pause_and_emergency_require_confirmed_hard_stop_gates_for_sell(self):
+    def test_pause_and_emergency_allow_only_reduce_only_sells_and_cancel(self):
         for flags in (RiskFlags(is_paused=True), RiskFlags(emergency_mode=True)):
-            self.assertFalse(allows_reduce_only_sell(flags))
-            self.assertFalse(
-                allows_reduce_only_sell(flags, hard_stop_triggered=True)
-            )
-            self.assertFalse(
-                allows_reduce_only_sell(flags, safety_gates_passed=True)
-            )
-            self.assertTrue(
-                allows_reduce_only_sell(
-                    flags,
-                    hard_stop_triggered=True,
-                    safety_gates_passed=True,
-                )
-            )
-            self.assertTrue(is_action_allowed(flags, RiskAction.CANCEL))
-            self.assertFalse(allows_risk_asset_buy(flags))
+            self.assertTrue(_allowed(flags, OrderKind.REDUCE_ONLY_SELL))
+            self.assertTrue(_allowed(flags, OrderKind.CANCEL))
+            self.assertFalse(_allowed(flags, OrderKind.RISK_BUY))
+            self.assertFalse(_allowed(flags, OrderKind.PARKING_BUY))
 
-    def test_training_and_normal_reduce_only_sales_require_hard_stop(self):
+    def test_training_and_normal_allow_reduce_only_sells(self):
         for flags in (RiskFlags(), RiskFlags(training_mode=True)):
-            self.assertFalse(allows_reduce_only_sell(flags))
-            self.assertTrue(
-                allows_reduce_only_sell(
-                    flags,
-                    hard_stop_triggered=True,
-                    safety_gates_passed=True,
-                )
-            )
+            self.assertTrue(_allowed(flags, OrderKind.REDUCE_ONLY_SELL))
 
     def test_emergency_overrides_pause_and_training(self):
         flags = RiskFlags(

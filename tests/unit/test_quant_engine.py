@@ -7,7 +7,6 @@ from src.quant_engine import (
     assess_risk_candidate,
     calculate_momentum_score,
     is_above_sma120,
-    passes_momentum_trend_filter,
     rank_candidates,
     validate_daily_history,
 )
@@ -104,26 +103,6 @@ class IsAboveSma120Tests(unittest.TestCase):
     def test_rejects_invalid_current_price(self):
         with self.assertRaises(ValueError):
             is_above_sma120(0, [100.0] * 120)
-
-
-class MomentumTrendFilterTests(unittest.TestCase):
-    def test_passes_positive_score_above_sma120(self):
-        self.assertTrue(passes_momentum_trend_filter(0.1, 101.0, [100.0] * 120))
-
-    def test_rejects_non_positive_score(self):
-        self.assertFalse(passes_momentum_trend_filter(0.0, 101.0, [100.0] * 120))
-        self.assertFalse(passes_momentum_trend_filter(-0.1, 101.0, [100.0] * 120))
-
-    def test_rejects_score_excluded_by_volatility_floor(self):
-        self.assertFalse(passes_momentum_trend_filter(None, 101.0, [100.0] * 120))
-
-    def test_rejects_price_at_or_below_sma120(self):
-        self.assertFalse(passes_momentum_trend_filter(0.1, 100.0, [100.0] * 120))
-        self.assertFalse(passes_momentum_trend_filter(0.1, 99.0, [100.0] * 120))
-
-    def test_rejects_non_finite_score(self):
-        with self.assertRaises(ValueError):
-            passes_momentum_trend_filter(math.inf, 101.0, [100.0] * 120)
 
 
 class RankCandidatesTests(unittest.TestCase):

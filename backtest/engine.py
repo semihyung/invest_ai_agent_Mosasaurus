@@ -16,7 +16,7 @@
 import math
 from dataclasses import dataclass, field, replace
 from datetime import date
-from typing import Callable, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from backtest.run_backtest import calculate_cagr, calculate_mdd, calculate_turnover
 from src.portfolio_manager import SlotCandidate, select_final_slots
@@ -309,7 +309,6 @@ def run_strategy_backtest(
                 slot_weights=dict(zip(("S1", "S2", "S3"), config.slot_weights)),
             )
             targets = {s.ticker: s.target_weight for s in slots if s.ticker}
-            investable = total_value * (1 - config.cash_buffer_ratio)
             parking_weight = (1 - config.cash_buffer_ratio) - sum(targets.values())
 
             # 교체 매도: 최종 슬롯에 없는 보유 위험자산 전량 매도(파킹은 아래에서 목표 조정).
@@ -419,5 +418,3 @@ def parking_proxy_closes(
     daily = (1 + annual_rate) ** (1 / 252) - 1
     return [start_value * (1 + daily) ** i for i in range(len(trade_dates))]
 
-
-Runner = Callable[[EngineConfig, int, int], BacktestRun]

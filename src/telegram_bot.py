@@ -86,24 +86,9 @@ def sanitize_telegram_reply(value: str) -> str:
     return _LONG_NUMBER.sub(lambda match: "****" + match.group(0)[-4:], sanitized)[:4096]
 
 
-def load_telegram_settings(
-    environ: Mapping[str, str],
-) -> tuple[str, set[str]]:
-    """환경 변수에서 봇 토큰과 숫자형 허용 채팅 ID만 읽습니다."""
-    if not isinstance(environ, Mapping):
-        raise TypeError("environ must be a mapping.")
-    token = environ.get("TELEGRAM_BOT_TOKEN")
-    raw_chat_ids = environ.get("ALLOWED_CHAT_ID")
-    if not isinstance(token, str) or not token.strip():
-        raise ValueError("TELEGRAM_BOT_TOKEN is required.")
-    if not isinstance(raw_chat_ids, str) or not raw_chat_ids.strip():
-        raise ValueError("ALLOWED_CHAT_ID is required.")
-    allowed_chat_ids = {
-        chat_id.strip() for chat_id in raw_chat_ids.split(",") if chat_id.strip()
-    }
-    if not allowed_chat_ids or any(not chat_id.isdigit() for chat_id in allowed_chat_ids):
-        raise ValueError("ALLOWED_CHAT_ID must contain numeric IDs.")
-    return token, allowed_chat_ids
+def telegram_credentials(environ: Mapping[str, str]) -> tuple[str, str]:
+    """환경 변수에서 (봇 토큰, 허용 채팅 ID) 를 공백 제거해 읽는다(없으면 빈 문자열). 알림·명령 수신이 함께 쓴다."""
+    return environ.get("TELEGRAM_BOT_TOKEN", "").strip(), environ.get("ALLOWED_CHAT_ID", "").strip()
 
 
 @dataclass(frozen=True)

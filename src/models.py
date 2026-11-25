@@ -20,7 +20,7 @@ from src.performance import (
     CashFlowType,
     TWRQualityStatus,
 )
-from src.risk_manager import DrawdownMode, OperatingMode, RiskAction, RiskFlags
+from src.risk_manager import DrawdownMode, OperatingMode, RiskFlags
 from src.universe import ProductMetadata
 
 __all__ = [
@@ -39,7 +39,6 @@ __all__ = [
     "OrderStatus",
     "ProductMetadata",
     "Quote",
-    "RiskAction",
     "RiskFlags",
     "TWRQualityStatus",
 ]

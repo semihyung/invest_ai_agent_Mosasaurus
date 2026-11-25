@@ -8,7 +8,6 @@ from src.telegram_bot import (
     PendingActionStore,
     TelegramCommandHandler,
     _acquire_polling_lock,
-    load_telegram_settings,
     mask_secret,
     sanitize_telegram_reply,
 )
@@ -224,28 +223,6 @@ class TelegramBotTests(unittest.TestCase):
 
         self.assertNotIn("secret-value", reply)
         self.assertNotIn("123456789012", reply)
-
-    def test_telegram_settings_load_only_from_dummy_environment(self):
-        """더미 환경 변수만으로 봇 토큰과 허용 채팅을 읽습니다."""
-        token, allowed = load_telegram_settings(
-            {
-                "TELEGRAM_BOT_TOKEN": "dummy-token",
-                "ALLOWED_CHAT_ID": "123456,654321",
-            }
-        )
-
-        self.assertEqual(token, "dummy-token")
-        self.assertEqual(allowed, {"123456", "654321"})
-
-    def test_telegram_settings_reject_non_numeric_chat_ids(self):
-        """허용 채팅 ID가 숫자가 아니면 설정을 거부합니다."""
-        with self.assertRaisesRegex(ValueError, "numeric IDs"):
-            load_telegram_settings(
-                {
-                    "TELEGRAM_BOT_TOKEN": "dummy-token",
-                    "ALLOWED_CHAT_ID": "not-a-chat",
-                }
-            )
 
     def test_mask_secret_preserves_only_first_two_characters(self):
         self.assertEqual(mask_secret("ABSECRET"), "AB****")

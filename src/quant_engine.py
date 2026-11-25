@@ -172,24 +172,6 @@ def is_above_sma120(
     return current_price > sma120
 
 
-def passes_momentum_trend_filter(
-    score: float | None,
-    current_price: float,
-    completed_adjusted_closes: Sequence[float],
-) -> bool:
-    """양수 모멘텀과 120일 이동평균 상회 조건을 함께 적용합니다."""
-    above_sma120 = is_above_sma120(current_price, completed_adjusted_closes)
-    if score is None:
-        return False
-    if (
-        isinstance(score, bool)
-        or not isinstance(score, (int, float))
-        or not math.isfinite(score)
-    ):
-        raise ValueError("Momentum score must be a finite number or None.")
-    return score > 0 and above_sma120
-
-
 def rank_candidates(
     candidates: Iterable[RankedCandidate],
 ) -> list[RankedCandidate]:

@@ -1,15 +1,12 @@
 import unittest
 
 from src.portfolio_manager import (
-    SLOT_WEIGHTS,
     SlotCandidate,
     assign_risk_slots,
     build_weekly_preview,
-    calculate_smart_dca,
-    calculate_target_amounts,
-    detect_external_deposit,
-    resolve_live_slots,
+    select_final_slots,
 )
+
 
 
 class PortfolioManagerTests(unittest.TestCase):
@@ -46,48 +43,33 @@ class PortfolioManagerTests(unittest.TestCase):
             ["A", "C", ""],
         )
 
-    def test_live_resolution_skips_top_candidate_and_successor_survives(self):
-        assignments = resolve_live_slots(
-            preview_ranked_tickers=["A", "B", "C", "D"],
-            live_eligible_tickers={"B", "C", "D"},
-            parking_ticker="423160",
-            existing_holdings={"D"},
+    def test_live_successor_replaces_failed_top_candidate(self):
+        # 라이브 탈락 후보는 호출 전에 걷어 내므로, 남은 순위 후보가 차례로 슬롯을 승계한다.
+        assignments = select_final_slots(
+            [SlotCandidate("B", "KR", "b"), SlotCandidate("C", "US", "c"), SlotCandidate("D", "KR", "d")],
+            held_tickers={"D"},
         )
 
-        self.assertEqual(
-            [assignment.ticker for assignment in assignments],
-            ["B", "C", "D"],
-        )
+        self.assertEqual([a.ticker for a in assignments], ["B", "C", "D"])
 
-    def test_live_successors_keep_region_and_underlying_concentration_limits(self):
-        assignments = resolve_live_slots(
-            preview_ranked_tickers=[
+    def test_live_successors_keep_underlying_concentration_limits(self):
+        assignments = select_final_slots(
+            [
                 SlotCandidate("A", "KR", "index-a"),
                 SlotCandidate("B", "KR", "index-a"),
                 SlotCandidate("C", "KR", "index-c"),
                 SlotCandidate("D", "US", "index-d"),
-            ],
-            live_eligible_tickers={"A", "B", "C", "D"},
-            parking_ticker="423160",
+            ]
         )
 
-        self.assertEqual(
-            [assignment.ticker for assignment in assignments],
-            ["A", "C", "D"],
-        )
+        self.assertNotIn("B", [a.ticker for a in assignments])
 
     def test_insufficient_live_candidates_fill_with_parking(self):
-        assignments = resolve_live_slots(
-            preview_ranked_tickers=["A", "B"],
-            live_eligible_tickers={"A"},
-            parking_ticker="423160",
-        )
+        assignments = select_final_slots([SlotCandidate("A", "KR", "a")])
 
-        self.assertEqual(
-            [assignment.ticker for assignment in assignments],
-            ["A", "423160", "423160"],
-        )
+        self.assertEqual([a.ticker for a in assignments], ["A", "", ""])
         self.assertEqual(assignments[1].reason, "parking_fallback")
+
 
     def test_builds_weekly_preview_and_avoids_trades_for_surviving_holdings(self):
         preview = build_weekly_preview(
@@ -132,94 +114,6 @@ class PortfolioManagerTests(unittest.TestCase):
                 [SlotCandidate("423160", "KR", "parking-index")],
                 parking_ticker="423160",
             )
-
-    def test_target_amounts_reserve_5_percent_as_parking(self):
-        targets = calculate_target_amounts(
-            total_equity=10_000_000,
-            parking_ticker="423160",
-        )
-
-        self.assertEqual(targets["423160"], 500_000)
-        self.assertEqual(
-            sum(targets.values()),
-            10_000_000,
-        )
-        self.assertEqual(SLOT_WEIGHTS["S1"], 0.45)
-
-    def test_detect_external_deposit_uses_net_cash_formula(self):
-        net_deposit = detect_external_deposit(
-            current_cash=1_600_000,
-            prior_cash=1_000_000,
-            sell_fills=100_000,
-            buy_fills=50_000,
-            fees=10_000,
-        )
-
-        self.assertEqual(net_deposit, 560_000)
-
-    def test_smart_dca_preserves_cash_buffer(self):
-        quantity = calculate_smart_dca(
-            cash_balance=1_000_000,
-            total_equity=10_000_000,
-            target_amount=4_500_000,
-            current_amount=4_000_000,
-            limit_price=100_000,
-            available_cash=900_000,
-            estimated_fee=10_000,
-        )
-
-        self.assertEqual(quantity, 3)
-
-    def test_smart_dca_blocked_below_deposit_threshold(self):
-        quantity = calculate_smart_dca(
-            cash_balance=600_000,
-            total_equity=10_000_000,
-            target_amount=4_500_000,
-            current_amount=4_000_000,
-            limit_price=100_000,
-            available_cash=600_000,
-            estimated_fee=10_000,
-        )
-
-        self.assertEqual(quantity, 0)
-
-    def test_smart_dca_reserves_pending_buys_and_enforces_minimum_trade(self):
-        below_minimum = calculate_smart_dca(
-            cash_balance=2_000_000,
-            total_equity=10_000_000,
-            target_amount=4_600_000,
-            current_amount=4_500_000,
-            limit_price=100_000,
-            available_cash=1_000_000,
-            estimated_fee=0,
-        )
-        with_pending = calculate_smart_dca(
-            cash_balance=2_000_000,
-            total_equity=10_000_000,
-            target_amount=4_800_000,
-            current_amount=4_000_000,
-            limit_price=100_000,
-            available_cash=1_000_000,
-            estimated_fee=0,
-            pending_buy_amount=350_000,
-        )
-
-        self.assertEqual(below_minimum, 0)
-        self.assertEqual(with_pending, 4)
-
-    def test_smart_dca_checks_minimum_against_unreserved_target_gap(self):
-        quantity = calculate_smart_dca(
-            cash_balance=2_000_000,
-            total_equity=10_000_000,
-            target_amount=4_650_000,
-            current_amount=4_500_000,
-            limit_price=50_000,
-            available_cash=1_000_000,
-            estimated_fee=0,
-            pending_buy_amount=100_000,
-        )
-
-        self.assertEqual(quantity, 1)
 
 
 if __name__ == "__main__":

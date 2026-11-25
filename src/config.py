@@ -116,6 +116,9 @@ _CODE_CONSTANTS = {
     "telegram.max_commands_per_minute": 10,
     "db.busy_timeout_ms": 5000, "db.max_write_tx_ms": 1000,                              # db
     "host_state.run_file_ttl_seconds": 120, "ups.halt_ratio": 0.20, "ups.clear_ratio_margin": 0.10,  # safety_flags
+    "accounting.cash_tolerance_krw": 1000, "accounting.recon_confirm_interval_seconds": 60,  # cash_recon·reconciliation
+    "execution.late_fill_grace_seconds": 60, "ttl_seconds.intraday_quote": 15,            # cash_recon·market_data
+    "clock.max_offset_seconds": 1.0,                                                      # safety_flags
     "net_watchdog.max_reboots_per_hour": 1,                                              # net_watchdog
     "market.morning_prep_time": "08:30:00", "market.regular_open": "09:00:00",           # scheduler·order_executor
     "market.open_checkpoint_time": "09:10:00", "market.daily_pipeline_time": "15:00:00",
@@ -173,6 +176,9 @@ def validate_config(config: Mapping[str, Any]) -> None:
         "execution.allow_market_order",
         "risk.safe_halt.allow_reduce_only_sell",
         "execution.retry_unknown_order",
+        # Phase 2(LLM) 는 아직 구현되지 않았다: 켜면 부팅을 거부한다(8.0절 전제 미충족 → CONFIG_INVALID).
+        "features.enable_llm_risk_engine",
+        "features.enable_dart_collector",
     )
     for key in must_be_false:
         if _lookup(config, key) is not False:
