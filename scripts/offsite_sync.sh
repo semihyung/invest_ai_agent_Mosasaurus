@@ -23,6 +23,8 @@ write_status() {  # $1 = true|false, $2 = 사유 코드(영문 대문자·숫자
 
 [ -n "$TARGET" ] || { write_status false OFFSITE_TARGET_NOT_SET; echo "OFFSITE_TARGET 이 설정되지 않았습니다"; exit 1; }
 { [ -d "$TARGET" ] && [ -w "$TARGET" ]; } || { write_status false TARGET_UNAVAILABLE; echo "대상 폴더를 쓸 수 없습니다: $TARGET"; exit 1; }
+# 장치가 빠져 마운트가 풀리면 빈 폴더가 남아 본체 SSD 로 복사되고 "성공"으로 기록되는 것을 막는다.
+mountpoint -q "$TARGET" || { write_status false TARGET_NOT_MOUNTED; echo "마운트된 장치가 아닙니다: $TARGET"; exit 1; }
 ls "$BACKUP_DIR"/mosasaurus-*.db >/dev/null 2>&1 || { write_status false NO_BACKUPS; echo "복사할 백업이 없습니다"; exit 1; }
 
 copied=0

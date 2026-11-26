@@ -141,7 +141,8 @@ def build_dependencies(
     # 스탑 감시 안에 두면 장 시간·개장일에만 돌아 주말·야간 경보가 늦는다(명세 9.1절 `safety_flag_auto_clear`).
     safety = create_safety_maintenance_handler(
         connection_factory, run_dir=env.get("HOST_RUN_DIR"), notify=notify, token_valid=token_is_valid,
-        ups_enabled=cfg.get("ups", {}).get("enabled", True) is not False)
+        ups_enabled=cfg.get("ups", {}).get("enabled", True) is not False,
+        offsite_enabled=cfg.get("backup", {}).get("offsite_enabled", True) is not False)
 
     handlers: dict[ScheduleJob, Callable[[], None]] = {
         ScheduleJob.INTRADAY_GUARD: guard,

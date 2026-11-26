@@ -74,9 +74,10 @@ DB 백업은 SHA-256 파일과 함께 만들고 `restore_test.sh` 가 임시 복
 
 ## 하드웨어 구성 (2026-11 변경)
 
-Raspberry Pi 5 + KIOXIA EXCERIA BASIC 1TB(NVMe) + Geekworm X1001(M.2 HAT) + 공식 액티브 쿨러 + KKSB 알루미늄 케이스 + 공식 27W PD 어댑터. 부팅 디스크는 NVMe 이므로 SD카드는 없다.
+Raspberry Pi 5 + 삼성전자 PM991a NVMe SSD(2242, 256GB) + 공식 M.2 HAT+ + 공식 액티브 쿨러 + KKSB 알루미늄 케이스 + 공식 27W PD 어댑터. 부팅 디스크는 NVMe 이므로 SD카드는 없다.
 
 - **UPS·RTC 전지 없음(운영자 결정):** `config/rules.yaml` 의 `ups.enabled: false` 로 UPS 검사를 끈다. 정전 시에는 재부팅 후 부팅 복구가 KIS 와 대조한다. 시각은 RTC 전지가 없어 재부팅 직후 틀릴 수 있으나 `CLOCK_UNSYNCED` 가 chrony 동기화 때까지 주문을 막는다. 자본이 커지거나 REAL 전환 전에는 UPS 도입을 다시 검토한다.
-- 부팅 순서: `sudo raspi-config` → Advanced → Boot Order → NVMe, 부트로더(EEPROM) 최신화. X1001 은 기본 PCIe Gen2, Gen3 은 비공식(`dtparam=pciex1_gen=3`)이라 안정성 확인 후에만 사용.
-- 케이스: 알루미늄 케이스 안에서 액티브 쿨러 높이·X1001 적층·통풍이 맞는지 조립 전에 확인. 부하 시 `vcgencmd measure_temp`·`vcgencmd get_throttled`(0x0 이 정상)로 점검.
-- 백업 복사본은 같은 SSD 가 아니라 `OFFSITE_TARGET`(USB·NAS)에 둔다.
+- 부팅 순서: `sudo raspi-config` → Advanced → Boot Order → NVMe, 부트로더(EEPROM) 최신화. M.2 HAT+ 는 기본 PCIe Gen2, Gen3 은 설정으로 켤 수 있으나 공식 인증 밖(`dtparam=pciex1_gen=3`)이라 안정성 확인 후에만 사용.
+- 케이스: 알루미늄 케이스 안에서 액티브 쿨러 높이·M.2 HAT+ 적층·통풍이 맞는지 조립 전에 확인. 부하 시 `vcgencmd measure_temp`·`vcgencmd get_throttled`(0x0 이 정상)로 점검.
+- **외부 백업(현재 꺼짐):** `config/rules.yaml` 의 `backup.offsite_enabled: false`. 본체 SSD 가 고장나면 DB·백업이 함께 사라지며, 복구는 새 SSD 설치 후 `/reconcile adopt` 로 KIS 잔고를 채택해 새로 시작한다.
+  켜는 법(microSD·USB): ① 장치를 `/mnt/backup` 에 마운트하고 `/etc/fstab` 에 등록 ② `host.env` 에 `OFFSITE_TARGET=/mnt/backup` ③ `offsite_enabled: true` ④ `mosasaurus-offsite-sync.timer` 활성화 ⑤ 하루 뒤 `mosasaurus-*.db` 가 장치에 생겼는지 확인. 오래된 복사본은 자동 삭제되지 않으니 가끔 사용량을 확인한다.

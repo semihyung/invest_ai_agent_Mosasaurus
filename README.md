@@ -67,7 +67,7 @@ python -m pytest tests/unit tests/integration tests/replay tests/fault_injection
 - REAL 전략 주문의 필수 조건인 백테스트 승인은 호스트에서 `python -m backtest.run_report --data-dir <CSV 폴더> --universe-history <YAML>` 로
   보고서(`data/backtests/<run_id>.json`)를 만든 뒤, 출력된 `/approve_backtest <run_id> <sha256>` 를 텔레그램에 입력해 진행합니다.
   CSV 형식과 유니버스 이력 YAML 은 `backtest/run_report.py` 머리말을 보세요.
-- DB 백업은 같은 SSD 안에만 두면 SSD 고장 때 함께 사라집니다. 호스트 `host.env` 에 `OFFSITE_TARGET`(마운트된 폴더)를 적고
+- DB 백업은 같은 SSD 안에만 두면 SSD 고장 때 함께 사라집니다. 현재 구성은 외부 장치가 없어 `backup.offsite_enabled: false` 입니다. 켜려면 `docs/operations_runbook.md` 를 보세요. 켠 뒤에는 호스트 `host.env` 에 `OFFSITE_TARGET`(마운트된 폴더)를 적고
   `scripts/systemd/mosasaurus-offsite-sync.timer` 를 켜면 `scripts/offsite_sync.sh` 가 매일 새 백업을 체크섬 검증과 함께 복사합니다.
   실패·정체(72시간)는 앱이 텔레그램으로 알립니다.
 

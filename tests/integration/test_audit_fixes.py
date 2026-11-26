@@ -242,6 +242,14 @@ class HostJobAlertTests(AuditFixTestCase):
         self.assertEqual(len(self.notes), 1)
         self.assertIn("오프사이트 백업", self.notes[0][1])
 
+    def test_disabled_offsite_backup_is_never_reported(self):
+        from src.job_handlers import check_host_job_alerts
+
+        check_host_job_alerts(self.conn, str(self.run_dir), MORNING, self.notify, offsite_enabled=False)  # 상태 파일 없음
+        self.write("offsite_status.json", ok=False, detail="TARGET_NOT_MOUNTED")
+        check_host_job_alerts(self.conn, str(self.run_dir), MORNING, self.notify, offsite_enabled=False)
+        self.assertEqual(self.notes, [])
+
     def test_failed_or_stale_offsite_backup_is_reported(self):
         self.write("offsite_status.json", ok=False, detail="TARGET_UNAVAILABLE")
         self.run_check()

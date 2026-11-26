@@ -219,6 +219,7 @@ db:
 backup:
   keep_predeploy: 10
   keep_weekly: 8
+  offsite_enabled: false          # 외부 백업 장치 없는 구성. true 이면 오프사이트 상태 파일 없음·정체(72h)를 경고. 코드 기본값은 true
   offsite_target: ""              # 운영자가 지정
 
 ttl_seconds:

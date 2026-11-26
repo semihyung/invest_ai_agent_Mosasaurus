@@ -256,7 +256,7 @@
 
 ### 3.2 하드웨어 및 소프트웨어 스택
 
-* **하드웨어:** Raspberry Pi 5 (8GB RAM), 공식 27W 전원 어댑터, M.2 NVMe 변환 HAT(현재 Geekworm X1001) + NVMe SSD 256GB 이상(현재 KIOXIA EXCERIA BASIC 1TB, 2280), 액티브 쿨러, 유선 LAN. RTC 백업 배터리와 소형 UPS는 **선택 사항**이며 현재 구성에는 없다(`ups.enabled: false`). UPS를 사용하는 경우 UPS 상태는 호스트 데몬(`scripts/ups_monitor.py`, UPS HAT의 I2C 또는 USB HID 중 실제 장비 인터페이스)이 읽어 `/home/pi/mosasaurus/run/ups.json` 에 기록하고, 컨테이너는 이 파일만 읽기 전용으로 참조한다(장치 직접 접근 금지). 호스트는 같은 방식으로 `run/clock.json`(NTP 오차·동기화 상태)도 기록하며, 두 파일의 갱신 시각이 `host_state.run_file_ttl_seconds`(`120`초)보다 오래되면 각각 `UPS_LOW`·`CLOCK_UNSYNCED` 원인을 활성화한다(감시 데몬 사망 = 상태 불명 = fail-closed). `ups.enabled: false`(UPS 없는 구성, 운영자 결정 2026-11)이면 UPS 파일을 검사하지 않고 `UPS_LOW` 를 등록하지 않으며 이미 걸린 `UPS_LOW` 는 해제한다. RTC 전지가 없으면 재부팅 직후 시각이 틀릴 수 있으나 `CLOCK_UNSYNCED` 검사가 chrony 동기화 전까지 주문을 막는다(UPS·RTC 없는 구성의 정전 위험은 부팅 복구의 KIS 대조와 외부 백업으로 완화하며, 자본 증가·`REAL` 전환 전에 UPS 도입을 재검토한다). `ups.enabled: true` 일 때 배터리 `ups.halt_ratio`(`0.20`) 이하 → `UPS_LOW` 원인 `SAFE_HALT`, `ups.shutdown_ratio`(`0.10`) 이하 → 안전 종료(백업 후 `shutdown -h`).
+* **하드웨어:** Raspberry Pi 5 (8GB RAM), 공식 27W 전원 어댑터, 공식 Raspberry Pi M.2 HAT+ + NVMe SSD 256GB 이상(현재 삼성전자 PM991a M.2 NVMe 2242, 256GB), 액티브 쿨러, 유선 LAN. RTC 백업 배터리와 소형 UPS는 **선택 사항**이며 현재 구성에는 없다(`ups.enabled: false`). UPS를 사용하는 경우 UPS 상태는 호스트 데몬(`scripts/ups_monitor.py`, UPS HAT의 I2C 또는 USB HID 중 실제 장비 인터페이스)이 읽어 `/home/pi/mosasaurus/run/ups.json` 에 기록하고, 컨테이너는 이 파일만 읽기 전용으로 참조한다(장치 직접 접근 금지). 호스트는 같은 방식으로 `run/clock.json`(NTP 오차·동기화 상태)도 기록하며, 두 파일의 갱신 시각이 `host_state.run_file_ttl_seconds`(`120`초)보다 오래되면 각각 `UPS_LOW`·`CLOCK_UNSYNCED` 원인을 활성화한다(감시 데몬 사망 = 상태 불명 = fail-closed). `ups.enabled: false`(UPS 없는 구성, 운영자 결정 2026-11)이면 UPS 파일을 검사하지 않고 `UPS_LOW` 를 등록하지 않으며 이미 걸린 `UPS_LOW` 는 해제한다. RTC 전지가 없으면 재부팅 직후 시각이 틀릴 수 있으나 `CLOCK_UNSYNCED` 검사가 chrony 동기화 전까지 주문을 막는다(UPS·RTC 없는 구성의 정전 위험은 부팅 복구의 KIS 대조와 외부 백업으로 완화하며, 자본 증가·`REAL` 전환 전에 UPS 도입을 재검토한다). `ups.enabled: true` 일 때 배터리 `ups.halt_ratio`(`0.20`) 이하 → `UPS_LOW` 원인 `SAFE_HALT`, `ups.shutdown_ratio`(`0.10`) 이하 → 안전 종료(백업 후 `shutdown -h`).
 
 * **OS 및 런타임:** Raspberry Pi OS Lite 64-bit, Python 3.12+, Docker Compose (`mosasaurus-agent`, `restart: unless-stopped`), SQLite (`data/mosasaurus.db`, WAL 모드, `PRAGMA foreign_keys=ON`), `chrony` NTP 동기화(0.4절 시각 신뢰 규칙).
 
@@ -1206,7 +1206,7 @@ mosasaurus/
     └── llm_engine.py              # Phase 2 런타임 플러그인 모듈
 ```
 
-* **백업 규칙:** `backup_db.sh` 는 `sqlite3 .backup` 사본을 `backup.key` 로 암호화해 `data/backups/` 에 저장하고, 주간 백업은 추가로 외부 매체(USB SSD 또는 Tailscale 경유 운영자 PC, `backup.offsite_target`)에 복제한다. 보존: 배포 전 백업 10개, 주간 백업 8개. 암호화 키는 금고 밖으로 복제하지 않는다(키 분실 시 복구 절차는 운영 매뉴얼에 별도 오프라인 보관).
+* **백업 규칙:** `backup_db.sh` 는 `sqlite3 .backup` 사본을 `backup.key` 로 암호화해 `data/backups/` 에 저장하고, 주간 백업은 추가로 외부 매체(microSD·USB 저장 장치 또는 Tailscale 경유 운영자 PC, `backup.offsite_target`)에 복제한다(마운트된 장치일 때만 복사). 외부 장치가 없는 구성은 `backup.offsite_enabled: false` 로 이 복제와 정체 경고를 끈다(운영자 결정 2026-11: 본체 SSD 고장 시 복구 불가 위험을 인지하고 수용하며, `REAL` 전환 전에 외부 장치 도입을 재검토한다). 외부 장치의 오래된 복사본은 자동 삭제하지 않는다. 보존: 배포 전 백업 10개, 주간 백업 8개. 암호화 키는 금고 밖으로 복제하지 않는다(키 분실 시 복구 절차는 운영 매뉴얼에 별도 오프라인 보관).
 
 ### 10.2 `docker-compose.yml` 최소 권한 마운트 확정본
 
@@ -1469,6 +1469,7 @@ db:
 backup:
   keep_predeploy: 10
   keep_weekly: 8
+  offsite_enabled: false          # 외부 백업 장치 없는 구성. true 이면 오프사이트 상태 파일 없음·정체(72h)를 경고. 코드 기본값은 true
   offsite_target: ""              # 운영자가 지정
 
 ttl_seconds:

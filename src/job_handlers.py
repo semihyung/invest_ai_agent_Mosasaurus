@@ -695,10 +695,12 @@ def _host_job_problem(run_dir: str, name: str, now: datetime, max_age_hours: flo
     return None
 
 
-def check_host_job_alerts(connection: sqlite3.Connection, run_dir: str, now: datetime, notify: Notify) -> None:
+def check_host_job_alerts(connection: sqlite3.Connection, run_dir: str, now: datetime, notify: Notify,
+                          *, offsite_enabled: bool = True) -> None:
     """토큰 갱신 실패와 오프사이트 백업 실패·정체를 하루 한 번만 텔레그램으로 알린다(호스트 상태 파일, 감사 3·6번).
 
     토큰 갱신기는 연속 3회 실패하면 `alert=true` 를 쓴다. 토큰이 만료되어 멈추기 전에 알아챌 수 있어야 한다.
+    `offsite_enabled=False`(외부 백업 장치 없는 구성)이면 오프사이트 백업 상태는 검사하지 않는다.
     토큰 상태 파일이 없는 것은 갱신 타이머가 아직 한 번도 돌지 않은 것이므로 알리지 않는다(만료 시 정지 원인이 따로 있다).
     """
     today = now.astimezone(KST).date().isoformat()
@@ -706,6 +708,8 @@ def check_host_job_alerts(connection: sqlite3.Connection, run_dir: str, now: dat
         ("token_refresh", "token_refresh_status.json", "KIS 토큰 갱신", None, False),
         ("offsite_backup", "offsite_status.json", "오프사이트 백업", 72, True),
     ):
+        if key == "offsite_backup" and not offsite_enabled:
+            continue
         problem = _host_job_problem(run_dir, name, now, max_age)
         if problem is None or (problem.startswith("상태 파일 없음") and not missing_is_problem):
             continue
@@ -725,6 +729,7 @@ def create_safety_maintenance_handler(
     notify: Notify = _noop,
     token_valid: Callable[[], bool] | None = None,
     ups_enabled: bool = True,
+    offsite_enabled: bool = True,
 ) -> Callable[[], None]:
     """10분마다: 호스트 상태 파일로 UPS·시각 플래그를 갱신하고, 24시간 이상 풀리지 않은 HALT 를 재경보합니다."""
 
@@ -735,7 +740,7 @@ def create_safety_maintenance_handler(
         try:
             if run_dir:
                 sync_host_state_flags(connection, run_dir, now=now, ups_enabled=ups_enabled)
-                check_host_job_alerts(connection, run_dir, now, notify)
+                check_host_job_alerts(connection, run_dir, now, notify, offsite_enabled=offsite_enabled)
             until = connection.execute("SELECT value FROM system_state WHERE \"key\" = 'training_until'").fetchone()
             mode = connection.execute("SELECT value, updated_at FROM system_state WHERE \"key\" = 'training_mode'").fetchone()
             if mode and mode[0] == "true" and not (until and until[0]):
