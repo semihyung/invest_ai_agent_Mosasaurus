@@ -135,6 +135,7 @@ def build_command_actions(
     backtest_dir: str | Path = "/run/backtests",
     broker: object | None = None,
     run_dir: str | None = None,
+    ups_enabled: bool = True,
     parking_ticker: str | None = None,
     token_expiry: Callable[[], datetime | None] | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -248,7 +249,8 @@ def build_command_actions(
         if run_dir:
             ups = read_host_state(Path(run_dir) / "ups.json", now=now, ttl_seconds=120)
             clock_state = read_host_state(Path(run_dir) / "clock.json", now=now, ttl_seconds=120)
-            lines.append("UPS: " + (f"배터리 {ups.get('battery_ratio', '?')}" if ups else "상태 불명(감시 파일 없음·오래됨)")
+            lines.append("UPS: " + ("없음(설정에서 비활성)" if not ups_enabled else
+                                  f"배터리 {ups.get('battery_ratio', '?')}" if ups else "상태 불명(감시 파일 없음·오래됨)")
                          + " / NTP: " + (f"오차 {clock_state.get('offset_seconds', '?')}초" if clock_state else "상태 불명"))
         expiry = token_expiry() if token_expiry else None
         lines.append("KIS 토큰 만료: " + (expiry.astimezone(KST).strftime("%m-%d %H:%M") if expiry else "알 수 없음"))

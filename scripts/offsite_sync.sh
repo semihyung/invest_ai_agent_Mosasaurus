@@ -1,6 +1,6 @@
 #!/bin/sh
-# 오프사이트 백업 복사 (감사 3번): data/backups 의 DB 백업을 SD카드 밖(USB·NAS 등 마운트된 폴더)으로 복사합니다.
-# DB 와 백업이 같은 SD카드에만 있으면 카드 고장 한 번에 주문 이력·TWR/HWM·승인 기록이 모두 사라집니다.
+# 오프사이트 백업 복사 (감사 3번): data/backups 의 DB 백업을 SSD 밖(USB·NAS 등 마운트된 폴더)으로 복사합니다.
+# DB 와 백업이 같은 SSD에만 있으면 SSD 고장 한 번에 주문 이력·TWR/HWM·승인 기록이 모두 사라집니다.
 #
 # 대상은 호스트 환경 파일(`host.env`)의 OFFSITE_TARGET 입니다(마운트된 쓰기 가능 폴더).
 # 결과는 run/offsite_status.json 에 원자적으로 기록되고, 앱이 읽어 실패·정체를 텔레그램으로 알립니다.

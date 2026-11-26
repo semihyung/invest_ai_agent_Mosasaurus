@@ -2,9 +2,9 @@
 
 * **프로젝트명:** 모사사우르스 (`mosasaurus`)
 
-* **문서 버전:** v3.7.5 (`docs/audit_v3.7.4_review.md` Blocker 9건 및 운영자 결정 D1·D2 반영 패치 — `SAFE_HALT` 원인별 보호성 손절·비상 재가격(정정 체인) 삭제·종결 불변 트리거 정정·매도 의무 수량 불변·정지 상태 대사·오염 제거 단위가격·파킹 시계열 결함 시 교체 생략·현금 필드 통일·`synchronous=FULL` / 이전: v3.7.4 v3.7.3 재감사 반영 패치 — 승인 명령 3종·예수금 필드 고정·취소 후 지연 체결 보정·슬롯 재정렬·120MA 매일 판정·`CANCEL_PENDING` 차단 범위 축소·장중 확정 전량 매도 한정·배포 서명 검증 / 이전: v3.7.3 감사 결함 반영 확정판 — `SAFE_HALT` 원인 기반 해제 경로 · 주문/실전 KIS 계약 · 상태 머신 마감 전이 · 현금흐름 중 HWM 동결 · `EMERGENCY` 재발동 방지 · 주말 토큰 타이머 · 저변동 쏠림·집중도 통제 · Runner 권한 분리 · REAL 플래그 저장소 외부화 · 상수 확정)
+* **문서 버전:** v3.7.5 (`docs/audit_v3.7.4_review.md` Blocker 9건 및 운영자 결정 D1·D2 반영 패치 — `SAFE_HALT` 원인별 보호성 손절·비상 재가격(정정 체인) 삭제·종결 불변 트리거 정정·매도 의무 수량 불변·정지 상태 대사·오염 제거 단위가격·파킹 시계열 결함 시 교체 생략·현금 필드 통일·`synchronous=FULL`)
 
-* **작성 기준일:** 2026-11-24 (이전 판: v3.7.4, v3.7.3 2026-11-24, v3.7.2 2026-11-23)
+* **작성 기준일:** 2026-11-26
 
 * **운용 시장:** 한국거래소(KRX) 상장 현물 ETF
 
@@ -35,38 +35,6 @@
 | V-B7 | Blocker | 대표 파킹 시계열 결함(`PRICE_SERIES_INVALID`·`TickerBlock`) 시 주간 교체 전체 생략(`RF_INVALID`), 보유 종목은 스탑·120MA로만 판정 | 5.1, 5.3 |
 | V-B8 | Blocker | `Cash_KIS` 를 대사 필드와 같은 D+2 정산 예수금으로 정의, 총평가액 교차 검증, Stage 2 완료 조건에 PAPER 실측 추가 | 2.2, 5.4, 10.3 |
 | V-B9 | Blocker | `PRAGMA synchronous=FULL`, 원자적 교체 후 디렉터리 `fsync`, DB 미기록 KIS 주문(고아 주문) 처리 규칙 | 3.3, 7.3, 9.2 |
-
-### v3.7.4 변경 이력 (v3.7.3 대비)
-
-| ID | 분류 | 변경 요지 | 주요 절 |
-| ----- | ----- | ----- | ----- |
-| R-B1 | Blocker | 승인 레코드 생성 명령 `/approve_real`, `/approve_smoke`, `/approve_backtest` 추가, `pending_actions.action_type` enum 명시 | 6.4, 9.2 |
-| R-B2 | Blocker | 예수금 대사를 D+2 정산 예수금 필드 하나로 고정, 분배금 자동 분류 허용 오차, 학습 모드 | 2.2, 10.3 |
-| R-B3 | Blocker | 취소·정정 확인 직후 종결하지 않고 마감 후 완전 조회로 종결, 종결 후 지연 체결은 `LATE_FILL_CORRECTION` 으로 보정(수동 해제 없음) | 7.3, 9.2 |
-| R-M1 | Major | 슬롯 집합 확정 후 최종 순위순으로 `S1~S3` 재배정 | 5.3 |
-| R-M2 | Major | 120MA 이탈 퇴출은 매 개장일 15:00 판정 | 5.2, 5.3, 9.1 |
-| R-M5 | Major | 계좌 범위 차단은 `SUBMITTING`·`PENDING_CONFIRMATION` 만, `CANCEL_PENDING` 은 종목 범위 | 4.3, 7.1 |
-| R-M6 | Major | 장중 미접수 확정은 전량 매도 의도에만 허용 | 7.3 |
-| R-M7/8/12/13/14/15 | Major | 호출 예산, OPEN 의무 종목 이중 의도 방지, 배포 금지 종료 조건, 호스트 상태 파일 TTL, 서명 검증, 전략 해시 범위 확장 | 3.2, 3.4, 4.4, 7.1, 9.1 |
-
-### v3.7.3 변경 이력 (v3.7.2 대비)
-
-| ID | 분류 | 변경 요지 | 주요 절 |
-| ----- | ----- | ----- | ----- |
-| B1 | Blocker | `SAFE_HALT` 를 원인 코드 집합(`halt_reasons`)으로 관리하고, 자동 해제 가능 원인과 수동 해제 필수 원인을 분리. Telegram `/clear_halt` 추가 | 0.5, 3.3, 6.3, 6.4, 9.2 |
-| B2 | Blocker | `risk.safe_halt.allow_reduce_only_sell` 을 `false` 로 정정, 설정이 본문보다 느슨하면 부팅 실패 | 6.3, 10.3, 10.5 |
-| B3 | Blocker | 기업행위(분배락) 출처를 운영자 승인 파일로 확정, "검증 출처에서 이벤트 0건 = 계수 1.0 유효" 규칙, 종목 단위 격리 | 4.2, 4.4, 9.2 |
-| B4 | Blocker | 입출금 조회 계약 `[UNVERIFIED]` 표기 및 운영자 분류 대안, 미분류 중 HWM·DD 동결, HWM은 마감 스냅샷에서만 갱신, 초기화 입금 이중 계상 방지, epoch 재초기화 | 2.2, 5.4, 6.2, 9.2 |
-| B5 | Blocker | 상태 머신 누락 전이 6종 추가, 장 마감 후 결정론적 미접수 확정, write-ahead 규칙, 재시도는 새 `orders` 행 | 7.3 |
-| B6 | Blocker | 주문·정정취소·매수가능·실전 TR ID 계약표 추가, 체결 delta 기반 합성 fill ID, 호출 한도 | 4.4, 7.4, 9.2 |
-| B7 | Blocker | `EMERGENCY` 해제 시 HWM 리베이스 + 재발동 히스테리시스 | 6.2, 6.3 |
-| B8 | Blocker | 호스트 토큰 타이머 매시 실행, 토큰 만료는 `CREDENTIALS_UNAVAILABLE`(자동 해제) 원인으로 분리, 앱 mtime 재로드 | 3.3, 9.1 |
-| M1–M8 | Major(퀀트) | RISK_ASSET 자산군 정의·변동성 하한, 파킹 순위 제외, 순위 버퍼, 지수 패밀리·상관 중복·US 합산 상한, 보유 유지 판정 분리, 백테스트 가능 스탑, R_f 프록시, 0 나누기 가드 | 5.1–5.4, 6.1, 11.1 |
-| M9–M15 | Major(주문) | 마감 타임라인 재설계, 티커 뮤텍스·매도 가능 수량, `cycle_id` 포맷·활성 attempt partial unique index, 비상 매도 의사코드·정정 주문, ETF 호가표, 주간 교체 승계, 조회 재시도·모의 미지원 대체 | 4.4, 5.3, 7.1–7.3, 9.1 |
-| M16–M19 | Major(DB/SRE) | 스키마 제약 정정·신규 테이블 4종, 대상 주차 preview ID, NTP 게이트·쓰기 직렬화, 배포 순서·지연 배포 큐·마이그레이션 호환 헤더 | 3.2–3.4, 9.2 |
-| M20–M23 | Major(보안/Phase 2) | Runner 권한 분리·컨테이너 하드닝, REAL·스모크 플래그 저장소 외부화, Telegram 사용자 ID·코드 규격, DART 정정공시 연결·호출 예산 사전 예약 | 3.4, 6.4, 7.1, 8, 10.2–10.4 |
-| A1–A32 | 명확화 | 감사 모호성 표 32건 일괄 확정(용어·키 이름·시각·경계 조건) | 전 장, 0.5 |
-| m1–m20 | Minor | 운영 상수 20종 `rules.yaml` 고정 | 10.3 |
 
 ## 0. 핵심 설계 원칙 및 표준 규약
 
@@ -150,7 +118,7 @@
 | ----- | ----- | ----- |
 | 운영 모드(`OperatingMode`) | `SAFE_HALT`, `EMERGENCY`, `PAUSED`, `TRAINING`, `NORMAL` | 우선순위 순. 독립 플래그에서 매 평가 시 유도 |
 | 계좌 낙폭 단계(`DrawdownStage`) | `NORMAL`, `CAUTION`, `WARNING`, `CRITICAL` | 운영 모드가 아님. `WARNING` 은 모드명으로 쓰지 않는다 |
-| 데이터 품질(`DataQuality`) | `VALID`, `STALE`, `DATA_INVALID` | `DataQualityGate` 결과도 이 집합을 사용(v3.7.2의 `FAILED` 폐기) |
+| 데이터 품질(`DataQuality`) | `VALID`, `STALE`, `DATA_INVALID` | `DataQualityGate` 결과도 이 집합을 사용 |
 | `SAFE_HALT` 원인(`HaltReason`) | `ACCOUNT_MISMATCH`, `PENDING_CONFIRMATION`(v3.7.5 D3: 더 이상 등록하지 않음 — 구 DB 행 해제용으로만 남김), `DB_INTEGRITY`, `CALENDAR_MISMATCH`, `CREDENTIALS_UNAVAILABLE`, `UPS_LOW`, `CLOCK_UNSYNCED`, `BOOT_RECOVERY_FAILED`, `DEPLOY_ROLLBACK`, `CONFIG_INVALID` | 6.3절 해제 규칙표 참조. 원인이 1개 이상 활성이면 `SAFE_HALT`. **보호성 손절 허용 원인(`ProtectiveExitReason`, 코드 상수):** `DEPLOY_ROLLBACK`, `ACCOUNT_MISMATCH`, `UPS_LOW`, `CONFIG_INVALID` — 활성 원인이 모두 이 집합에 속할 때만 6.3절 보호성 손절이 가능하다(v3.7.5 D1) |
 | 계좌 매수 차단 플래그(`BuyBlock`) | `UNCLASSIFIED_CASH_FLOW`, `ACCOUNTING_INVALID`, `ACCOUNT_DATA_STALE` | `SAFE_HALT` 가 아니다. 신규 매수만 차단하고 위험 축소 매도는 0.6절대로 허용 |
 | 종목 격리 플래그(`TickerBlock`) | `CORPORATE_ACTION_UNVERIFIED`, `QUOTE_INVALID`, `PRICE_SERIES_INVALID`, `TRADING_HALTED` | 해당 종목의 신규 매수와 가격 기반 자동 매도만 차단 |
@@ -177,7 +145,7 @@
 | `TRAINING` | X | X(정기 교체 보류) | O | X | O(`-7%` 스탑) | O | O | X |
 | `NORMAL` | O* | O | O | O | O(`-10%` 스탑) | O | O | O(스모크 세션 한정, 7.1절) |
 
-\* `NORMAL` 의 위험자산 전략 매수는 낙폭 단계에 따라 추가 제한된다: `CAUTION` = 신규 슬롯 진입·교체 매수는 허용하되 기존 보유 종목의 리밸런싱 추가 매수(Drift 보충 매수, v3.7.2의 "Smart DCA")는 금지, `WARNING` = 위험자산 매수 전면 금지(`SAFE_PARKING` 매수만 허용), `CRITICAL` = `EMERGENCY` 자동 전환. 스모크 테스트 행은 `NORMAL` 이고 낙폭 단계가 `NORMAL` 일 때만 허용한다.
+\* `NORMAL` 의 위험자산 전략 매수는 낙폭 단계에 따라 추가 제한된다: `CAUTION` = 신규 슬롯 진입·교체 매수는 허용하되 기존 보유 종목의 리밸런싱 추가 매수(Drift 보충 매수)는 금지, `WARNING` = 위험자산 매수 전면 금지(`SAFE_PARKING` 매수만 허용), `CRITICAL` = `EMERGENCY` 자동 전환. 스모크 테스트 행은 `NORMAL` 이고 낙폭 단계가 `NORMAL` 일 때만 허용한다.
 
 ## 1. 2단계(Phase 1 & Phase 2) 개발 및 확장 로드맵
 
@@ -209,7 +177,7 @@
 
 * **KIS 계좌 내 현금흐름 감지 및 분류:** 사용자는 KIS 중개형 ISA 계좌로 비정기적인 추가 원금을 직접 입금할 수 있다. 모사사우르스는 외부 원금 유입(`DEPOSIT`), 외부 출금(`WITHDRAWAL`), 투자 분배금(`DISTRIBUTION`)을 엄격히 구분하며, 원인이 불명확한 현금 변동은 `UNCLASSIFIED_CASH_FLOW` 로 격리해 신규 매수와 HWM 상향 갱신을 동결한다. 낙폭 판정은 미분류 금액을 제외한 오염 제거 단위가격으로 계속한다(6.2절, v3.7.5).
 
-* **현금흐름 감지 방식 (v3.7.3 확정):** KIS 공식 샘플에서 입출금 내역 전용 조회 API를 아직 확인하지 못했다 `[UNVERIFIED]`. 따라서 Phase 1 기본 감지 방식은 **예수금 대사(Cash Reconciliation)** 로 고정한다: 직전 마감 스냅샷의 **D+2 정산 예수금**(잔고 조회 `output2` 의 가수도정산금액 필드, 필드명 `prvs_rcdl_excc_amt` `[UNVERIFIED]` — 이 필드 하나로만 대사하며 D+0 예수금 `dnca_tot_amt` 와 혼용하지 않는다) + 당일 체결 대금(매도 수령액 − 매수 지급액 − 수수료·세금)의 **발생 기준 합계** = 기대 D+2 정산 예수금이며(ETF는 T+2 결제이므로 체결 즉시 D+2 필드에 반영되는지 `[UNVERIFIED]`, 반영 방식이 다르면 구현 전 포털로 확정하고 `docs/operations_runbook.md` 에 기록), 실제 KIS D+2 정산 예수금과의 차이(`unexplained_cash_delta`)가 `accounting.cash_tolerance_krw`(`1000` 원, v3.7.4의 `10` 원은 체결 건별 수수료 절사·유관기관비·예탁금 이용료로 상시 오탐을 일으켜 상향)를 넘으면 아래 2단계 판정을 적용한다. 이때 `broker_transaction_id` 는 `RECON:{trade_date}:{sequence}` 합성 키를 사용한다.
+* **현금흐름 감지 방식:** KIS 공식 샘플에서 입출금 내역 전용 조회 API를 아직 확인하지 못했다 `[UNVERIFIED]`. 따라서 Phase 1 기본 감지 방식은 **예수금 대사(Cash Reconciliation)** 로 고정한다: 직전 마감 스냅샷의 **D+2 정산 예수금**(잔고 조회 `output2` 의 가수도정산금액 필드, 필드명 `prvs_rcdl_excc_amt` `[UNVERIFIED]` — 이 필드 하나로만 대사하며 D+0 예수금 `dnca_tot_amt` 와 혼용하지 않는다) + 당일 체결 대금(매도 수령액 − 매수 지급액 − 수수료·세금)의 **발생 기준 합계** = 기대 D+2 정산 예수금이며(ETF는 T+2 결제이므로 체결 즉시 D+2 필드에 반영되는지 `[UNVERIFIED]`, 반영 방식이 다르면 구현 전 포털로 확정하고 `docs/operations_runbook.md` 에 기록), 실제 KIS D+2 정산 예수금과의 차이(`unexplained_cash_delta`)가 `accounting.cash_tolerance_krw`(`1000` 원)를 넘으면 아래 2단계 판정을 적용한다. 이때 `broker_transaction_id` 는 `RECON:{trade_date}:{sequence}` 합성 키를 사용한다.
   * **대사 실행 조건 (정지 상태, v3.7.5):** 예수금 대사와 보유 수량 대조(4.3절 3번)는 ① 계좌 전체에 활성 주문(0.5절 활성 6종)이 0건이고 ② 마지막 체결 반영 시각으로부터 `execution.late_fill_grace_seconds`(`60`초) 이상 지났을 때만 판정한다. 조건을 만족하지 못하면 판정을 건너뛰고(불일치로 보지 않는다) 다음 주기에 다시 시도한다. 주문 게이트 2번(7.1절)은 직전 정지 상태 대조 결과에 그 이후 같은 조회 묶음에서 확인한 당일 체결 누적 수량을 더한 기대 수량으로 검사한다.
   * **2단계 판정:** 첫 불일치 관측은 `classification_status = PROVISIONAL` 행으로 기록하고 신규 매수만 차단한다(HWM·낙폭 동결 없음). `accounting.recon_confirm_interval_seconds`(`60`초) 이상 간격의 다음 정지 상태 대사에서 같은 부호·허용 오차 이내 금액으로 다시 관측되면 `UNCLASSIFIED_CASH_FLOW` 로 확정한다. 다음 대사가 차이를 설명하면(차이 ≤ 허용 오차) `PROVISIONAL` 행을 `DISMISSED` 로 자동 무효화하고 감사 기록을 남긴다.
   * **분류:** ① 운영자 승인 분배금 일정(4.2절 `corporate_actions`)과 금액이 `accounting.distribution_match_tolerance`(`0.05`) 이내로 일치하면(기준 금액 = 검증된 이벤트의 `cash_amount × 기준일 보유수량`) `DISTRIBUTION` 으로 자동 확정, ② 그 외에는 Telegram `/classify [flow_id] DEPOSIT|WITHDRAWAL|DISTRIBUTION|ADJUSTMENT|DISMISS` 2단계 확인으로만 확정한다. `ADJUSTMENT` 는 단위 조정 없이 성과에 포함하고(부호 무관), `DISMISS` 는 오탐으로 판정해 `DISMISSED` 로 닫는다(단위 조정 없음, 감사 기록).
@@ -288,7 +256,7 @@
 
 ### 3.2 하드웨어 및 소프트웨어 스택
 
-* **하드웨어:** Raspberry Pi 5 (8GB RAM), 공식 27W 전원 어댑터, NVMe HAT + SSD 256GB 이상, 액티브 쿨러, RTC 백업 배터리, 소형 UPS. UPS 상태는 호스트 데몬(`scripts/ups_monitor.py`, UPS HAT의 I2C 또는 USB HID 중 실제 장비 인터페이스)이 읽어 `/home/pi/mosasaurus/run/ups.json` 에 기록하고, 컨테이너는 이 파일만 읽기 전용으로 참조한다(장치 직접 접근 금지). 호스트는 같은 방식으로 `run/clock.json`(NTP 오차·동기화 상태)도 기록하며, 두 파일의 갱신 시각이 `host_state.run_file_ttl_seconds`(`120`초)보다 오래되면 각각 `UPS_LOW`·`CLOCK_UNSYNCED` 원인을 활성화한다(감시 데몬 사망 = 상태 불명 = fail-closed). 배터리 `ups.halt_ratio`(`0.20`) 이하 → `UPS_LOW` 원인 `SAFE_HALT`, `ups.shutdown_ratio`(`0.10`) 이하 → 안전 종료(백업 후 `shutdown -h`).
+* **하드웨어:** Raspberry Pi 5 (8GB RAM), 공식 27W 전원 어댑터, M.2 NVMe 변환 HAT(현재 Geekworm X1001) + NVMe SSD 256GB 이상(현재 KIOXIA EXCERIA BASIC 1TB, 2280), 액티브 쿨러, 유선 LAN. RTC 백업 배터리와 소형 UPS는 **선택 사항**이며 현재 구성에는 없다(`ups.enabled: false`). UPS를 사용하는 경우 UPS 상태는 호스트 데몬(`scripts/ups_monitor.py`, UPS HAT의 I2C 또는 USB HID 중 실제 장비 인터페이스)이 읽어 `/home/pi/mosasaurus/run/ups.json` 에 기록하고, 컨테이너는 이 파일만 읽기 전용으로 참조한다(장치 직접 접근 금지). 호스트는 같은 방식으로 `run/clock.json`(NTP 오차·동기화 상태)도 기록하며, 두 파일의 갱신 시각이 `host_state.run_file_ttl_seconds`(`120`초)보다 오래되면 각각 `UPS_LOW`·`CLOCK_UNSYNCED` 원인을 활성화한다(감시 데몬 사망 = 상태 불명 = fail-closed). `ups.enabled: false`(UPS 없는 구성, 운영자 결정 2026-11)이면 UPS 파일을 검사하지 않고 `UPS_LOW` 를 등록하지 않으며 이미 걸린 `UPS_LOW` 는 해제한다. RTC 전지가 없으면 재부팅 직후 시각이 틀릴 수 있으나 `CLOCK_UNSYNCED` 검사가 chrony 동기화 전까지 주문을 막는다(UPS·RTC 없는 구성의 정전 위험은 부팅 복구의 KIS 대조와 외부 백업으로 완화하며, 자본 증가·`REAL` 전환 전에 UPS 도입을 재검토한다). `ups.enabled: true` 일 때 배터리 `ups.halt_ratio`(`0.20`) 이하 → `UPS_LOW` 원인 `SAFE_HALT`, `ups.shutdown_ratio`(`0.10`) 이하 → 안전 종료(백업 후 `shutdown -h`).
 
 * **OS 및 런타임:** Raspberry Pi OS Lite 64-bit, Python 3.12+, Docker Compose (`mosasaurus-agent`, `restart: unless-stopped`), SQLite (`data/mosasaurus.db`, WAL 모드, `PRAGMA foreign_keys=ON`), `chrony` NTP 동기화(0.4절 시각 신뢰 규칙).
 
@@ -391,7 +359,7 @@
 | 데이터 종류 | 사용 시점 | 최대 허용 TTL (`ttl_seconds` 키) | 영향 범위 | `STALE` 판정 시 시스템 동작 |
 | ----- | ----- | ----- | ----- | ----- |
 | 장중 현재가 / 최우선 호가 | 주문 직전 및 장중 스탑 감시 | **15초** (`intraday_quote`) | 종목 | 해당 종목 신규 매수/교체 및 가격 기반 자동 매도 보류(`QUOTE_INVALID` 종목 격리), 경고 발송 |
-| ETF 실시간 iNAV / NAV | 지정가 및 비상 매도 괴리율 검증 | **60초** (`intraday_nav`) | 종목 | 해당 종목 신규 매수 보류. 위험 축소 매도는 최우선 호가·조정계수·계좌가 유효하면 iNAV 괴리 검사를 생략하고 허용(7.2절) |
+| ETF 실시간 iNAV / NAV | 지정가 및 위험 축소 매도 괴리율 검증 | **60초** (`intraday_nav`) | 종목 | 해당 종목 신규 매수 보류. 위험 축소 매도는 최우선 호가·조정계수·계좌가 유효하면 iNAV 괴리 검사를 생략하고 허용(7.2절) |
 | KIS 계좌 예수금 / 잔고 | 주문 직전 및 정기 배치 | **30초** (`account_balance`) | 계좌 | 모든 신규 매수 차단(`ACCOUNT_DATA_STALE`) 및 재조회 |
 | KIS 미체결 / 체결 내역 | 주문 상태 머신 전이 시 | **15초** (`open_orders`) | 계좌 | 계좌 전체 후속 신규 주문 차단, 상태 전이 보류 |
 | 마지막 성공 계좌 대조 | 7.1절 공통 게이트 2 | **300초** (`reconciliation`) | 계좌 | 신규 주문 직전 대조 재실행, 실패 시 신규 주문 차단 |
@@ -484,7 +452,7 @@
 
 * **기업행위 출처:** KIS 공개 샘플에서 별도의 검증 가능한 기업행위 이벤트 API를 확인하지 못했다. 4.2절의 "감지 → 운영자 승인 일정 자동 검증 또는 `/ca_confirm`" 절차가 Phase 1의 유일한 검증 경로다.
 
-* **공식 API 참조:** [KIS Open API 포털](https://apiportal.koreainvestment.com/) 및 [한국투자증권 공식 Open API 샘플 저장소](https://github.com/koreainvestment/open-trading-api). v3.7.3 `[VERIFIED]` 표기는 `main` 브랜치의 `examples_llm/domestic_stock/{order_cash, order_rvsecncl, inquire_psbl_order, inquire_balance, inquire_daily_ccld, chk_holiday, inquire_psbl_rvsecncl, ccnl_notice}`, `examples_llm/etfetn/inquire_price`, `examples_llm/kis_auth.py` (2026-11-24 열람)를 근거로 한다. 샘플과 포털 문서가 다르면 포털 문서를 우선하고 명세를 개정한다.
+* **공식 API 참조:** [KIS Open API 포털](https://apiportal.koreainvestment.com/) 및 [한국투자증권 공식 Open API 샘플 저장소](https://github.com/koreainvestment/open-trading-api). `[VERIFIED]` 표기는 `main` 브랜치의 `examples_llm/domestic_stock/{order_cash, order_rvsecncl, inquire_psbl_order, inquire_balance, inquire_daily_ccld, chk_holiday, inquire_psbl_rvsecncl, ccnl_notice}`, `examples_llm/etfetn/inquire_price`, `examples_llm/kis_auth.py` (2026-11-24 열람)를 근거로 한다. 샘플과 포털 문서가 다르면 포털 문서를 우선하고 명세를 개정한다.
 
 ## 5. 통일된 Quant 전략 및 주간 하이브리드 파이프라인 (`RISK_ASSET`)
 
@@ -535,7 +503,7 @@
      M_{i,k} = \frac{ER_{i,k}}{\max\left(\sigma^{excess}_{i,k}, \sigma_{floor}\right)\sqrt{k}}, \quad Score_i = 0.4 M_{i,20} + 0.4 M_{i,60} + 0.2 M_{i,120}
      $$
 
-  * *변동성 하한 근거:* v3.7.2의 $\epsilon = 10^{-6}$ 은 사실상 하한으로 기능하지 못해 일간 변동성이 매우 낮은 자산의 점수를 폭주시킬 수 있었다. 주식형 ETF의 통상 일간 초과변동성(약 0.7–2.0%) 아래인 0.5%를 하한으로 고정한다. 이 값의 민감도는 11.1절 백테스트 실험 대상이다.
+  * *변동성 하한 근거:* $\epsilon = 10^{-6}$ 같은 극소 하한은 일간 변동성이 매우 낮은 자산의 점수를 폭주시킬 수 있다. 주식형 ETF의 통상 일간 초과변동성(약 0.7–2.0%) 아래인 0.5%를 하한으로 고정한다. 이 값의 민감도는 11.1절 백테스트 실험 대상이다.
 
   * *참고:* $Score_i$ 는 본 시스템 내부의 룩백별 복리 누적 초과수익률을 누적 초과변동성으로 나눈 복합 모멘텀 지표이며, 연율화 샤프비율로 해석하지 않는다.
 
@@ -585,7 +553,7 @@
 
 3. 위 슬롯 배정 알고리즘과 순위 버퍼를 적용해 차주 예정 슬롯(`S1: 45%`, `S2: 30%`, `S3: 20%`)과 예상 교체(매도/매수) 내역을 계산한다.
 
-4. 결과를 `weekly_previews` 테이블에 `preview_id = <대상 주차 ISO 주, 예: 2026-W48>`, `status = CREATED` 로 저장한 뒤 텔레그램 발송을 시도한다. 발송 성공 시 `SENT`, 실패 시 `DELIVERY_FAILED` 로 기록하고 재시도 큐(10분 간격, 최대 6회)에 넣는다. 대상 주차의 첫 개장일 전략 실행에 사용되면 `CONSUMED`, 대상 주차가 끝날 때까지 사용되지 않으면 `EXPIRED` 로 전이한다. 같은 대상 주차로 토요일 프리뷰가 재실행되면(misfire 재시도 등) 기존 행을 덮어쓰지 않고 `preview_revision` 을 증가시킨 새 행으로 저장하며, 집행은 가장 큰 revision을 사용한다. **`[모사사우르스]` 텔레그램 주말 브리핑** 을 발송한다. (v3.7.2의 `OVERRIDDEN` 상태는 이를 만드는 명령이 없으므로 폐기한다.)
+4. 결과를 `weekly_previews` 테이블에 `preview_id = <대상 주차 ISO 주, 예: 2026-W48>`, `status = CREATED` 로 저장한 뒤 텔레그램 발송을 시도한다. 발송 성공 시 `SENT`, 실패 시 `DELIVERY_FAILED` 로 기록하고 재시도 큐(10분 간격, 최대 6회)에 넣는다. 대상 주차의 첫 개장일 전략 실행에 사용되면 `CONSUMED`, 대상 주차가 끝날 때까지 사용되지 않으면 `EXPIRED` 로 전이한다. 같은 대상 주차로 토요일 프리뷰가 재실행되면(misfire 재시도 등) 기존 행을 덮어쓰지 않고 `preview_revision` 을 증가시킨 새 행으로 저장하며, 집행은 가장 큰 revision을 사용한다. **`[모사사우르스]` 텔레그램 주말 브리핑** 을 발송한다.
 
 #### \[Step B\] 주간 첫 개장일 `15:00 KST` — 실시간 안전 게이트 검증 및 실제 주문 집행 (`daily_pipeline`)
 
@@ -635,7 +603,7 @@
 
 * **최소 주문 금액 기준:** 일반 운용 시 $|T_i - H_i| \ge 150,000$ 원(`min_trade_amount_krw`)일 때만 주문을 생성한다. *(별도 승인된 스모크 세션(7.1절)은 이 기준을 적용하지 않는 별도 주문 유형이다.)*
 
-* **리밸런싱 실행 조건 (주간 첫 개장일 15:00만):** 슬롯에 유지된 종목 중 $\text{Drift}_i \ge 0.05$ (`rebalance_drift_ratio`) **AND** 최소 주문 금액 충족 시 초과분 매도 또는 부족분 매수(**Drift 보충 매수**, v3.7.2의 "Smart DCA")를 실행한다. 낙폭 단계 `CAUTION` 에서는 Drift 보충 매수를 하지 않는다(0.6절). 주간 첫 개장일이 아닌 날에는 위험자산 슬롯의 정기 교체·리밸런싱 매수를 수행하지 않는다.
+* **리밸런싱 실행 조건 (주간 첫 개장일 15:00만):** 슬롯에 유지된 종목 중 $\text{Drift}_i \ge 0.05$ (`rebalance_drift_ratio`) **AND** 최소 주문 금액 충족 시 초과분 매도 또는 부족분 매수(**Drift 보충 매수**)를 실행한다. 낙폭 단계 `CAUTION` 에서는 Drift 보충 매수를 하지 않는다(0.6절). 주간 첫 개장일이 아닌 날에는 위험자산 슬롯의 정기 교체·리밸런싱 매수를 수행하지 않는다.
 
 * **일일 현금흐름 처리 및 파킹:** 모든 개장일 15:00에 현금흐름 분류와 계좌 대조를 수행한다. 5% 현금 버퍼와 최소 주문 금액을 초과하는 미배정 현금은 모든 주문·데이터 게이트 통과 시 대표 `SAFE_PARKING` 에만 배정한다. 모드·낙폭 단계별 허용은 0.6절 진리표를 따른다. 위험자산 슬롯에 배정되지 않은 비중은 항상 대표 `SAFE_PARKING` 목표액에 포함한다.
 
@@ -691,8 +659,8 @@
   * **외부 현금흐름 반영 (일 단위 고정 규칙):** 개장일 $d$ 에 확정(`CONFIRMED`)된 `DEPOSIT`·`WITHDRAWAL` 은 직전 유효 마감 스냅샷의 단위가격 $U_{d-1}$ 으로 단위 수만 조정한다: $N \leftarrow N + F / U_{d-1}$ (입금 양수, 출금 음수). 장중 발생 시각과 무관하게 이 규칙을 적용하며(일 단위 근사), 현금흐름 자체로 단위가격은 변하지 않는다.
 
   * **미분류 기간의 오염 제거 단위가격 (v3.7.5):** `UNCLASSIFIED_CASH_FLOW` 상태 흐름이 있는 동안 모든 스냅샷과 장중 평가는 $U^*_t = (Equity_t - \sum F_{\text{미분류}}) / N_t$ 를 단위가격으로 쓰고, 제외한 금액을 `daily_portfolio.unclassified_excluded_amount` 에 기록한다(미분류 입금이 수익처럼, 미분류 출금이 손실처럼 보이는 것을 막는다).
-  * **늦은 분류 확정 (v3.7.5, v3.7.4의 "확정일 직전 스냅샷" 규칙 폐기):** 분류가 확정되면 `DEPOSIT`·`WITHDRAWAL` 은 **흐름 발생일 직전 유효 마감 스냅샷의 단위가격** $U^*_{\text{flow\_date}-1}$ 로 $N \leftarrow N + F / U^*_{\text{flow\_date}-1}$ 를 적용한다. `DISTRIBUTION`·`ADJUSTMENT`·`DISMISSED` 는 단위 조정 없이 성과에 포함한다. 같은 트랜잭션에서 발생일부터 확정일까지의 `daily_portfolio` 행을 새 $N$ 으로 재계산하고 `restated = 1` 로 표시하며, HWM도 재계산된 스냅샷 기준으로 다시 산출한다(재계산 전후 값은 `audit_events` 에 기록).
-  * **예시:** $V=3{,}000{,}000$, $N=30{,}000$, $U=100$ 에서 5일차 2,000,000원 입금이 미분류로 남으면 $U^*=100$ 으로 유지되고(v3.7.4 방식은 $U=166.67$ 로 HWM이 오른 뒤 확정 시 $DD=-28.6\%$ 가짜 `CRITICAL`), 8일차 `DEPOSIT` 확정 시 $\Delta N = 2{,}000{,}000/100 = 20{,}000$ 으로 $U=100$ 이 이어진다.
+  * **늦은 분류 확정 (v3.7.5):** 분류가 확정되면 `DEPOSIT`·`WITHDRAWAL` 은 **흐름 발생일 직전 유효 마감 스냅샷의 단위가격** $U^*_{\text{flow\_date}-1}$ 로 $N \leftarrow N + F / U^*_{\text{flow\_date}-1}$ 를 적용한다. `DISTRIBUTION`·`ADJUSTMENT`·`DISMISSED` 는 단위 조정 없이 성과에 포함한다. 같은 트랜잭션에서 발생일부터 확정일까지의 `daily_portfolio` 행을 새 $N$ 으로 재계산하고 `restated = 1` 로 표시하며, HWM도 재계산된 스냅샷 기준으로 다시 산출한다(재계산 전후 값은 `audit_events` 에 기록).
+  * **예시:** $V=3{,}000{,}000$, $N=30{,}000$, $U=100$ 에서 5일차 2,000,000원 입금이 미분류로 남으면 $U^*=100$ 으로 유지되고, 8일차 `DEPOSIT` 확정 시 $\Delta N = 2{,}000{,}000/100 = 20{,}000$ 으로 $U=100$ 이 이어진다.
 
   * **전액 출금 및 재초기화:** 조정 후 $N \le N_{min}$(`accounting.min_units`, `1e-6`)이면 단위가격을 계산하지 않고(0 나누기 방지) 현재 epoch를 닫는다. 이후 다시 $Equity > 0$ 이 되면 새 epoch를 열되 $U$ 는 직전 epoch의 마지막 유효 단위가격에서 이어 시작하고($N = Equity / U_{last}$), $HWM$ 도 이어받는다(TWR 연속성 유지). $N < 0$ 은 `ACCOUNTING_INVALID`.
 
@@ -702,8 +670,8 @@
 
   * **HWM 갱신 시점 (오염 방지):** $HWM_t = \max(HWM_{t-1}, U_t)$ 갱신은 **`post_close_reconcile` 마감 스냅샷에서만** 수행하며, 다음을 모두 만족해야 한다: 예수금 대사 일치(미분류 현금흐름 0건), 계좌 대조 일치, `twr_quality_status == VALID`. 장중에는 HWM을 갱신하지 않는다.
 
-  * **동결 규칙 (v3.7.5 정정):** 미분류 현금흐름(`UNCLASSIFIED_CASH_FLOW`)이 1건이라도 있으면 **HWM 상향 갱신만 동결**하고 신규 매수를 차단한다. 낙폭 단계 악화 전이는 동결하지 않고 오염 제거 단위가격 $U^*_t$ 로 계속 판정한다(v3.7.4는 악화 전이도 동결해 `/classify` 대기 중 `CRITICAL→EMERGENCY` 가 발동하지 않는 무방비 구간이 있었다). 회복 방향 전이는 분류 확정 후 재계산된 스냅샷에서만 수행한다. `PROVISIONAL`(1회 관측) 상태는 신규 매수만 대기시키고 HWM·낙폭에 영향을 주지 않는다. 개별 종목 트레일링 스탑은 항상 계속 작동한다. 분류 확정 후 단위 수를 조정하고 동결을 해제한다.
-  * **학습 기간 (`accounting.cash_recon_learning_days`, `14`):** 운용 시작 후 14개 개장일 동안은 미분류 흐름이 있어도 **신규 매수 차단만 생략하고 경보를 보낸다.** $U^*$ 사용과 HWM 상향 동결은 학습 기간에도 그대로 적용한다(v3.7.4는 학습 기간에 동결을 생략해 HWM 오염이 가능했다).
+  * **동결 규칙 (v3.7.5 정정):** 미분류 현금흐름(`UNCLASSIFIED_CASH_FLOW`)이 1건이라도 있으면 **HWM 상향 갱신만 동결**하고 신규 매수를 차단한다. 낙폭 단계 악화 전이는 동결하지 않고 오염 제거 단위가격 $U^*_t$ 로 계속 판정한다. 회복 방향 전이는 분류 확정 후 재계산된 스냅샷에서만 수행한다. `PROVISIONAL`(1회 관측) 상태는 신규 매수만 대기시키고 HWM·낙폭에 영향을 주지 않는다. 개별 종목 트레일링 스탑은 항상 계속 작동한다. 분류 확정 후 단위 수를 조정하고 동결을 해제한다.
+  * **학습 기간 (`accounting.cash_recon_learning_days`, `14`):** 운용 시작 후 14개 개장일 동안은 미분류 흐름이 있어도 **신규 매수 차단만 생략하고 경보를 보낸다.** $U^*$ 사용과 HWM 상향 동결은 학습 기간에도 그대로 적용한다.
 
   * 현금흐름 금액을 확정할 수 없거나 평가액이 불완전하면 `twr_quality_status = DATA_INVALID` 및 `ACCOUNTING_INVALID` 매수 차단을 기록한다. 기존 HWM을 임의 보정하지 않고 원인 확인 후 재계산·대조한다.
 
@@ -751,7 +719,7 @@
 | `CREDENTIALS_UNAVAILABLE` | 자동 | 유효 토큰 재로드 성공 |
 | `CALENDAR_MISMATCH` | 자동 | 다음 검증 시점에 두 캘린더 소스 일치 |
 | `CLOCK_UNSYNCED` | 자동 | NTP 오차 허용치 이내로 3회 연속(1분 간격) 확인 |
-| `UPS_LOW` | 자동 | 외부 전원 복귀 후 10분 경과 **AND** 배터리 ≥ `ups.halt_ratio + 0.10` |
+| `UPS_LOW` | 자동 | (`ups.enabled: true` 일 때만 등록됨) 외부 전원 복귀 후 10분 경과 **AND** 배터리 ≥ `ups.halt_ratio + 0.10`. `ups.enabled: false` 로 바뀌면 다음 점검에서 해제 |
 | `BOOT_RECOVERY_FAILED` | 자동 | `boot_recovery` 재시도(10분 간격) 성공 |
 | `CONFIG_INVALID` | 자동 | 수정된 설정으로 재기동 후 10.5절 정합성 검사 통과 |
 | `ACCOUNT_MISMATCH` | **수동** | `/reconcile` 결과 일치 후 `/clear_halt ACCOUNT_MISMATCH`, 또는 운영자가 KIS 상태를 원본으로 채택하는 `/reconcile adopt` (둘 다 2단계 확인) |
@@ -777,7 +745,7 @@
 | **Phase 1 (기본)** | `/preview` | 1 | 가장 최근 토요일에 생성된 대상 주차 순위 프리뷰 및 예상 매매 내역 재조회 |
 | **Phase 1 (기본)** | `/pool` | 1 | 유니버스 전 종목 현재가·120MA·모멘텀 점수 및 실시간 순위 조회 |
 | **Phase 1 (기본)** | `/trades [개수]` | 1 | 최근 주문 및 실제 체결 내역 조회 (기본 10, 최대 50) |
-| **Phase 1 (기본)** | `/health` | 1 | CPU·온도·SSD·컨테이너·워치독·DB·NTP·UPS·KIS 토큰 만료 상태 점검 |
+| **Phase 1 (기본)** | `/health` | 1 | CPU·온도·SSD·컨테이너·워치독·DB·NTP·UPS(`ups.enabled: false` 이면 "없음" 표시)·KIS 토큰 만료 상태 점검 |
 | **Phase 1 (기본)** | `/training on [일수]` | 2 | 훈련 모드 활성화 (일수 미입력 시 무기한, 7일 경과 시 매일 알림). 확인 메시지에 즉시 스탑 도달 종목 표시 |
 | **Phase 1 (기본)** | `/training off` | 2 | 훈련 모드 해제 (확인 즉시 다음 평가 시점부터 정상 규칙 적용) |
 | **Phase 1 (기본)** | `/pause` (별칭 `/stop`) | 1 | 신규 매수 및 정기 리밸런싱 일시정지 (하드 스탑은 유지) |
@@ -799,7 +767,7 @@
 | **Phase 2 (확장)** | `/logs` | 1 | 최근 LLM 공시·뉴스 위험 분석 결과 및 근거 요약 열람 |
 | **Phase 2 (확장)** | `/override [ticker]` | 2 | LLM `RISK_VETO` 해제 요청 (감사 기록, `ANALYSIS_UNAVAILABLE`·하드 리스크는 해제 불가) |
 
-* Phase 1 명령은 `/confirm` 을 제외하고 **21종**이다(v3.7.2의 13종 + `/emergency off` 별도 표기 + `/reconcile adopt`, `/clear_halt`, `/classify`, `/ca_confirm`, `/approve_real`, `/approve_smoke`, `/approve_backtest`).
+* Phase 1 명령은 `/confirm` 을 제외하고 **21종**이다.
 
 ## 7. Order Manager, `REAL` 하드 게이트, 지정가 산정 및 주문 상태 머신
 
@@ -809,7 +777,7 @@
   1. `config/rules.yaml` 의 `deployment.environment == 'REAL'`.
   2. 호스트 금고의 승인 파일 `/home/pi/.secrets/mosasaurus/approvals/real_activation.json`(컨테이너에는 `/run/approvals:ro` 로 마운트, 10.2절)에 `approval_id`, `approved_at`, `expires_at`(최대 `deployment.real_activation_max_days` = `30`일), `account_alias`(계좌번호 평문 금지) 가 있고 만료되지 않았다.
   3. DB `operator_approvals` 에 같은 `approval_id`, `approval_type = 'REAL_ACTIVATION'`, `status = 'ACTIVE'` 레코드가 있으며 Telegram 2단계 확인으로 생성되었다.
-  * 이 조건을 충족하는 기간이 v3.7.2의 "운용 세션"이다. 만료 7일 전부터 매일 갱신 알림을 보낸다.
+  * 이 조건을 충족하는 기간을 "운용 세션"이라 한다. 만료 7일 전부터 매일 갱신 알림을 보낸다.
 
 * **모든 주문의 공통 하드 게이트:** `Order Manager` 는 모든 주문 제출 직전에 아래 조건을 확인한다(`PAPER` 에서도 동일하게 적용하며 1번만 환경별로 다름). 하나라도 실패하면 주문 제출 API를 호출하지 않고 실패 게이트 번호를 `order_events.reason_code` 에 기록한다.
 
@@ -831,11 +799,11 @@
 
   9. 시각 조건: 현재 시각이 `market.regular_open`(`09:00:00`) 이후, `execution.new_order_cutoff`(`15:10:00`) 이전이다. 취소 요청은 이 조건의 예외다.
 
-* **일반 전략 주문 게이트:** `STRATEGY_REBALANCE`·`PARKING_ALLOCATION` 의도는 위 공통 게이트에 더해 `backtest_approvals` 에 `status = 'APPROVED'` 레코드가 있고, 그 레코드의 `strategy_params_hash` 가 현재 `rules.yaml` 전략 영역(`strategy`, `momentum`, `portfolio`, `trailing_stop`, `universe`, `execution.fee_rate`, `risk.portfolio_drawdown`)의 정규화 SHA-256과 같아야 한다. 승인 레코드에는 백테스트 결과 ID·코드 커밋 SHA·데이터 범위·보고서 해시가 있어야 한다. 이 조건이 v3.7.2의 `is_calibrated_by_backtest == true` 를 대체한다(`rules.yaml` 의 해당 키는 정보 표시용이며 게이트 판정에 사용하지 않는다). `PAPER` 에서는 `deployment.paper_requires_backtest_approval`(`false`)로 생략할 수 있다. 모드·낙폭 단계 허용은 0.6절을 따른다.
+* **일반 전략 주문 게이트:** `STRATEGY_REBALANCE`·`PARKING_ALLOCATION` 의도는 위 공통 게이트에 더해 `backtest_approvals` 에 `status = 'APPROVED'` 레코드가 있고, 그 레코드의 `strategy_params_hash` 가 현재 `rules.yaml` 전략 영역(`strategy`, `momentum`, `portfolio`, `trailing_stop`, `universe`, `execution.fee_rate`, `risk.portfolio_drawdown`)의 정규화 SHA-256과 같아야 한다. 승인 레코드에는 백테스트 결과 ID·코드 커밋 SHA·데이터 범위·보고서 해시가 있어야 한다. `rules.yaml` 의 `is_calibrated_by_backtest` 는 정보 표시용이며 게이트 판정에 사용하지 않는다. `PAPER` 에서는 `deployment.paper_requires_backtest_approval`(`false`)로 생략할 수 있다. 모드·낙폭 단계 허용은 0.6절을 따른다.
 
 * **위험 축소 매도 게이트:** `RISK_REDUCTION`·`EXIT_OBLIGATION_RETRY` 의도는 `Risk Manager` 또는 09:10 검문소가 명시적으로 생성한 보유 포지션 매도만 허용한다. 수량은 매도 가능 수량(보유 − 활성 매도 잔량)을 초과할 수 없다. `SAFE_HALT`(6.3절 보호성 손절 예외 제외), 공통 게이트 3·4 실패, 유효하지 않은 호가가 있으면 매도 주문도 제출하지 않는다. 위험 축소 매도는 항상 `Bid1` 지정가 1회 제출이며 재가격하지 않는다(7.2절). 백테스트 승인 조건은 적용하지 않는다. 이 정책은 예외적인 별도 주문 시스템이 아니라 공통 게이트 안의 주문 유형별 권한 검사다.
 
-* **실계좌 1주 스모크 테스트 전용 게이트:** 스모크 세션은 설정 파일 플래그가 아니라 DB 상태다(v3.7.2의 `rules.yaml` `smoke_test_mode` 폐기 — `:ro` 설정은 앱이 되돌릴 수 없기 때문). 운영자는 `REAL` 활성화 상태에서 호스트에서 `scripts/approve_smoke.sh` 로 `approvals/smoke_session.json` 을 만들고 Telegram 2단계 확인으로 `operator_approvals(approval_type='SMOKE_SESSION', expires_at ≤ 60분 후)` 를 생성한다. 세션 중에는 정상 대조·유효 데이터·유효 호가·미해결 주문 0건을 필수로 하고, `smoke_test.allowed_tickers` 내 종목 1개, `BUY` 1주(`smoke_test.max_quantity`), 지정가 주문 1건(`smoke_test.max_orders_per_session`)만 허용하며 전략 신호·슬롯 배분·Drift 보충 매수를 적용하지 않는다. 주문 1건이 종결되거나 세션이 만료되면 승인 레코드를 `CONSUMED`/`EXPIRED` 로 닫고 감사 기록을 남긴다(성공·실패·타임아웃 무관). 타임아웃은 일반 주문과 동일하게 `PENDING_CONFIRMATION` 으로 처리하며 재전송하지 않는다. 스모크로 매수한 1주는 이후 대표 파킹 보유분으로 취급한다.
+* **실계좌 1주 스모크 테스트 전용 게이트:** 스모크 세션은 설정 파일 플래그가 아니라 DB 상태다(`:ro` 설정은 앱이 되돌릴 수 없기 때문). 운영자는 `REAL` 활성화 상태에서 호스트에서 `scripts/approve_smoke.sh` 로 `approvals/smoke_session.json` 을 만들고 Telegram 2단계 확인으로 `operator_approvals(approval_type='SMOKE_SESSION', expires_at ≤ 60분 후)` 를 생성한다. 세션 중에는 정상 대조·유효 데이터·유효 호가·미해결 주문 0건을 필수로 하고, `smoke_test.allowed_tickers` 내 종목 1개, `BUY` 1주(`smoke_test.max_quantity`), 지정가 주문 1건(`smoke_test.max_orders_per_session`)만 허용하며 전략 신호·슬롯 배분·Drift 보충 매수를 적용하지 않는다. 주문 1건이 종결되거나 세션이 만료되면 승인 레코드를 `CONSUMED`/`EXPIRED` 로 닫고 감사 기록을 남긴다(성공·실패·타임아웃 무관). 타임아웃은 일반 주문과 동일하게 `PENDING_CONFIRMATION` 으로 처리하며 재전송하지 않는다. 스모크로 매수한 1주는 이후 대표 파킹 보유분으로 취급한다.
 
 * **주문 의도와 전송 시도 분리:** `order_intents` 는 논리적 주문 의도를 1회 저장하고, `orders` 는 해당 의도의 KIS 전송 시도(attempt)별 레코드를 저장한다.
   * **`idempotency_key` = SHA-256(`cycle_id` | `intent_type` | `slot_id` 또는 `-` | 티커 | 방향)** 이며 `run_id`, 재실행 시각, 수량, 가격, `attempt_id` 를 포함하지 않는다.
@@ -883,7 +851,6 @@
 
    * 미체결 잔량은 **절대 시장가로 전환하지 않고** 15:14:30 일괄 취소에 맡긴 뒤, 마감 후 `exit_obligations` 의 `OPEN` 의무로 넘기고 Telegram 긴급 알림을 발송한다. 다음 개장일 09:10 검문소(7.3절)가 그 시점의 `Bid1` 로 1회 재주문한다.
    * 호가가 무효·`STALE` 이면 제출하지 않고(종목 격리, `SAFE_HALT` 로 승격하지 않음) 10분 간격으로 재평가한다.
-   * v3.7.4의 정정 체인(`execution.emergency`, `replaces_order_id`, `ux_orders_one_active_replacement`)은 2회차 정정부터 DB 부분 UNIQUE 인덱스와 충돌해 실제로 동작할 수 없었으므로 삭제한다. 재도입하려면 인덱스·종결 규칙·매도 가능 수량 정의를 함께 재설계하는 별도 명세 개정이 필요하다.
 
 ### 7.3 11상태 주문 상태 머신 및 `PENDING_CONFIRMATION` 복구 규칙
 
@@ -891,7 +858,7 @@
 
 * **활성 상태 (6종):** `CREATED`, `SUBMITTING`, `PENDING_CONFIRMATION`, `ACCEPTED`, `PARTIALLY_FILLED`, `CANCEL_PENDING`
 
-* **종결 상태 (5종, 불변):** `FILLED`, `CANCELED`, `REJECTED`, `CONFIRMED_NOT_ACCEPTED`, `EXPIRED` *(종결 상태의 `status` 는 덮어쓰지 않으며, 이후 알게 된 사실은 `order_events` 에 새 이벤트로 기록한다. 예외: 종결 후 `execution.late_fill_grace_seconds`(`60`초) 또는 같은 거래일 `post_close_reconcile` 까지 KIS 조회에 직전 체결분이 늦게 반영되어 누적 체결 수량이 늘어나면 `LATE_FILL_CORRECTION` 이벤트로 `filled_qty`·`trade_fills` 만 보정한다(`status` 불변). 보정은 **한 트랜잭션**에서 `filled_qty` 를 증가시키고 `remaining_qty = 0` 으로 고정하며 `order_events`(`event_type = LATE_FILL_CORRECTION`)를 함께 기록한다. 9.2절 `trg_terminal_immutable` 은 이 형태(상태 불변 + `filled_qty` 증가 + `remaining_qty = 0`)의 체결 변경만 허용한다(v3.7.5: v3.7.4 트리거는 `filled_qty` 변경을 전부 막아 이 보정과 충돌했다). 보정 후 보유 수량 대조가 일치하면 `ACCOUNT_MISMATCH` 로 처리하지 않는다. 대조가 불일치하거나 누적 수량이 감소하면 `ACCOUNT_MISMATCH` 이다.)*
+* **종결 상태 (5종, 불변):** `FILLED`, `CANCELED`, `REJECTED`, `CONFIRMED_NOT_ACCEPTED`, `EXPIRED` *(종결 상태의 `status` 는 덮어쓰지 않으며, 이후 알게 된 사실은 `order_events` 에 새 이벤트로 기록한다. 예외: 종결 후 `execution.late_fill_grace_seconds`(`60`초) 또는 같은 거래일 `post_close_reconcile` 까지 KIS 조회에 직전 체결분이 늦게 반영되어 누적 체결 수량이 늘어나면 `LATE_FILL_CORRECTION` 이벤트로 `filled_qty`·`trade_fills` 만 보정한다(`status` 불변). 보정은 **한 트랜잭션**에서 `filled_qty` 를 증가시키고 `remaining_qty = 0` 으로 고정하며 `order_events`(`event_type = LATE_FILL_CORRECTION`)를 함께 기록한다. 9.2절 `trg_terminal_immutable` 은 이 형태(상태 불변 + `filled_qty` 증가 + `remaining_qty = 0`)의 체결 변경만 허용한다(지연 체결 보정과 충돌하지 않도록 `filled_qty` 증가는 허용). 보정 후 보유 수량 대조가 일치하면 `ACCOUNT_MISMATCH` 로 처리하지 않는다. 대조가 불일치하거나 누적 수량이 감소하면 `ACCOUNT_MISMATCH` 이다.)*
 
 * `UNRESOLVED_EXIT` 는 운영상 미해결 매도 의무를 부르는 표시명일 뿐 KIS 주문 상태가 아니다. 장 마감까지 해결되지 않은 매도 필요 수량은 별도 `exit_obligations` 레코드로 관리하며 주문 상태 머신과 분리한다.
 
@@ -919,7 +886,7 @@
 | `CANCEL_PENDING` | `ACCEPTED` / `PARTIALLY_FILLED` | 취소 거부 응답 확인(원주문 유효) |
 | `CANCEL_PENDING` | `EXPIRED` | 취소 응답 불명 상태에서 장 마감 후 잔량 소멸 확인 |
 
-* v3.7.2 도식의 `CONFIRMED_NOT_ACCEPTED → SUBMITTING` 화살표는 폐기한다. 재전송은 7.1절 "재시도 경로"에 따라 **같은 의도의 새 `orders` 행을 `CREATED` 로 생성**하는 것이며, 종결된 기존 행은 변하지 않는다.
+* `CONFIRMED_NOT_ACCEPTED → SUBMITTING` 전이는 없다. 재전송은 7.1절 "재시도 경로"에 따라 **같은 의도의 새 `orders` 행을 `CREATED` 로 생성**하는 것이며, 종결된 기존 행은 변하지 않는다.
 
 * **타임아웃 및 재전송 금지 (`PENDING_CONFIRMATION`):**
 
@@ -942,7 +909,7 @@
 
   * 미체결 매수는 취소 확정 후 당일 종료하며 익일로 이월하지 않는다.
 
-  * 장 마감 시 매도 필요 잔량은 `exit_obligations` 에 `OPEN` 으로 기록한다(티커당 `OPEN` 1건). **`required_qty` 는 생성 후 변경하지 않는다(v3.7.5).** 이미 `OPEN` 의무가 있고 새로 계산한 매도 필요 수량이 `required_qty − filled_qty` 와 다르면 아래 "의무 대체"로만 처리한다(v3.7.4의 "`required_qty` 갱신"은 `filled_qty <= required_qty` CHECK 위반과 체결분 이중 차감을 일으켜 폐기). 익일 `09:10` 검문소에서 KIS 잔고·미체결·체결을 재조회하고 기존 주문이 모두 종결되었으며 계좌·가격·호가 데이터가 유효한 경우에만 잔여 수량 `min(required_qty − filled_qty, 매도 가능 수량)` 에 대한 `EXIT_OBLIGATION_RETRY` 의도(`order_intents.obligation_id` = 해당 의무)를 생성한다(7.2절 위험 축소 매도 가격, `Bid1` 1회). 확인이 불가능하면 의무를 유지하고 신규 주문은 제출하지 않으며 10분 간격으로 재확인한다.
+  * 장 마감 시 매도 필요 잔량은 `exit_obligations` 에 `OPEN` 으로 기록한다(티커당 `OPEN` 1건). **`required_qty` 는 생성 후 변경하지 않는다(v3.7.5).** 이미 `OPEN` 의무가 있고 새로 계산한 매도 필요 수량이 `required_qty − filled_qty` 와 다르면 아래 "의무 대체"로만 처리한다. 익일 `09:10` 검문소에서 KIS 잔고·미체결·체결을 재조회하고 기존 주문이 모두 종결되었으며 계좌·가격·호가 데이터가 유효한 경우에만 잔여 수량 `min(required_qty − filled_qty, 매도 가능 수량)` 에 대한 `EXIT_OBLIGATION_RETRY` 의도(`order_intents.obligation_id` = 해당 의무)를 생성한다(7.2절 위험 축소 매도 가격, `Bid1` 1회). 확인이 불가능하면 의무를 유지하고 신규 주문은 제출하지 않으며 10분 간격으로 재확인한다.
 
   * **의무 체결 집계:** 의무의 `filled_qty` 는 `obligation_id` 가 그 의무인 의도들의 `trade_fills.qty` 합계이며, 체결 기록과 같은 트랜잭션에서 갱신한다. 의무와 무관한 매도 체결은 집계하지 않는다.
 
@@ -1047,7 +1014,7 @@
 | 실행 주체 / 시각 (KST) | Job ID | `misfire_grace_time` | 실행 조건 및 핵심 동작 |
 | ----- | ----- | ----- | ----- |
 | 호스트 `systemd` (매시 `:00`, 평일 `08:25:00`, 부팅 시) | `refresh_kis_token` | \- | 호스트 전용 스크립트: 3.3절 판정 의사코드(규칙 A·B), 65초 쿨다운, 원자적 교체 |
-| 호스트 `systemd` (상시) | `ups_monitor`, `chrony` | \- | UPS 상태 파일 기록(3.2절), NTP 동기화 |
+| 호스트 `systemd` (상시) | `ups_monitor`, `chrony` | \- | UPS 상태 파일 기록(3.2절, `ups.enabled: false` 여도 NTP 상태 `clock.json` 기록 때문에 계속 실행), NTP 동기화 |
 | 호스트 `systemd` (30분 주기) | `deploy_queue` | \- | 허용 시간에 지연 배포 큐의 최신 SHA 1건 배포(3.4절) |
 | 컨테이너 부팅 시 | `boot_recovery` | \- | 3.3절 Step 0–6. 완료 전까지 신규 주문 Job 잠금. 실패 시 10분 간격 재시도 |
 | **토요일 `10:00:00`** | **`weekly_ranking_preview`** | **3600초** | **대상 주차 프리뷰 산출(5.3절 Step A), `weekly_previews` 저장 및 `[모사사우르스]` 주말 브리핑 발송** |
@@ -1102,7 +1069,7 @@
 
 #### \[Phase 1 필수 테이블 — 24개\]
 
- 1. **`system_state`**: `key` TEXT PK, `value` TEXT NOT NULL, `updated_at` TEXT NOT NULL (`emergency_mode`, `emergency_reason`(`MANUAL`/`DRAWDOWN`), `is_paused`, `training_mode`, `training_until`, `reconciliation_ok`, `last_successful_reconcile_at`, `post_emergency_floor_until`, `performance_epoch`, `active_rules_version`). v3.7.2의 `is_safe_halt`·`previous_mode` 키는 폐기한다(`SAFE_HALT` 는 `halt_reasons` 뷰로 유도).
+ 1. **`system_state`**: `key` TEXT PK, `value` TEXT NOT NULL, `updated_at` TEXT NOT NULL (`emergency_mode`, `emergency_reason`(`MANUAL`/`DRAWDOWN`), `is_paused`, `training_mode`, `training_until`, `reconciliation_ok`, `last_successful_reconcile_at`, `post_emergency_floor_until`, `performance_epoch`, `active_rules_version`)(`SAFE_HALT` 는 `halt_reasons` 뷰로 유도).
 
  2. **`credentials_state`**: `provider` TEXT PK CHECK IN (`KIS`, `DART`, `OPENAI`, `TELEGRAM`), `expires_at` TEXT, `last_refreshed_at` TEXT, `status` TEXT NOT NULL CHECK IN (`VALID`, `EXPIRING_SOON`, `INVALID`), `error_count` INTEGER NOT NULL DEFAULT 0 *(실제 키·토큰 저장 금지)*
 
@@ -1142,7 +1109,7 @@
 
 20. **`exit_obligations`**: `obligation_id` TEXT PK, `ticker` TEXT NOT NULL FK, `source_event_id` TEXT UNIQUE NOT NULL, `required_qty` INTEGER NOT NULL CHECK(`required_qty` > 0), `filled_qty` INTEGER NOT NULL DEFAULT 0 CHECK(`filled_qty` >= 0 AND `filled_qty` <= `required_qty`), `status` TEXT NOT NULL CHECK IN (`OPEN`, `RESOLVED`, `SUPERSEDED`, `VOIDED`), `superseded_by` TEXT REFERENCES `exit_obligations(obligation_id)`, `reason_code` TEXT NOT NULL (`STOP`, `MA120`, `REMOVE`, `VETO`, `PROTECTIVE_EXIT`), `created_at` TEXT NOT NULL, `last_checked_at` TEXT, `resolved_at` TEXT
 
-21. **`pending_actions`** *(v3.7.2 Phase 2 → Phase 1로 이동)*: `id` TEXT PK, `action_type` TEXT NOT NULL CHECK IN (`EMERGENCY_ON`, `EMERGENCY_OFF`, `RESUME`, `TRAINING_ON`, `TRAINING_OFF`, `UNIVERSE_ADD`, `UNIVERSE_REMOVE`, `OVERRIDE_VETO`, `RECONCILE_ADOPT`, `CLEAR_HALT`, `CLASSIFY_FLOW`, `CA_CONFIRM`, `APPROVE_REAL`, `APPROVE_SMOKE`, `APPROVE_BACKTEST`), `args_hash` TEXT NOT NULL, `code_hash` TEXT NOT NULL UNIQUE (확인 코드 SHA-256, 평문 저장 금지), `ticker` TEXT, `reason` TEXT NOT NULL, `approval_status` TEXT NOT NULL CHECK IN (`PENDING`, `APPROVED`, `EXPIRED`, `REJECTED`), `failed_attempts` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `expires_at` TEXT NOT NULL, `confirmed_at` TEXT
+21. **`pending_actions`**: `id` TEXT PK, `action_type` TEXT NOT NULL CHECK IN (`EMERGENCY_ON`, `EMERGENCY_OFF`, `RESUME`, `TRAINING_ON`, `TRAINING_OFF`, `UNIVERSE_ADD`, `UNIVERSE_REMOVE`, `OVERRIDE_VETO`, `RECONCILE_ADOPT`, `CLEAR_HALT`, `CLASSIFY_FLOW`, `CA_CONFIRM`, `APPROVE_REAL`, `APPROVE_SMOKE`, `APPROVE_BACKTEST`), `args_hash` TEXT NOT NULL, `code_hash` TEXT NOT NULL UNIQUE (확인 코드 SHA-256, 평문 저장 금지), `ticker` TEXT, `reason` TEXT NOT NULL, `approval_status` TEXT NOT NULL CHECK IN (`PENDING`, `APPROVED`, `EXPIRED`, `REJECTED`), `failed_attempts` INTEGER NOT NULL DEFAULT 0, `created_at` TEXT NOT NULL, `expires_at` TEXT NOT NULL, `confirmed_at` TEXT
 
 22. **`safety_flags`**: `id` INTEGER PK AUTOINCREMENT, `flag_type` TEXT NOT NULL CHECK IN (`HALT`, `BUY_BLOCK`, `TICKER_BLOCK`), `code` TEXT NOT NULL (0.5절 `HaltReason`/`BuyBlock`/`TickerBlock`), `ticker` TEXT, CHECK((`flag_type` = 'TICKER_BLOCK') = (`ticker` IS NOT NULL)), `auto_clearable` INTEGER NOT NULL CHECK IN (0, 1), `detail_sanitized` TEXT, `created_at` TEXT NOT NULL, `last_seen_at` TEXT NOT NULL, `cleared_at` TEXT, `cleared_by` TEXT (`SYSTEM` 또는 `pending_actions.id`). **뷰 `halt_reasons`** = `SELECT * FROM safety_flags WHERE flag_type = 'HALT' AND cleared_at IS NULL` (활성 행이 1건 이상이면 `SAFE_HALT`).
 
@@ -1189,7 +1156,7 @@ mosasaurus/
 │   ├── risk_modes.md              # 0.6절 진리표, 6.3절 모드·SAFE_HALT 원인별 해제표, 낙폭 단계 히스테리시스
 │   └── operations_runbook.md      # KIS·네트워크·전원·DB·Telegram·휴대폰 분실·배포 큐 장애 대응 매뉴얼
 ├── config/
-│   ├── rules.yaml                 # v3.7.3 전략·리스크·실행·보안·회계 통합 설정
+│   ├── rules.yaml                 # 전략·리스크·실행·보안·회계 통합 설정
 │   ├── universe_allowlist.yaml    # 운영자 승인 시드 ETF: 공식 메타데이터·출처 URL·확인일·asset_class·underlying_index_family·distribution_schedule
 │   ├── krx_holidays.yaml          # (PAPER에서 KIS 휴장일 API 미지원 확인 시) 운영자 관리 휴장일 2차 소스
 │   └── llm.yaml                   # Phase 2 런타임 LLM 모델·가격표·뉴스 피드 allowlist
@@ -1199,7 +1166,7 @@ mosasaurus/
 ├── run/                           # 호스트↔컨테이너 상태 교환 (ups.json, token_refresh_status.json, deploy_queue) — Git 미추적
 ├── scripts/
 │   ├── refresh_kis_token.py       # 호스트 systemd timer 전용 KIS 토큰 원자적 갱신기 (매시 + 평일 08:25 + 부팅)
-│   ├── ups_monitor.py             # 호스트 UPS 상태 기록기
+│   ├── ups_monitor.py             # 호스트 UPS·NTP 상태 기록기 (UPS 없는 구성에서도 NTP 기록용으로 실행)
 │   ├── safe_deploy.sh             # 원본(저장소). 운영 실행본은 /usr/local/sbin/ 의 root 소유 승인본
 │   ├── mosasaurus-deploy          # sudoers 등록 배포 래퍼 원본 (운영자가 수동 설치)
 │   ├── approve_real.sh            # REAL 활성화 승인 파일 생성 (호스트 수동 실행)
@@ -1291,7 +1258,7 @@ project_name: "mosasaurus"
 version: "3.7.5"
 is_calibrated_by_backtest: false  # 정보 표시용. REAL 전략 게이트는 DB backtest_approvals + strategy_params_hash로 판정(7.1절)
 
-smoke_test:                       # 세션 활성화는 DB operator_approvals(SMOKE_SESSION)로만 (v3.7.2 smoke_test_mode 폐기)
+smoke_test:                       # 세션 활성화는 DB operator_approvals(SMOKE_SESSION)로만
   allowed_tickers: ["423160"]
   max_orders_per_session: 1
   max_quantity: 1
@@ -1329,9 +1296,9 @@ market:
   weekly_rotation_carryover_days: 1
   open_checkpoint_time: "09:10:00"
   daily_pipeline_time: "15:00:00"
-  order_cancel_sweep_time: "15:14:30"   # v3.7.2 order_expire_time 이름 변경
+  order_cancel_sweep_time: "15:14:30"
   regular_close: "15:30:00"
-  post_close_reconcile_time: "15:40:00" # v3.7.2 order_cancel_deadline(15:15:10) 폐기
+  post_close_reconcile_time: "15:40:00"
 
 account:
   broker: "KIS"
@@ -1383,7 +1350,7 @@ portfolio:
 momentum:
   lookbacks: [20, 60, 120]
   weights: [0.4, 0.4, 0.2]
-  min_daily_excess_volatility: 0.005            # v3.7.2 min_volatility_floor(1e-6) 대체
+  min_daily_excess_volatility: 0.005
   absolute_filter:
     require_positive_score: true
     moving_average_days: 120
@@ -1436,7 +1403,7 @@ risk:
     allow_account_queries: true
     allow_reconciliation: true
     allow_cancel_requests: true
-    allow_reduce_only_sell: false   # v3.7.2 true는 본문과 충돌하던 오류 — 정정
+    allow_reduce_only_sell: false
     protective_exit:                # v3.7.5 D1: 허용 원인·스탑 비율은 코드 상수(6.3절), 설정은 끄기만 가능
       enabled: true
     unresolved_alert_hours: 24      # 미해결 SAFE_HALT CRITICAL 재경보 주기
@@ -1460,7 +1427,7 @@ accounting:
   distribution_match_tolerance: 0.05
   cash_recon_learning_days: 14          # 첫 14개 개장일은 미분류 흐름에도 매수 차단만 생략(U*·HWM 동결은 유지, 6.2절)
   min_units: 0.000001
-  twr_method: "unitized_nav"      # v3.7.2 linked_subperiod_returns 표기 통일
+  twr_method: "unitized_nav"
   hwm_method: "flow_adjusted_index"
   hwm_update_point: "post_close_reconcile"
 
@@ -1483,6 +1450,7 @@ host_state:
   run_file_ttl_seconds: 120
 
 ups:
+  enabled: false   # UPS 없는 구성(운영자 결정 2026-11): true 이면 ups.json 없음·오래됨 = UPS_LOW. 기본값 코드 상수는 true(fail-closed)
   halt_ratio: 0.20
   shutdown_ratio: 0.10
   clear_ratio_margin: 0.10
@@ -1604,7 +1572,7 @@ news:
 
 ### 11.2 필수 통합·장애 주입 테스트 시나리오 (총 75개)
 
-번호 체계: **Phase 1 = 1–62번, Phase 2 = 63–75번.** v3.7.2의 1–39번은 번호를 유지하고 내용만 v3.7.3 규칙에 맞게 갱신했으며, 40–62번은 v3.7.3 신규 Phase 1 시나리오, 63–75번은 Phase 2 시나리오다(v3.7.2의 Phase 2 40–49번은 63–72번으로 이동).
+번호 체계: **Phase 1 = 1–62번, Phase 2 = 63–75번.**
 
 #### \[Phase 1: 수식·가격·회계·상품 분류 검증 — 11개\]
 
@@ -1630,7 +1598,7 @@ news:
 
 11. **미검증·부적격 상품 차단 및 주간 프리뷰 격리:** `classification_verified=0` 이거나 Allowlist/승인 이력이 없는 종목, `asset_class != 'EQUITY'` 인 `RISK_ASSET` 은 프리뷰와 매수 후보에서 제외되며, 레버리지·인버스·선물형·ETN은 DB `CHECK` 제약과 검증 게이트 양쪽에서 차단되고, `/add` 는 공식 조회 계약 부재 시 확인 코드 없이 거부되는지 검증한다.
 
-#### \[Phase 1: 주문 상태 머신·비상 매도·복구 검증 — 16개\]
+#### \[Phase 1: 주문 상태 머신·위험 축소 매도·복구 검증 — 16개\]
 
 12. **주문 응답 유실 후 지연 접수:** 첫 조회에서 주문이 보이지 않지만 이후 KIS에 접수되는 상황에서 `PENDING_CONFIRMATION` 이 유지되어 중복 주문이 생성되지 않는지 검증한다.
 
@@ -1684,13 +1652,13 @@ news:
 
 36. **로그 민감정보 제거:** 로그·에러 메시지·`order_events`·`audit_events`·체결통보 처리 경로에 계좌번호, API 키, 토큰, 확인 코드 평문이 남지 않는지 검증한다.
 
-37. **장기 장애 정책:** KIS API 장기 장애 및 UPS 배터리 20% 이하 도달 시 신규 주문 및 불명확 주문 재전송이 차단되고, 10% 이하에서 안전 종료 절차가 수행되는지 검증한다.
+37. **장기 장애 정책:** KIS API 장기 장애 시 신규 주문 및 불명확 주문 재전송이 차단되고, (`ups.enabled: true` 인 경우에 한해) UPS 배터리 20% 이하 도달 시 같은 차단이, 10% 이하에서 안전 종료 절차가 수행되는지 검증한다. `ups.enabled: false` 이면 UPS 파일이 없어도 `UPS_LOW` 가 등록되지 않는지 검증한다.
 
 38. **외부 기여자 PR 신뢰 경계:** `pull_request` 이벤트·보호되지 않은 브랜치·`allowed_actors` 외 actor에서는 Runner Job이 실행되지 않고, Runner 계정이 docker 그룹에 없어 금고에 접근할 수 없는지 검증한다.
 
 39. **DoD 문서 산출물 정합성:** `docs/` 내 5개 설계 문서와 `migrations/` DDL이 코드·본 명세(테이블 26개, enum 사전, 전이표)와 일치하는지 검증한다.
 
-#### \[Phase 1: v3.7.3 신규 검증 — 23개\]
+#### \[Phase 1: 추가 검증 — 23개\]
 
 40. **`SAFE_HALT` 원인별 해제:** 자동 해제 원인(토큰·NTP·캘린더·UPS·`PENDING_CONFIRMATION` 등)은 조건 충족 시 스스로 해제되고, 수동 원인은 `/clear_halt` 2단계 확인 + 대조 성공 후에만 해제되며, `/clear_halt` 로 자동 원인을 강제 해제할 수 없는지 검증한다.
 
@@ -1736,7 +1704,7 @@ news:
 
 61. **0 나누기 가드:** `V = 0`, `Bid1 = 0`, `iNAV = 0`, `N = 0`, `P_limit = 0` 입력에서 예외 없이 계산을 생략하고 적절한 플래그를 기록하는지 검증한다.
 
-62. **시각·전원 자동 복구:** NTP 오차 초과 시 `CLOCK_UNSYNCED` 로 주문이 잠기고 동기화 후 자동 해제되며, UPS 복전 후 조건 충족 시 `UPS_LOW` 가 자동 해제되는지 검증한다.
+62. **시각·전원 자동 복구:** NTP 오차 초과 시 `CLOCK_UNSYNCED` 로 주문이 잠기고 동기화 후 자동 해제되며, (`ups.enabled: true` 인 경우) UPS 복전 후 조건 충족 시 `UPS_LOW` 가 자동 해제되는지 검증한다. `ups.enabled: false` 에서도 `CLOCK_UNSYNCED` 는 동일하게 잠기고 풀리며, 이미 걸린 `UPS_LOW` 는 해제되는지 검증한다.
 
 #### \[Phase 2: LLM 공시·뉴스 확장 검증 — 13개\]
 

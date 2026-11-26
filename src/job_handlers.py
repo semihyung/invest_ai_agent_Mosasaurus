@@ -724,6 +724,7 @@ def create_safety_maintenance_handler(
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     notify: Notify = _noop,
     token_valid: Callable[[], bool] | None = None,
+    ups_enabled: bool = True,
 ) -> Callable[[], None]:
     """10분마다: 호스트 상태 파일로 UPS·시각 플래그를 갱신하고, 24시간 이상 풀리지 않은 HALT 를 재경보합니다."""
 
@@ -733,7 +734,7 @@ def create_safety_maintenance_handler(
         connection = connection_factory()
         try:
             if run_dir:
-                sync_host_state_flags(connection, run_dir, now=now)
+                sync_host_state_flags(connection, run_dir, now=now, ups_enabled=ups_enabled)
                 check_host_job_alerts(connection, run_dir, now, notify)
             until = connection.execute("SELECT value FROM system_state WHERE \"key\" = 'training_until'").fetchone()
             mode = connection.execute("SELECT value, updated_at FROM system_state WHERE \"key\" = 'training_mode'").fetchone()

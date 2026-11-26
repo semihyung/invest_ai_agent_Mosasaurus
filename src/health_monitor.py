@@ -72,7 +72,7 @@ def probe_database(
 ) -> bool:
     """SQLite 무결성·FK·임시 쓰기/읽기를 검사한 뒤 테스트 흔적을 롤백합니다.
 
-    `integrity_check` 는 DB 전체를 읽으므로 DB 가 커지면 SD카드에서 몇 초씩 걸린다. 10초 주기 검사는
+    `integrity_check` 는 DB 전체를 읽으므로 DB 가 커지면 SSD에서도 수 초씩 걸린다. 10초 주기 검사는
     `full_check=False`(FK·임시 쓰기/읽기만)로 하고, 전체 검사는 호출자가 드문 주기로만 요청한다.
     """
     if not callable(connection_factory):

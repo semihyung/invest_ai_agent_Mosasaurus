@@ -1,5 +1,5 @@
 [Unit]
-Description=Copy DB backups off the SD card (see scripts/offsite_sync.sh)
+Description=Copy DB backups off the boot SSD (see scripts/offsite_sync.sh)
 
 [Service]
 Type=oneshot

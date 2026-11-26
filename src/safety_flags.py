@@ -239,17 +239,22 @@ def sync_host_state_flags(
     ups_halt_ratio: float = 0.20,
     ups_clear_margin: float = 0.10,
     clock_max_offset_seconds: float = 1.0,
+    ups_enabled: bool = True,
 ) -> tuple[str, ...]:
-    """UPS·시각 동기화 상태 파일로 `UPS_LOW`·`CLOCK_UNSYNCED` 를 등록하거나 자동 해제합니다."""
+    """UPS·시각 동기화 상태 파일로 `UPS_LOW`·`CLOCK_UNSYNCED` 를 등록하거나 자동 해제합니다.
+
+    `ups_enabled=False`(UPS 없는 구성)이면 UPS 파일을 보지 않고 이미 걸린 `UPS_LOW` 는 해제합니다.
+    기본값은 True(fail-closed)라 설정이 없으면 기존처럼 UPS 상태 불명 = 주문 차단입니다.
+    """
     ups = read_host_state(Path(run_dir) / "ups.json", now=now, ttl_seconds=ttl_seconds)
     clock = read_host_state(Path(run_dir) / "clock.json", now=now, ttl_seconds=ttl_seconds)
 
-    ups_low = (
+    ups_low = ups_enabled and (
         ups is None
         or not isinstance(ups.get("battery_ratio"), (int, float))
         or ups["battery_ratio"] <= ups_halt_ratio
     )
-    ups_recovered = (
+    ups_recovered = not ups_enabled or (
         ups is not None
         and isinstance(ups.get("battery_ratio"), (int, float))
         and ups["battery_ratio"] >= ups_halt_ratio + ups_clear_margin

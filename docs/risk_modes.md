@@ -15,7 +15,7 @@
 | `CREDENTIALS_UNAVAILABLE` | 자동 | 유효 토큰 재로드 성공 |
 | `CALENDAR_MISMATCH` | 자동 | 다음 검증에서 두 캘린더 일치 |
 | `CLOCK_UNSYNCED` | 자동 | NTP 오차 허용치 이내 확인 |
-| `UPS_LOW` | 자동 | 외부 전원 복귀 + 배터리 ≥ 30% (기준 20% + 마진 10%p) |
+| `UPS_LOW` | 자동 | (`ups.enabled: true` 일 때만 등록) 외부 전원 복귀 + 배터리 ≥ 30% (기준 20% + 마진 10%p) |
 | `BOOT_RECOVERY_FAILED` | 자동 | 다음 부팅 복구 성공 |
 | `CONFIG_INVALID` | 자동 | 설정 수정 후 정합성 검사 통과 |
 | `ACCOUNT_MISMATCH` | **수동** | `/reconcile` 일치 후 `/clear_halt` 또는 `/reconcile adopt` (2단계 확인) |

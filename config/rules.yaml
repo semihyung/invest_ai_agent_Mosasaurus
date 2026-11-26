@@ -200,6 +200,7 @@ host_state:
   run_file_ttl_seconds: 120
 
 ups:
+  enabled: false   # UPS 없는 구성(2026-11 하드웨어). true 로 바꾸면 ups.json 이 없을 때 UPS_LOW 로 주문 차단
   halt_ratio: 0.20
   shutdown_ratio: 0.10
   clear_ratio_margin: 0.10

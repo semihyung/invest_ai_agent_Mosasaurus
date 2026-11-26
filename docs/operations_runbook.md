@@ -32,8 +32,8 @@ PAPER 계좌에서 매도·매수 체결 후 D+0/D+1/D+2 시점의 `dnca_tot_amt
 
 ## 호스트 상태 파일 (UPS·NTP)
 
-`scripts/ups_monitor.py` 가 10초마다 `run/ups.json`, `run/clock.json` 을 원자적으로 기록합니다(UPS 읽기 명령은 `UPS_STATUS_COMMAND` 로 주입).
-파일이 120초보다 오래되면 **상태 불명 = fail-closed** 로 `UPS_LOW`·`CLOCK_UNSYNCED` 가 활성화됩니다. 배터리 ≤ 20% → `UPS_LOW`, ≤ 10% → 안전 종료(호스트 스크립트 책임).
+`scripts/ups_monitor.py` 가 10초마다 `run/ups.json`, `run/clock.json` 을 원자적으로 기록합니다(UPS 읽기 명령은 `UPS_STATUS_COMMAND` 로 주입. UPS 없는 구성에서는 이 값을 비우면 `clock.json` 만 기록됩니다).
+파일이 120초보다 오래되면 **상태 불명 = fail-closed** 로 `UPS_LOW`(`ups.enabled: true` 일 때만)·`CLOCK_UNSYNCED` 가 활성화됩니다. 배터리 ≤ 20% → `UPS_LOW`, ≤ 10% → 안전 종료(호스트 스크립트 책임).
 
 ## 네트워크
 
@@ -71,3 +71,12 @@ PAPER 계좌에서 매도·매수 체결 후 D+0/D+1/D+2 시점의 `dnca_tot_amt
 ## 백업
 
 DB 백업은 SHA-256 파일과 함께 만들고 `restore_test.sh` 가 임시 복사본에서 검증합니다(운영 DB 를 덮어쓰지 않음). 백업 암호화 키(`backup.key`)는 금고 밖으로 복제하지 않으며 오프라인 보관 절차를 별도로 둡니다.
+
+## 하드웨어 구성 (2026-11 변경)
+
+Raspberry Pi 5 + KIOXIA EXCERIA BASIC 1TB(NVMe) + Geekworm X1001(M.2 HAT) + 공식 액티브 쿨러 + KKSB 알루미늄 케이스 + 공식 27W PD 어댑터. 부팅 디스크는 NVMe 이므로 SD카드는 없다.
+
+- **UPS·RTC 전지 없음(운영자 결정):** `config/rules.yaml` 의 `ups.enabled: false` 로 UPS 검사를 끈다. 정전 시에는 재부팅 후 부팅 복구가 KIS 와 대조한다. 시각은 RTC 전지가 없어 재부팅 직후 틀릴 수 있으나 `CLOCK_UNSYNCED` 가 chrony 동기화 때까지 주문을 막는다. 자본이 커지거나 REAL 전환 전에는 UPS 도입을 다시 검토한다.
+- 부팅 순서: `sudo raspi-config` → Advanced → Boot Order → NVMe, 부트로더(EEPROM) 최신화. X1001 은 기본 PCIe Gen2, Gen3 은 비공식(`dtparam=pciex1_gen=3`)이라 안정성 확인 후에만 사용.
+- 케이스: 알루미늄 케이스 안에서 액티브 쿨러 높이·X1001 적층·통풍이 맞는지 조립 전에 확인. 부하 시 `vcgencmd measure_temp`·`vcgencmd get_throttled`(0x0 이 정상)로 점검.
+- 백업 복사본은 같은 SSD 가 아니라 `OFFSITE_TARGET`(USB·NAS)에 둔다.

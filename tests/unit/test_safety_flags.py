@@ -127,6 +127,16 @@ class HostStateTests(unittest.TestCase):
         self.assertEqual(set(cleared), {"UPS_LOW", "CLOCK_UNSYNCED"})
         self.assertFalse(is_safe_halt(self.connection))
 
+    def test_ups_disabled_ignores_missing_ups_file_and_clears_existing_flag(self):
+        self._write("clock.json", {"synchronized": True, "offset_seconds": 0.0})
+        sync_host_state_flags(self.connection, self.run_dir, now=NOW)  # 기본값(활성): ups.json 없음 → UPS_LOW
+        self.assertEqual(active_halt_reasons(self.connection), ("UPS_LOW",))
+        sync_host_state_flags(self.connection, self.run_dir, now=NOW, ups_enabled=False)
+        self.assertFalse(is_safe_halt(self.connection))
+        self._write("clock.json", {"synchronized": False, "offset_seconds": 9.0})  # 시각 검사는 그대로 동작
+        sync_host_state_flags(self.connection, self.run_dir, now=NOW, ups_enabled=False)
+        self.assertEqual(active_halt_reasons(self.connection), ("CLOCK_UNSYNCED",))
+
     def test_ups_does_not_clear_until_margin_and_external_power(self):
         self._write("clock.json", {"synchronized": True, "offset_seconds": 0.0})
         self._write("ups.json", {"battery_ratio": 0.15, "on_external_power": False})

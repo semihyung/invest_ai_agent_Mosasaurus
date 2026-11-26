@@ -108,7 +108,9 @@ def boot_recovery(
 
     # Step 0: 시각 신뢰(호스트가 clock.json 을 기록하는 환경에서만 검사).
     if run_dir is not None:
-        sync_host_state_flags(connection, run_dir, now=current_time)
+        ups_cfg = (config or {}).get("ups") or {}
+        sync_host_state_flags(connection, run_dir, now=current_time,
+                              ups_enabled=ups_cfg.get("enabled", True) is not False)
 
     # Step 1: SQLite 무결성.
     connection.execute("PRAGMA foreign_keys = ON")

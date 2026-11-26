@@ -140,7 +140,8 @@ def build_dependencies(
     # 안전 점검(UPS·시각 플래그, 토큰 자동 해제, 24h 재경보, 프리뷰 재발송)은 자체 10분 잡으로 돈다:
     # 스탑 감시 안에 두면 장 시간·개장일에만 돌아 주말·야간 경보가 늦는다(명세 9.1절 `safety_flag_auto_clear`).
     safety = create_safety_maintenance_handler(
-        connection_factory, run_dir=env.get("HOST_RUN_DIR"), notify=notify, token_valid=token_is_valid)
+        connection_factory, run_dir=env.get("HOST_RUN_DIR"), notify=notify, token_valid=token_is_valid,
+        ups_enabled=cfg.get("ups", {}).get("enabled", True) is not False)
 
     handlers: dict[ScheduleJob, Callable[[], None]] = {
         ScheduleJob.INTRADAY_GUARD: guard,
@@ -184,7 +185,8 @@ def build_dependencies(
         health_snapshot=health_snapshot,
         refresh_watchdog=lambda: None,  # 하드웨어 워치독은 라즈베리파이에서 연결
         command_context={
-            "broker": broker, "run_dir": env.get("HOST_RUN_DIR"), "parking_ticker": cfg["portfolio"]["primary_parking_ticker"],  # type: ignore[index]
+            "broker": broker, "run_dir": env.get("HOST_RUN_DIR"), "ups_enabled": cfg.get("ups", {}).get("enabled", True) is not False,
+            "parking_ticker": cfg["portfolio"]["primary_parking_ticker"],  # type: ignore[index]
             "token_expiry": lambda: (token_cache.load().expires_at if token_cache.load() else None),
         },
     )
