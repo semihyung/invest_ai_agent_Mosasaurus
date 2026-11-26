@@ -242,6 +242,16 @@ class HostJobAlertTests(AuditFixTestCase):
         self.assertEqual(len(self.notes), 1)
         self.assertIn("오프사이트 백업", self.notes[0][1])
 
+    def test_offsite_usage_warning_at_80_percent(self):
+        self.write("token_refresh_status.json", consecutive_failures=0, alert=False)
+        self.write("offsite_status.json", ok=True, detail="COPIED_1", used_percent=79)
+        self.run_check()
+        self.assertEqual(self.notes, [])
+        self.write("offsite_status.json", ok=True, detail="COPIED_1", used_percent=80)
+        self.run_check()
+        self.assertEqual(len(self.notes), 1)
+        self.assertIn("사용률 80%", self.notes[0][1])
+
     def test_disabled_offsite_backup_is_never_reported(self):
         from src.job_handlers import check_host_job_alerts
 

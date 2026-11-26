@@ -1206,7 +1206,7 @@ mosasaurus/
     └── llm_engine.py              # Phase 2 런타임 플러그인 모듈
 ```
 
-* **백업 규칙:** `backup_db.sh` 는 `sqlite3 .backup` 사본을 `backup.key` 로 암호화해 `data/backups/` 에 저장하고, 주간 백업은 추가로 외부 매체(microSD·USB 저장 장치 또는 Tailscale 경유 운영자 PC, `backup.offsite_target`)에 복제한다(마운트된 장치일 때만 복사). 외부 장치가 없는 구성은 `backup.offsite_enabled: false` 로 이 복제와 정체 경고를 끈다(운영자 결정 2026-11: 본체 SSD 고장 시 복구 불가 위험을 인지하고 수용하며, `REAL` 전환 전에 외부 장치 도입을 재검토한다). 외부 장치의 오래된 복사본은 자동 삭제하지 않는다. 보존: 배포 전 백업 10개, 주간 백업 8개. 암호화 키는 금고 밖으로 복제하지 않는다(키 분실 시 복구 절차는 운영 매뉴얼에 별도 오프라인 보관).
+* **백업 규칙:** `backup_db.sh` 는 `sqlite3 .backup` 사본을 `backup.key` 로 암호화해 `data/backups/` 에 저장하고, 주간 백업은 추가로 외부 매체(microSD·USB 저장 장치 또는 Tailscale 경유 운영자 PC, `backup.offsite_target`)에 복제한다(마운트된 장치일 때만 복사). 외부 장치가 없는 구성은 `backup.offsite_enabled: false` 로 이 복제와 정체 경고를 끈다(운영자 결정 2026-11: 본체 SSD 고장 시 복구 불가 위험을 인지하고 수용하며, `REAL` 전환 전에 외부 장치 도입을 재검토한다). 외부 장치의 오래된 복사본은 자동 삭제하지 않으며, 대신 장치 사용률이 `80%` 이상이면 텔레그램 `WARN` 으로 알린다. 보존: 배포 전 백업 10개, 주간 백업 8개. 암호화 키는 금고 밖으로 복제하지 않는다(키 분실 시 복구 절차는 운영 매뉴얼에 별도 오프라인 보관).
 
 ### 10.2 `docker-compose.yml` 최소 권한 마운트 확정본
 

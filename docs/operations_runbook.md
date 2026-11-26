@@ -80,4 +80,4 @@ Raspberry Pi 5 + 삼성전자 PM991a NVMe SSD(2242, 256GB) + 공식 M.2 HAT+ + �
 - 부팅 순서: `sudo raspi-config` → Advanced → Boot Order → NVMe, 부트로더(EEPROM) 최신화. M.2 HAT+ 는 기본 PCIe Gen2, Gen3 은 설정으로 켤 수 있으나 공식 인증 밖(`dtparam=pciex1_gen=3`)이라 안정성 확인 후에만 사용.
 - 케이스: 알루미늄 케이스 안에서 액티브 쿨러 높이·M.2 HAT+ 적층·통풍이 맞는지 조립 전에 확인. 부하 시 `vcgencmd measure_temp`·`vcgencmd get_throttled`(0x0 이 정상)로 점검.
 - **외부 백업(현재 꺼짐):** `config/rules.yaml` 의 `backup.offsite_enabled: false`. 본체 SSD 가 고장나면 DB·백업이 함께 사라지며, 복구는 새 SSD 설치 후 `/reconcile adopt` 로 KIS 잔고를 채택해 새로 시작한다.
-  켜는 법(microSD·USB): ① 장치를 `/mnt/backup` 에 마운트하고 `/etc/fstab` 에 등록 ② `host.env` 에 `OFFSITE_TARGET=/mnt/backup` ③ `offsite_enabled: true` ④ `mosasaurus-offsite-sync.timer` 활성화 ⑤ 하루 뒤 `mosasaurus-*.db` 가 장치에 생겼는지 확인. 오래된 복사본은 자동 삭제되지 않으니 가끔 사용량을 확인한다.
+  켜는 법(microSD·USB): ① 장치를 `/mnt/backup` 에 마운트하고 `/etc/fstab` 에 등록 ② `host.env` 에 `OFFSITE_TARGET=/mnt/backup` ③ `offsite_enabled: true` ④ `mosasaurus-offsite-sync.timer` 활성화 ⑤ 하루 뒤 `mosasaurus-*.db` 가 장치에 생겼는지 확인. 오래된 복사본은 자동 삭제되지 않으며, 장치 사용률이 80% 이상이면 텔레그램으로 경고하니 그때 직접 정리한다.

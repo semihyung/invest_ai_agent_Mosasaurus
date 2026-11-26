@@ -15,8 +15,9 @@ mkdir -p "$RUN_DIR"
 
 write_status() {  # $1 = true|false, $2 = 사유 코드(영문 대문자·숫자·_)
   tmp="$(mktemp "$RUN_DIR/offsite_status.XXXXXX")"
-  printf '{"ok": %s, "detail": "%s", "updated_at": "%s"}\n' \
-    "$1" "$2" "$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')" > "$tmp"
+  used=""; [ -n "${3:-}" ] && used=", \"used_percent\": $3"   # $3 = (선택) 대상 장치 사용률 정수 %
+  printf '{"ok": %s, "detail": "%s", "updated_at": "%s"%s}\n' \
+    "$1" "$2" "$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')" "$used" > "$tmp"
   chmod 644 "$tmp"   # 컨테이너(다른 사용자)가 읽기 전용으로 읽는다. 비밀값 없음.
   mv "$tmp" "$RUN_DIR/offsite_status.json"
 }
@@ -45,5 +46,6 @@ for source in "$BACKUP_DIR"/mosasaurus-*.db; do
   copied=$((copied + 1))
 done
 
-write_status true "COPIED_$copied"
+used_percent="$(df -P "$TARGET" | awk 'NR==2 {gsub("%", "", $5); print $5}')"  # 앱이 80% 이상이면 경고한다
+write_status true "COPIED_$copied" "$used_percent"
 echo "오프사이트 복사 완료: 새 파일 $copied 개"

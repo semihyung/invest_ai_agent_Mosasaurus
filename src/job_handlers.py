@@ -675,6 +675,9 @@ def create_post_close_reconcile_handler(
 
 # ───────────────────────── safety_flag_auto_clear / 24h 재경보 ─────────────────────────
 
+_OFFSITE_USAGE_WARN_PERCENT = 80  # 외부 백업 장치가 이 비율 이상 차면 경고(복사본은 자동 삭제하지 않는다)
+
+
 def _host_job_problem(run_dir: str, name: str, now: datetime, max_age_hours: float | None) -> str | None:
     """호스트 작업(토큰 갱신·오프사이트 백업)의 상태 파일을 읽어 문제가 있으면 한 줄 사유를, 정상이면 None 을 돌려준다."""
     try:
@@ -692,6 +695,9 @@ def _host_job_problem(run_dir: str, name: str, now: datetime, max_age_hours: flo
         return f"연속 {payload.get('consecutive_failures', '?')}회 실패"
     if payload.get("ok") is False:
         return f"실패({payload.get('detail', '?')})"
+    used = payload.get("used_percent")
+    if isinstance(used, (int, float)) and not isinstance(used, bool) and used >= _OFFSITE_USAGE_WARN_PERCENT:
+        return f"외부 장치 사용률 {used:g}% (오래된 복사본은 자동 삭제되지 않으니 정리하세요)"
     return None
 
 
